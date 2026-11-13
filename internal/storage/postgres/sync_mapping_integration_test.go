@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -57,9 +58,11 @@ func newSyncFixture(ctx context.Context, t *testing.T, store *postgres.Store) sy
 			Credentials: []byte("app-specific-password"),
 		})
 		if err != nil {
-			return err
+			return fmt.Errorf("create the connection: %w", err)
 		}
 
+		// calendars is unique on (connection_id, external_id), so two
+		// calendars under one connection need two distinct provider ids.
 		fixture.source, err = store.Calendars().Create(ctx, storage.Calendar{
 			UserID:       user.ID,
 			ConnectionID: connection.ID,
@@ -67,7 +70,7 @@ func newSyncFixture(ctx context.Context, t *testing.T, store *postgres.Store) sy
 			Name:         "Privat",
 		})
 		if err != nil {
-			return err
+			return fmt.Errorf("create the source calendar: %w", err)
 		}
 
 		fixture.target, err = store.Calendars().Create(ctx, storage.Calendar{
@@ -78,7 +81,7 @@ func newSyncFixture(ctx context.Context, t *testing.T, store *postgres.Store) sy
 			Managed:      true,
 		})
 		if err != nil {
-			return err
+			return fmt.Errorf("create the target calendar: %w", err)
 		}
 
 		fixture.edge, err = store.Edges().Create(ctx, storage.Edge{
@@ -87,10 +90,13 @@ func newSyncFixture(ctx context.Context, t *testing.T, store *postgres.Store) sy
 			TargetCalendarID: fixture.target.ID,
 			DetailLevel:      storage.DetailLevelTitleTime,
 		})
+		if err != nil {
+			return fmt.Errorf("create the edge: %w", err)
+		}
 
-		return err
+		return nil
 	}); err != nil {
-		t.Fatalf("create the edge and its calendars: %v", err)
+		t.Fatalf("set up the edge: %v", err)
 	}
 
 	return fixture
