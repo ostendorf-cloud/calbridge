@@ -49,16 +49,17 @@ on; every other path already exists.
   `NOSUPERUSER NOBYPASSRLS`. `sqlc.yaml` points sqlc's schema at this
   directory itself, parsed statically with no database connection, so
   `task generate:check` runs with no network and no port binding.
-- `internal/provider` will define the one connector interface every
-  provider implements: list calendars, read changes since a token, create,
-  update and delete an event the connector itself owns. A connector
-  registers itself into a registry under a provider id and declares its
-  capabilities (push notifications, native recurrence rules, calendar
-  creation, attendees, free/busy), so adding Google Calendar, Microsoft
-  Graph or a CalDAV profile is a new package and one import, never an edit
-  to a switch statement in the engine. Connectors speak one normalised
-  event type and never leak a provider's own model; everything
-  provider-shaped stays inside its package.
+- `internal/provider` defines the one connector interface every provider
+  implements: list calendars, read changes since a token, create and delete
+  a calendar it owns, and create, update and delete an event it owns. A
+  connector registers itself into a registry under a provider id and
+  declares its capabilities (push notifications, native recurrence rules,
+  calendar creation, attendees, floating times), so adding Google Calendar,
+  Microsoft Graph or a CalDAV profile is a new package and one line of
+  wiring, never an edit to a switch statement in the engine. Connectors
+  speak one normalised event type and never leak a provider's own model;
+  everything provider-shaped stays inside its package. No connector exists
+  yet: the interface, the registry and a fake are what is there.
 - `internal/sync` will turn a source change into target operations by
   applying an edge's field mask, and is the only package meant to know what
   a detail level means. It owns the mapping table (edge id, source event
