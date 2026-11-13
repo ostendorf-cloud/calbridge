@@ -161,7 +161,6 @@ func TestRegistryConnector(t *testing.T) {
 			NativeRecurrence:  true,
 			CalendarCreation:  true,
 			Attendees:         true,
-			FreeBusy:          true,
 			FloatingTimes:     false,
 		}
 

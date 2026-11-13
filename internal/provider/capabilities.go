@@ -36,10 +36,6 @@ type Capabilities struct {
 	// meeting still copies its time.
 	Attendees bool
 
-	// FreeBusy reports that the provider answers a free/busy query for a
-	// calendar, which reads availability without reading any event.
-	FreeBusy bool
-
 	// FloatingTimes reports that the provider stores a wall time with no
 	// zone attached. A connector whose provider always attaches a zone
 	// reports false, and the engine anchors a floating source time in the

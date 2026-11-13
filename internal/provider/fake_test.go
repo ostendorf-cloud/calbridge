@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ostendorf-cloud/calbridge/internal/provider"
 )
@@ -199,6 +200,33 @@ func (c *fakeConnector) CreateCalendar(ctx context.Context, cred provider.Creden
 	return c.store(cred.Connection(), provider.Calendar{Name: name, TimeZone: "Europe/Berlin", Managed: true}), nil
 }
 
+func (c *fakeConnector) DeleteCalendar(ctx context.Context, cred provider.Credential, calendarID string) error {
+	if err := c.begin(ctx, cred); err != nil {
+		return err
+	}
+	if !c.caps.CalendarCreation {
+		return fmt.Errorf("provider %q: delete calendar: %w", c.id, provider.ErrUnsupported)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	cal, ok := c.calendars[calendarID]
+	if !ok || cal.connection != cred.Connection() {
+		// Deleting what is already gone succeeds, so a run interrupted
+		// after the provider acted is safe to repeat, the same as
+		// DeleteEvent.
+		return nil
+	}
+	if !cal.meta.Managed {
+		return fmt.Errorf("provider %q: calendar %q is not managed by calbridge: %w", c.id, calendarID, provider.ErrUnsupported)
+	}
+
+	delete(c.calendars, calendarID)
+
+	return nil
+}
+
 func (c *fakeConnector) Changes(ctx context.Context, cred provider.Credential, calendarID string, token provider.SyncToken) (provider.ChangePage, error) {
 	if err := c.begin(ctx, cred); err != nil {
 		return provider.ChangePage{}, err
@@ -315,6 +343,9 @@ func (c *fakeConnector) CreateEvent(ctx context.Context, cred provider.Credentia
 	c.nextEventID++
 	stored.ID = "evt-" + strconv.Itoa(c.nextEventID)
 	stored.ETag = "etag-" + strconv.Itoa(len(cal.log)+1)
+	now := time.Now()
+	stored.Created = now
+	stored.Updated = now
 	c.record(cal, stored)
 
 	return stored, nil
@@ -332,7 +363,8 @@ func (c *fakeConnector) UpdateEvent(ctx context.Context, cred provider.Credentia
 	if err != nil {
 		return provider.Event{}, err
 	}
-	if _, held := cal.events[event.ID]; !held {
+	held, ok := cal.events[event.ID]
+	if !ok {
 		return provider.Event{}, fmt.Errorf("provider %q: event %q: %w", c.id, event.ID, provider.ErrUnknownEvent)
 	}
 	stored, err := c.accept(event)
@@ -341,6 +373,8 @@ func (c *fakeConnector) UpdateEvent(ctx context.Context, cred provider.Credentia
 	}
 
 	stored.ETag = "etag-" + strconv.Itoa(len(cal.log)+1)
+	stored.Created = held.Created
+	stored.Updated = time.Now()
 	c.record(cal, stored)
 
 	return stored, nil

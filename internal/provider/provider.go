@@ -209,6 +209,19 @@ type Connector interface {
 	// returns ErrUnsupported and creates nothing.
 	CreateCalendar(ctx context.Context, cred Credential, name string) (Calendar, error)
 
+	// DeleteCalendar removes a calendar calbridge created, identified by
+	// calendarID. Deleting a calendar that is already gone succeeds, so a
+	// run that deletes an edge is safe to repeat after an interruption,
+	// the same as DeleteEvent. A connector whose Capabilities report
+	// CalendarCreation as false returns ErrUnsupported and deletes
+	// nothing, because a connector that cannot create a calendar is never
+	// asked to remove one either. The caller never names a calendar it
+	// did not create: deleting one the connector did not create, such as
+	// a calendar the user selected as an edge's target, returns
+	// ErrUnsupported and deletes nothing, because calbridge never removes
+	// a calendar it does not own.
+	DeleteCalendar(ctx context.Context, cred Credential, calendarID string) error
+
 	// Changes reads what changed in the calendar since token, and returns
 	// one page. The zero SyncToken asks for an initial sync, which
 	// reports every event in the calendar and no deletion. A token the
@@ -218,15 +231,17 @@ type Connector interface {
 	Changes(ctx context.Context, cred Credential, calendarID string, token SyncToken) (ChangePage, error)
 
 	// CreateEvent writes event into the calendar and returns it as the
-	// provider stored it, with Event.ID and Event.ETag filled in. The
-	// event's Marker survives the round trip and comes back on every
-	// later read, which is what lets the engine recognise its own writes
-	// and refuse to copy them onward.
+	// provider stored it, with Event.ID, Event.ETag and Event.Created
+	// filled in. Event.Updated is set to the same moment as Event.Created,
+	// because the write just happened. The event's Marker survives the
+	// round trip and comes back on every later read, which is what lets
+	// the engine recognise its own writes and refuse to copy them onward.
 	CreateEvent(ctx context.Context, cred Credential, calendarID string, event Event) (Event, error)
 
 	// UpdateEvent overwrites the event event.ID names with event, and
-	// returns it as the provider stored it. An id the calendar does not
-	// hold returns ErrUnknownEvent.
+	// returns it as the provider stored it, with Event.Updated set to the
+	// moment of this write and Event.Created kept from the original
+	// write. An id the calendar does not hold returns ErrUnknownEvent.
 	UpdateEvent(ctx context.Context, cred Credential, calendarID string, event Event) (Event, error)
 
 	// DeleteEvent removes the event from the calendar. Deleting an event

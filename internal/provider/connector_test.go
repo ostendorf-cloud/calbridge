@@ -24,7 +24,6 @@ func fullCapabilities() provider.Capabilities {
 		NativeRecurrence:  true,
 		CalendarCreation:  true,
 		Attendees:         true,
-		FreeBusy:          true,
 		FloatingTimes:     true,
 	}
 }
@@ -207,6 +206,78 @@ func TestConnectorCapabilityGates(t *testing.T) {
 		}
 	})
 
+	t.Run("a provider that cannot create a calendar also cannot delete one", func(t *testing.T) {
+		t.Parallel()
+
+		caps := fullCapabilities()
+		caps.CalendarCreation = false
+		connector := newFakeConnector(caps)
+		primary := primaryOf(t, connector, credentialFor("conn-1"))
+
+		err := connector.DeleteCalendar(t.Context(), credentialFor("conn-1"), primary.ID)
+		if !errors.Is(err, provider.ErrUnsupported) {
+			t.Errorf("DeleteCalendar() error = %v, want ErrUnsupported", err)
+		}
+	})
+
+	t.Run("a provider that can create a calendar removes what it created", func(t *testing.T) {
+		t.Parallel()
+
+		connector := newFakeConnector(fullCapabilities())
+		cred := credentialFor("conn-1")
+
+		created, err := connector.CreateCalendar(t.Context(), cred, "calbridge")
+		if err != nil {
+			t.Fatalf("CreateCalendar() error = %v", err)
+		}
+		if err := connector.DeleteCalendar(t.Context(), cred, created.ID); err != nil {
+			t.Fatalf("DeleteCalendar() error = %v", err)
+		}
+
+		if _, err := connector.Changes(t.Context(), cred, created.ID, provider.SyncToken{}); !errors.Is(err, provider.ErrUnknownCalendar) {
+			t.Errorf("Changes() on the deleted calendar error = %v, want ErrUnknownCalendar", err)
+		}
+	})
+
+	t.Run("deleting a calendar that is already gone succeeds", func(t *testing.T) {
+		t.Parallel()
+
+		connector := newFakeConnector(fullCapabilities())
+		cred := credentialFor("conn-1")
+
+		created, err := connector.CreateCalendar(t.Context(), cred, "calbridge")
+		if err != nil {
+			t.Fatalf("CreateCalendar() error = %v", err)
+		}
+		if err := connector.DeleteCalendar(t.Context(), cred, created.ID); err != nil {
+			t.Fatalf("DeleteCalendar() error = %v", err)
+		}
+		if err := connector.DeleteCalendar(t.Context(), cred, created.ID); err != nil {
+			t.Errorf("DeleteCalendar() repeated error = %v, want nil so an interrupted deletion is safe to repeat", err)
+		}
+	})
+
+	t.Run("deleting a calendar calbridge did not create is refused", func(t *testing.T) {
+		t.Parallel()
+
+		connector := newFakeConnector(fullCapabilities())
+		cred := credentialFor("conn-1")
+		primary := primaryOf(t, connector, cred)
+
+		err := connector.DeleteCalendar(t.Context(), cred, primary.ID)
+		if !errors.Is(err, provider.ErrUnsupported) {
+			t.Errorf("DeleteCalendar() error = %v, want ErrUnsupported, calbridge never removes a calendar it does not own", err)
+		}
+
+		calendars, err := connector.Calendars(t.Context(), cred)
+		if err != nil {
+			t.Fatalf("Calendars() error = %v", err)
+		}
+		if len(calendars) != 1 {
+			t.Errorf("Calendars() returned %d calendars, want the primary one still there", len(calendars))
+		}
+	})
+
 	t.Run("a provider without native recurrence refuses a rule", func(t *testing.T) {
 		t.Parallel()
 
@@ -331,6 +402,31 @@ func TestConnectorEventLifecycle(t *testing.T) {
 		if stored.Marker != (provider.Marker{Edge: "edge-1", Source: "src-77"}) {
 			t.Errorf("CreateEvent() marker = %+v, want the one that went in", stored.Marker)
 		}
+		if stored.Created.IsZero() {
+			t.Error("CreateEvent() left Created at its zero value, want the moment of the write")
+		}
+		if stored.Updated.IsZero() {
+			t.Error("CreateEvent() left Updated at its zero value, want the moment of the write")
+		}
+	})
+
+	t.Run("the organiser is dropped on write", func(t *testing.T) {
+		t.Parallel()
+
+		connector := newFakeConnector(fullCapabilities())
+		cred := credentialFor("conn-1")
+		primary := primaryOf(t, connector, cred)
+
+		organised := sprintReview()
+		organised.Organizer = &provider.Attendee{Email: "lead@example.com", Name: "Team Lead"}
+
+		stored, err := connector.CreateEvent(t.Context(), cred, primary.ID, organised)
+		if err != nil {
+			t.Fatalf("CreateEvent() error = %v", err)
+		}
+		if stored.Organizer != nil {
+			t.Errorf("CreateEvent() organiser = %+v, want nil, every provider sets it from the writing account", stored.Organizer)
+		}
 	})
 
 	t.Run("an invalid event never reaches the provider", func(t *testing.T) {
@@ -385,6 +481,12 @@ func TestConnectorEventLifecycle(t *testing.T) {
 		}
 		if updated.ETag == stored.ETag {
 			t.Error("UpdateEvent() left the change tag alone")
+		}
+		if !updated.Created.Equal(stored.Created) {
+			t.Errorf("UpdateEvent() created = %v, want the original %v", updated.Created, stored.Created)
+		}
+		if updated.Updated.Before(stored.Updated) {
+			t.Errorf("UpdateEvent() updated = %v, want no earlier than the previous write %v", updated.Updated, stored.Updated)
 		}
 	})
 
@@ -767,6 +869,9 @@ func TestConnectorThroughRegistry(t *testing.T) {
 	stored, err := connector.CreateEvent(t.Context(), cred, calendars[0].ID, event)
 	if err != nil {
 		t.Fatalf("CreateEvent() error = %v", err)
+	}
+	if stored.Created.IsZero() {
+		t.Error("CreateEvent() left Created at its zero value, want the moment of the write")
 	}
 	if stored.Created.After(time.Now()) {
 		t.Error("CreateEvent() returned a creation time in the future")
