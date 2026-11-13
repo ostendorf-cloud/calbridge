@@ -1,0 +1,131 @@
+// Copyright 2026 Simon Ostendorf
+// SPDX-License-Identifier: Elastic-2.0
+
+package postgres
+
+import (
+	"context"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ostendorf-cloud/calbridge/internal/storage"
+	"github.com/ostendorf-cloud/calbridge/internal/storage/postgres/sqlcgen"
+)
+
+// userRepository satisfies storage.UserRepository. FindByEmail is the
+// only method that runs directly against the pool: the email lookup has
+// to work before any user id is known at all, through
+// users_find_by_email, a SECURITY DEFINER function; see db/migrations.
+// Create, FindByID and Update all run inside a transaction
+// storage.UserScope.WithUser scoped, like every other repository, now
+// that users carries row level security of its own. Create is the one
+// that scopes that transaction itself, to the user it is about to
+// create; its caller has no id to pass yet.
+type userRepository struct {
+	pool  *pgxpool.Pool
+	scope storage.UserScope
+}
+
+// Create implements storage.UserRepository. It generates the new user's
+// id and runs the INSERT in a transaction scoped to exactly that id,
+// which is what lets signup work for a user who does not exist yet
+// without exempting users from its own policy: the row written and the
+// row RETURNING reads back are both the row app.user_id names, so
+// users_self_isolation accepts both, and nothing else in the same
+// transaction becomes reachable. Any id on user is ignored; the created
+// user carries the generated one.
+func (r *userRepository) Create(ctx context.Context, user storage.User) (storage.User, error) {
+	id := uuid.New()
+
+	var created storage.User
+
+	err := r.scope.WithUser(ctx, id, func(ctx context.Context) error {
+		tx, err := txFromContext(ctx)
+		if err != nil {
+			return err
+		}
+
+		row, err := sqlcgen.New(tx).CreateUser(ctx, sqlcgen.CreateUserParams{
+			ID:              id,
+			Email:           user.Email,
+			PasswordHash:    ptrToText(user.PasswordHash),
+			TotpSecret:      ptrToText(user.TOTPSecret),
+			TotpLastCounter: ptrToInt8(user.TOTPLastCounter),
+			Status:          string(user.Status),
+		})
+		if err != nil {
+			return mapWriteError(err)
+		}
+
+		created = userFromRow(row)
+
+		return nil
+	})
+	if err != nil {
+		return storage.User{}, err
+	}
+
+	return created, nil
+}
+
+// FindByID implements storage.UserRepository. It requires a context
+// storage.UserScope.WithUser produced; see storage.ErrNoUserScope.
+func (r *userRepository) FindByID(ctx context.Context, id uuid.UUID) (storage.User, error) {
+	tx, err := txFromContext(ctx)
+	if err != nil {
+		return storage.User{}, err
+	}
+
+	row, err := sqlcgen.New(tx).GetUserByID(ctx, id)
+	if err != nil {
+		return storage.User{}, mapReadError(err)
+	}
+
+	return userFromRow(row), nil
+}
+
+// FindByEmail implements storage.UserRepository.
+func (r *userRepository) FindByEmail(ctx context.Context, email string) (storage.User, error) {
+	row, err := sqlcgen.New(r.pool).GetUserByEmail(ctx, email)
+	if err != nil {
+		return storage.User{}, mapReadError(err)
+	}
+
+	return userFromRow(row), nil
+}
+
+// Update implements storage.UserRepository. It requires a context
+// storage.UserScope.WithUser produced; see storage.ErrNoUserScope.
+func (r *userRepository) Update(ctx context.Context, user storage.User) (storage.User, error) {
+	tx, err := txFromContext(ctx)
+	if err != nil {
+		return storage.User{}, err
+	}
+
+	row, err := sqlcgen.New(tx).UpdateUser(ctx, sqlcgen.UpdateUserParams{
+		ID:              user.ID,
+		PasswordHash:    ptrToText(user.PasswordHash),
+		TotpSecret:      ptrToText(user.TOTPSecret),
+		TotpLastCounter: ptrToInt8(user.TOTPLastCounter),
+		Status:          string(user.Status),
+	})
+	if err != nil {
+		return storage.User{}, mapWriteError(err)
+	}
+
+	return userFromRow(row), nil
+}
+
+func userFromRow(row sqlcgen.User) storage.User {
+	return storage.User{
+		ID:              row.ID,
+		Email:           row.Email,
+		PasswordHash:    textToPtr(row.PasswordHash),
+		TOTPSecret:      textToPtr(row.TotpSecret),
+		TOTPLastCounter: int8ToPtr(row.TotpLastCounter),
+		Status:          storage.UserStatus(row.Status),
+		CreatedAt:       timeFromTimestamptz(row.CreatedAt),
+		UpdatedAt:       timeFromTimestamptz(row.UpdatedAt),
+	}
+}

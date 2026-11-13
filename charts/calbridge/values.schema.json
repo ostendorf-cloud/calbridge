@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "calbridge",
   "type": "object",
-  "required": ["image", "service", "config"],
+  "required": ["image", "service", "config", "existingSecret", "migrationJob"],
   "properties": {
     "replicaCount": {
       "type": "integer",
@@ -151,7 +151,7 @@
     "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1 },
     "config": {
       "type": "object",
-      "required": ["listenAddr", "adminListenAddr", "drainDelay"],
+      "required": ["listenAddr", "adminListenAddr", "drainDelay", "databaseUrl", "databaseUser"],
       "properties": {
         "listenAddr": { "type": "string", "minLength": 1 },
         "adminListenAddr": {
@@ -167,7 +167,54 @@
         "logLevel": {
           "type": "string",
           "enum": ["debug", "info", "warn", "error"]
+        },
+        "databaseUrl": {
+          "type": "string",
+          "minLength": 1,
+          "description": "DATABASE_URL: the connection URL without credentials. The role config.databaseUser names MUST be NOSUPERUSER and NOBYPASSRLS, or row level security provides no actual protection; see values.yaml's own comment."
+        },
+        "databaseUser": {
+          "type": "string",
+          "minLength": 1,
+          "description": "DATABASE_USER. MUST be NOSUPERUSER and NOBYPASSRLS; see databaseUrl's own description."
         }
+      }
+    },
+    "existingSecret": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "databasePasswordKey": { "type": "string", "minLength": 1 },
+        "encryptionKeyKey": { "type": "string", "minLength": 1 },
+        "migrationDatabasePasswordKey": { "type": "string" }
+      }
+    },
+    "migrationJob": {
+      "type": "object",
+      "required": ["enabled", "databaseUser"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "databaseUser": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A separate role, distinct from config.databaseUser, that owns every table db/migrations creates and applies them. Required; no usable default. See README.md's \"Migrations run as a separate role\" section."
+        },
+        "image": {
+          "type": "object",
+          "required": ["repository", "tag", "digest"],
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 },
+            "digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "description": "The dbmate image's digest, matching docker-compose.yaml's own pin, for Renovate's pinDigests."
+            }
+          }
+        },
+        "annotations": { "type": "object" },
+        "resources": { "type": "object" }
       }
     }
   }

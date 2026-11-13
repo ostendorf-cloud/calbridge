@@ -5,6 +5,16 @@ templates:
   - templates/serviceaccount.yaml
   - templates/ingress.yaml
   - templates/httproute.yaml
+  - templates/migration-job.yaml
+  - templates/migration-configmap.yaml
+set:
+  existingSecret:
+    name: calbridge-secrets
+  config:
+    databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
+    databaseUser: calbridge_app
+  migrationJob:
+    databaseUser: calbridge_migrator
 tests:
   - it: renders exactly one Deployment
     template: templates/deployment.yaml
@@ -59,6 +69,51 @@ tests:
           content:
             name: LOG_LEVEL
             value: "info"
+
+  - it: wires the required secret-backed database and encryption env vars with no fallback
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASE_URL
+            value: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASE_USER
+            value: calbridge_app
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASE_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: calbridge-secrets
+                key: DATABASE_PASSWORD
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ENCRYPTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: calbridge-secrets
+                key: ENCRYPTION_KEY
+
+  - it: renders exactly one migration Job by default
+    template: templates/migration-job.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: embeds every migration from db/migrations into the ConfigMap
+    template: templates/migration-configmap.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - matchRegex:
+          path: data["20261113155247_create_users.sql"]
+          pattern: "CREATE TABLE users"
 
   - it: runs as non root with a read only root filesystem and no capabilities
     template: templates/deployment.yaml

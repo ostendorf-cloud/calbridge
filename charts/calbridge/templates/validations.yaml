@@ -40,6 +40,19 @@ cmd/calbridge actually listens.
 {{- end -}}
 
 {{/*
+migrationJob.databaseUser must differ from config.databaseUser: a role
+that both migrates and serves the application OWNS every table it
+creates, so it can run ALTER TABLE ... NO FORCE ROW LEVEL SECURITY or
+drop the policy outright, turning off the per-user isolation every other
+part of this schema depends on. See README.md's "Migrations run as a
+separate role" section. values.schema.json's own minLength already fails
+an empty migrationJob.databaseUser before this ever runs.
+*/}}
+{{- if eq .Values.migrationJob.databaseUser .Values.config.databaseUser -}}
+{{ fail (printf "migrationJob.databaseUser (%s) must not equal config.databaseUser: the application's own role must never own the tables row level security protects it from. See README.md." .Values.migrationJob.databaseUser) }}
+{{- end -}}
+
+{{/*
 podLabels merges onto the pod template at the same level as
 calbridge.labels, which includes calbridge.selectorLabels. A user-supplied
 app.kubernetes.io/name or app.kubernetes.io/instance there would silently

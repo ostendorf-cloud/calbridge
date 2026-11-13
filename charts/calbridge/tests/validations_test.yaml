@@ -1,7 +1,26 @@
 suite: port and label validations
 templates:
   - templates/validations.yaml
+set:
+  existingSecret:
+    name: calbridge-secrets
+  config:
+    databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
+    databaseUser: calbridge_app
+  migrationJob:
+    databaseUser: calbridge_migrator
 tests:
+  - it: fails the render when migrationJob.databaseUser equals config.databaseUser
+    set:
+      migrationJob:
+        databaseUser: calbridge_app
+    asserts:
+      - failedTemplate:
+          errorMessage: >-
+            migrationJob.databaseUser (calbridge_app) must not equal config.databaseUser: the
+            application's own role must never own the tables row level security protects it
+            from. See README.md.
+
   - it: fails the render when config.listenAddr and service.port disagree
     set:
       config:

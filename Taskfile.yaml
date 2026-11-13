@@ -42,6 +42,35 @@ tasks:
     cmds:
       - golangci-lint run ./...
 
+  generate:sqlc:
+    desc: Regenerate the sqlc query code under internal/storage/postgres/sqlcgen
+    cmds:
+      - sqlc generate
+
+  # sqlc reads its schema from db/migrations itself (see sqlc.yaml), parsed
+  # statically, so this needs no database and no network, exactly like
+  # every other task in the check aggregate.
+  generate:check:
+    desc: Fail if the committed sqlc output does not match a fresh generate
+    deps: [generate:sqlc]
+    cmds:
+      - |
+        if [ -n "$(git status --porcelain -- internal/storage/postgres/sqlcgen)" ]; then
+          echo "sqlc output is out of date; run 'task generate:sqlc' and commit the result:" >&2
+          git status --porcelain -- internal/storage/postgres/sqlcgen >&2
+          git diff -- internal/storage/postgres/sqlcgen >&2
+          exit 1
+        fi
+
+  # Needs a reachable Postgres via DATABASE_URL, so it is never part of
+  # check: check runs with no network and no port binding. The checks.yaml
+  # "integration" job runs this against a real postgres:18 service
+  # container, after applying the migrations with dbmate.
+  test:integration:
+    desc: Go test against a live Postgres (DATABASE_URL), including the row level security isolation test
+    cmds:
+      - go test -tags=integration -race -count=1 ./internal/...
+
   build:
     desc: Compile the calbridge binary
     cmds:
@@ -97,6 +126,7 @@ tasks:
       - task: lint:fmt
       - task: lint:vet
       - task: lint:golangci
+      - task: generate:check
       - task: lint:markdown
       - task: lint:yaml
       - task: lint:actions

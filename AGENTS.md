@@ -16,12 +16,13 @@ on; every other path already exists.
 - `cmd/calbridge` wires the service: `internal/config` loads and validates
   the environment, `main.go` builds `internal/httpapi`'s handler and runs it
   through govue's `httpserver` with graceful shutdown. A later issue adds
-  the database connection, the provider registry and the sync engine to
-  this wiring.
+  the provider registry and the sync engine, and opens the database
+  connection `internal/config` now reads, to this wiring.
 - `internal/config` loads calbridge's configuration from the environment
-  once, at startup, through govue's `envconf`. It validates only server and
-  logging settings today; a later issue's secret follows `envconf`'s
-  `_FILE`-suffix convention once one exists.
+  once, at startup, through govue's `envconf`. The database connection and
+  the encryption key follow `envconf`'s `SecretOrFile`/`RequiredSecretOrFile`
+  `_FILE`-suffix convention; every other setting is server and logging
+  configuration.
 - `internal/httpapi` builds the HTTP handler: liveness, readiness and
   metrics today. A later issue adds the calendar, edge and grant API, the
   webhook endpoint Google and Microsoft Graph push change notifications to,
@@ -34,10 +35,13 @@ on; every other path already exists.
   values and every documented non-default combination, shared by
   `task lint:helm` and `task validate:kubeconform` so CI and a local run
   check the exact same combinations.
-- `db/migrations/` will hold the dbmate migrations: calendars, edges, grants
-  and the event mapping table, with the row level security policies that
-  keep one user's edges and grants apart from another's, enforced by a
-  database role that is `NOSUPERUSER NOBYPASSRLS`.
+- `db/migrations/` holds the dbmate migrations: users, identities,
+  connections, calendars, edges, calendar grants and the event mapping
+  table, with the row level security policies that keep one user's rows
+  apart from another's, enforced by a database role that is
+  `NOSUPERUSER NOBYPASSRLS`. `sqlc.yaml` points sqlc's schema at this
+  directory itself, parsed statically with no database connection, so
+  `task generate:check` runs with no network and no port binding.
 - `internal/provider` will define the one connector interface every
   provider implements: list calendars, read changes since a token, create,
   update and delete an event the connector itself owns. A connector
@@ -55,13 +59,19 @@ on; every other path already exists.
   the case where source and target disagree on a rule, and the marker that
   stops a connector from reporting calbridge's own writes back as a source
   change.
-- `internal/storage` will define the domain types and the repository
+- `internal/storage` defines the domain types and the repository
   interfaces the layers above call, with nothing here importing a provider
   SDK or generated sqlc code directly.
-- `internal/storage/postgres` will be the only implementation, wiring
-  sqlc-generated queries into the repository interfaces, the split
-  solobill's `internal/storage` and `internal/storage/postgres` already
-  use.
+- `internal/storage/postgres` is the only implementation, wiring
+  sqlc-generated queries (`queries/`, committed generated code in
+  `sqlcgen/`) into the repository interfaces, the split solobill's
+  `internal/storage` and `internal/storage/postgres` already use. Every
+  user-owned table is reached only through `Store.WithUser`, which scopes
+  a transaction to one user via a transaction-local Postgres setting; row
+  level security, not this package, is what actually enforces that scope.
+  `crypto.go` encrypts and decrypts `connections.credentials` and
+  `event_mapping.encrypted_details` at the database boundary, so a caller
+  above this package never holds or passes ciphertext.
 - `internal/auth` will hold login: local accounts with password and TOTP,
   plus sign in with Google, Microsoft and Apple through govue's `oidc`
   package. calbridge owns identity and depends on no external identity
@@ -84,10 +94,14 @@ task check
 ```
 
 `task --list` shows the individual targets. `task check` runs every check
-this repository has: Go format, vet and lint, the Go test suite, markdown
+this repository has: Go format, vet and lint, a check that the committed
+sqlc output still matches `db/migrations`, the Go test suite, markdown
 lint, YAML lint, a GitHub Actions workflow lint, a secret scan, the Go
 build, the container image build, Helm chart lint and schema validation,
-and the Helm chart's own `helm-unittest` suite. A later issue that adds
-Vue or database tooling adds its own `lint:*`, `test:*` or `validate`
+and the Helm chart's own `helm-unittest` suite. `task test:integration`
+is deliberately not part of `check`: it needs a reachable Postgres, and
+`check` runs with no network and no port binding; the `integration` CI
+job runs it against a real `postgres` service container instead. A later
+issue that adds Vue tooling adds its own `lint:*`, `test:*` or `validate`
 target and extends `check` with it, rather than folding its check into an
 existing target.
