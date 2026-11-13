@@ -13,6 +13,7 @@ package sync_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -78,6 +79,13 @@ func TestEngineAgainstPostgres(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
+	// An edge spans two provider accounts, and each connector hands out
+	// calendar ids in its own space: both of these call their first
+	// calendar "cal-1", because a provider's id is opaque and means
+	// nothing outside the account it came from. calendars is unique on
+	// (connection_id, external_id), so each calendar row belongs under
+	// the connection it was actually read from, and putting both under
+	// one connection makes the two rows collide on that index.
 	source := newFakeConnector(defaultSourceCaps)
 	target := newFakeConnector(defaultTargetCaps)
 	sourceCal := source.addCalendar("Privat", provider.Calendar{TimeZone: "Europe/Berlin"})
@@ -86,34 +94,44 @@ func TestEngineAgainstPostgres(t *testing.T) {
 	var edge storage.Edge
 
 	if err := store.WithUser(ctx, user.ID, func(ctx context.Context) error {
-		connection, err := store.Connections().Create(ctx, storage.Connection{
+		sourceConnection, err := store.Connections().Create(ctx, storage.Connection{
 			UserID:      user.ID,
 			Provider:    storage.ConnectionProviderCalDAV,
 			DisplayName: "iCloud",
 			Credentials: []byte("app-specific-password"),
 		})
 		if err != nil {
-			return err
+			return fmt.Errorf("create the source connection: %w", err)
+		}
+
+		targetConnection, err := store.Connections().Create(ctx, storage.Connection{
+			UserID:      user.ID,
+			Provider:    storage.ConnectionProviderMicrosoft,
+			DisplayName: "Microsoft 365",
+			Credentials: []byte("refresh-token"),
+		})
+		if err != nil {
+			return fmt.Errorf("create the target connection: %w", err)
 		}
 
 		sourceRow, err := store.Calendars().Create(ctx, storage.Calendar{
 			UserID:       user.ID,
-			ConnectionID: connection.ID,
+			ConnectionID: sourceConnection.ID,
 			ExternalID:   sourceCal,
 			Name:         "Privat",
 		})
 		if err != nil {
-			return err
+			return fmt.Errorf("create the source calendar: %w", err)
 		}
 
 		targetRow, err := store.Calendars().Create(ctx, storage.Calendar{
 			UserID:       user.ID,
-			ConnectionID: connection.ID,
+			ConnectionID: targetConnection.ID,
 			ExternalID:   targetCal,
 			Name:         "Arbeit",
 		})
 		if err != nil {
-			return err
+			return fmt.Errorf("create the target calendar: %w", err)
 		}
 
 		edge, err = store.Edges().Create(ctx, storage.Edge{
@@ -122,10 +140,13 @@ func TestEngineAgainstPostgres(t *testing.T) {
 			TargetCalendarID: targetRow.ID,
 			DetailLevel:      storage.DetailLevelTitleTime,
 		})
+		if err != nil {
+			return fmt.Errorf("create the edge: %w", err)
+		}
 
-		return err
+		return nil
 	}); err != nil {
-		t.Fatalf("create the edge and its calendars: %v", err)
+		t.Fatalf("set up the edge: %v", err)
 	}
 
 	mask, err := sync.MaskFor(edge.DetailLevel)
