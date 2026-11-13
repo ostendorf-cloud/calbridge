@@ -17,6 +17,7 @@ import (
 	"github.com/ostendorf-cloud/govue/health"
 	"github.com/ostendorf-cloud/govue/httpserver"
 	"github.com/ostendorf-cloud/govue/logging"
+	"github.com/ostendorf-cloud/govue/metrics"
 
 	"github.com/ostendorf-cloud/calbridge/internal/config"
 	"github.com/ostendorf-cloud/calbridge/internal/httpapi"
@@ -41,22 +42,33 @@ func run() error {
 	defer stop()
 
 	healthRegistry := health.New()
+	metricsRegistry := metrics.NewRegistry()
 
-	handler, err := httpapi.NewHandler(httpapi.Deps{
-		Logger:         logger,
-		HealthRegistry: healthRegistry,
+	handlers, err := httpapi.NewHandler(httpapi.Deps{
+		Logger:          logger,
+		HealthRegistry:  healthRegistry,
+		MetricsRegistry: metricsRegistry,
 	})
 	if err != nil {
 		return fmt.Errorf("calbridge: build http handler: %w", err)
 	}
 
-	return httpserver.Run(ctx, httpserver.Config{
+	return httpserver.RunAdmin(ctx, httpserver.Config{
 		Addr:    cfg.ListenAddr,
-		Handler: handler,
+		Handler: handlers.Public,
 		Logger:  logger,
+		// DrainDelay must stay above charts/calbridge's own readiness
+		// probe periodSeconds times failureThreshold; see
+		// config.Config.DrainDelay's own doc comment.
+		DrainDelay: cfg.DrainDelay,
 		// Failing the readiness probe before the drain delay starts is
-		// what lets a load balancer stop sending new requests before the
-		// server stops accepting connections at all.
+		// what lets a load balancer stop sending new requests before
+		// either listener stops accepting connections at all. This runs
+		// once, for both listeners together; see httpserver.ServeAdmin's
+		// own doc comment.
 		BeforeShutdown: healthRegistry.Drain,
+	}, httpserver.AdminConfig{
+		Addr:    cfg.AdminListenAddr,
+		Handler: handlers.Admin,
 	})
 }

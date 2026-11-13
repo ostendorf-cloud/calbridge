@@ -47,6 +47,11 @@ tasks:
     cmds:
       - go build -o bin/calbridge ./cmd/calbridge
 
+  build:image:
+    desc: Build the container image, without pushing it anywhere
+    cmds:
+      - docker build .
+
   test:go:
     desc: Go test
     cmds:
@@ -97,6 +102,7 @@ tasks:
       - task: lint:actions
       - task: lint:secrets
       - task: build
+      - task: build:image
       - task: test:go
       - task: lint:helm
       - task: validate:kubeconform

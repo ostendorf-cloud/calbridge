@@ -36,7 +36,7 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: sets the configured listen address and log level
+  - it: sets the configured listen addresses, drain delay and log level
     template: templates/deployment.yaml
     asserts:
       - contains:
@@ -44,6 +44,16 @@ tests:
           content:
             name: LISTEN_ADDR
             value: ":8080"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ADMIN_LISTEN_ADDR
+            value: ":8081"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DRAIN_DELAY
+            value: "5s"
       - contains:
           path: spec.template.spec.containers[0].env
           content:
@@ -73,7 +83,7 @@ tests:
           path: spec.template.spec.automountServiceAccountToken
           value: false
 
-  - it: has no startup probe but has liveness and readiness probes on the right paths
+  - it: has no startup probe but has liveness and readiness probes on the admin port
     template: templates/deployment.yaml
     asserts:
       - notExists:
@@ -82,5 +92,44 @@ tests:
           path: spec.template.spec.containers[0].livenessProbe.httpGet.path
           value: /healthz
       - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.port
+          value: admin
+      - equal:
           path: spec.template.spec.containers[0].readinessProbe.httpGet.path
           value: /readyz
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.port
+          value: admin
+
+  - it: has both the public and the admin container port
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: http
+            containerPort: 8080
+            protocol: TCP
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: admin
+            containerPort: 8081
+            protocol: TCP
+
+  - it: sets an explicit termination grace period above the drain window
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 30
+
+  - it: keeps the readiness drain window inside the configured drain delay
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.periodSeconds
+          value: 2
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.failureThreshold
+          value: 1

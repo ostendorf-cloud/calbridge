@@ -1,13 +1,3 @@
-{{/*
-Enable at most one route to the Service: rendering both an Ingress and an
-HTTPRoute for the same backend would leave two controllers, potentially two
-different ones, both claiming to own traffic for this release, which is a
-configuration mistake to fail loudly on rather than something to render and
-let collide at runtime.
-*/}}
-{{- if and .Values.ingress.enabled .Values.httproute.enabled -}}
-{{ fail "ingress.enabled and httproute.enabled cannot both be true: enable at most one route to the Service." }}
-{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -51,16 +41,26 @@ spec:
             - name: http
               containerPort: {{ .Values.service.port }}
               protocol: TCP
+            # See values.yaml's own adminPort comment: liveness, readiness
+            # and metrics live here, and the probes below target this
+            # port, never http above.
+            - name: admin
+              containerPort: {{ .Values.service.adminPort }}
+              protocol: TCP
           env:
             - name: LISTEN_ADDR
               value: {{ .Values.config.listenAddr | quote }}
+            - name: ADMIN_LISTEN_ADDR
+              value: {{ .Values.config.adminListenAddr | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
+            - name: DRAIN_DELAY
+              value: {{ .Values.config.drainDelay | quote }}
           {{- if .Values.startupProbe.enabled }}
           startupProbe:
             httpGet:
               path: /healthz
-              port: http
+              port: admin
             initialDelaySeconds: {{ .Values.startupProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.startupProbe.periodSeconds }}
             failureThreshold: {{ .Values.startupProbe.failureThreshold }}
@@ -68,19 +68,25 @@ spec:
           livenessProbe:
             httpGet:
               path: /healthz
-              port: http
+              port: admin
             initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
             failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
           readinessProbe:
             httpGet:
               path: /readyz
-              port: http
+              port: admin
             initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
             failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+      # Must stay above config.drainDelay plus the time httpserver.Serve's
+      # own shutdown may take to let an in-flight request finish
+      # (httpserver.DefaultShutdownTimeout, 20s): otherwise the kubelet
+      # kills the container with SIGKILL before the graceful shutdown
+      # sequence in cmd/calbridge's main has a chance to finish on its own.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

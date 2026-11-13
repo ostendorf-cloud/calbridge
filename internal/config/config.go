@@ -21,16 +21,33 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/ostendorf-cloud/govue/envconf"
+	"github.com/ostendorf-cloud/govue/httpserver"
 	"github.com/ostendorf-cloud/govue/logging"
 )
 
 // Config is every setting calbridge reads from the environment, loaded
 // and validated once by Load.
 type Config struct {
-	// ListenAddr is where the HTTP server in internal/httpapi listens.
+	// ListenAddr is where the public HTTP handler in internal/httpapi
+	// listens.
 	ListenAddr string
+	// AdminListenAddr is the second, administrative listener govue's
+	// httpserver.RunAdmin serves alongside ListenAddr. Liveness,
+	// readiness and metrics are served there and nowhere on ListenAddr,
+	// so nothing routed through ListenAddr's Ingress or HTTPRoute ever
+	// reaches them.
+	AdminListenAddr string
+	// DrainDelay is how long httpserver.Serve waits, after
+	// healthRegistry.Drain runs and before either listener stops
+	// accepting new connections, for a readiness probe to notice and a
+	// load balancer to stop sending new requests. It must stay above the
+	// readiness probe's own periodSeconds times failureThreshold, or a
+	// probe can still be sending traffic to a listener that has already
+	// closed; charts/calbridge keeps the two in that order.
+	DrainDelay time.Duration
 	// LogLevel is the structured logger's minimum level, built once in
 	// cmd/calbridge's main and injected everywhere else.
 	LogLevel slog.Level
@@ -55,8 +72,11 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 
 	cfg := Config{
-		ListenAddr: l.String("LISTEN_ADDR", ":8080"),
+		ListenAddr:      l.String("LISTEN_ADDR", ":8080"),
+		AdminListenAddr: l.String("ADMIN_LISTEN_ADDR", ":8081"),
 	}
+
+	cfg.DrainDelay = l.Duration("DRAIN_DELAY", httpserver.DefaultDrainDelay, time.Second, 5*time.Minute)
 
 	level, err := logging.Level(l.String("LOG_LEVEL", "info"))
 	fail(err)
