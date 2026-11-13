@@ -55,6 +55,13 @@
 // reconcile, where the engine sees the whole source calendar at once; a
 // single instance change on its own is covered by its master and skipped.
 //
+// The two strategies key their copies differently, the master's own id
+// against one id per occurrence, so an edge that switches between them,
+// by a changed detail level or a changed target, would leave the copies
+// under the old key with nothing writing to them. Every pass removes
+// them, reported as ReasonStrategyChanged. Without that, lowering an
+// edge's detail level would leave the wider copy standing for good.
+//
 // # Reconcile
 //
 // Reconcile is a full pass over one edge: it reads the source calendar
@@ -75,9 +82,12 @@
 //
 // Deleting an edge deletes every event it wrote, every mapping row it
 // held, and the target calendar itself where calbridge created it. A
-// grant that no longer covers an edge has the same effect: the engine
-// checks coverage on every pass, because the database trigger behind
-// edges holds that invariant when an edge is written and not afterwards.
+// grant that no longer covers an edge has the same effect, the edge row
+// included: the engine checks coverage on every pass, because the
+// database trigger behind edges holds that invariant when an edge is
+// written and not afterwards. The reasoning, and what it costs the
+// grantee, is recorded in
+// docs/adr/0002-a-revoked-grant-deletes-the-edge.md.
 package sync
 
 import "errors"

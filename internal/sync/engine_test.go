@@ -213,9 +213,11 @@ func TestEngine_Apply_copiesWhatTheDetailLevelAllows(t *testing.T) {
 			wantVisibility:  provider.VisibilityPrivate,
 		},
 		{
-			name:        "title and time",
-			level:       storage.DetailLevelTitleTime,
-			wantSummary: "Jour fixe",
+			// The title is copied, so the restriction on it is copied too.
+			name:           "title and time",
+			level:          storage.DetailLevelTitleTime,
+			wantSummary:    "Jour fixe",
+			wantVisibility: provider.VisibilityPrivate,
 		},
 		{
 			name:  "busy block",
@@ -646,7 +648,7 @@ func TestEngine_EnforceGrants_stopsTheEdgesOverOneCalendar(t *testing.T) {
 
 	// The grant narrows to a busy block, which the edge's title and time
 	// level copies more than.
-	h.store.addGrant(storage.CalendarGrant{
+	grant := h.store.addGrant(storage.CalendarGrant{
 		OwnerUserID:    owner,
 		GranteeUserID:  h.user,
 		CalendarID:     sourceRow.ID,
@@ -656,7 +658,7 @@ func TestEngine_EnforceGrants_stopsTheEdgesOverOneCalendar(t *testing.T) {
 	h.put(meeting("Jour fixe", 4, 9))
 	h.reconcile()
 
-	report, err := h.engine.EnforceGrants(context.Background(), h.user, sourceRow.ID)
+	report, err := h.engine.EnforceGrants(context.Background(), grant)
 	if err != nil {
 		t.Fatalf("enforce grants: %v", err)
 	}

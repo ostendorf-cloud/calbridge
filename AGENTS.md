@@ -69,9 +69,9 @@ on; every other path already exists.
   full reconcile reads both calendars from the zero sync token, so it
   depends on no stored position and no delivered notification, and the
   teardown of an edge, including one whose grant was revoked, removes every
-  event it wrote. A mirrored event edited by hand in the target is
-  overwritten on the next reconcile; see
-  `docs/adr/0001-overwrite-hand-edited-mirrored-events.md`.
+  event it wrote, the edge row included. A mirrored event edited by hand
+  in the target is overwritten on the next reconcile, and a revoked grant
+  takes the edge with it; see `docs/adr/`.
 - `docs/adr/` holds the decisions worth remembering, in the MADR shape, one
   per numbered file.
 - `internal/storage` defines the domain types and the repository

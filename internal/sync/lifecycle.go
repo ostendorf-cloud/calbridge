@@ -77,17 +77,22 @@ func (e *Engine) runEdge(ctx context.Context, edge storage.Edge) (Report, error)
 	return e.Reconcile(ctx, binding)
 }
 
-// EnforceGrants checks every edge of one user that touches a calendar,
-// and tears down the ones no grant covers any more. It is what a
-// revoked grant leads to: the database refuses an edge over a calendar
-// nobody shared when the edge is written, and revoking the grant
-// afterwards does not touch the edge, so the invariant only holds where
-// something keeps checking it.
-func (e *Engine) EnforceGrants(ctx context.Context, userID, calendarID uuid.UUID) (Report, error) {
+// EnforceGrants checks the edges a grant covered and tears down the ones
+// no grant covers any more. It is what a revoked grant leads to: the
+// database refuses an edge over a calendar nobody shared when the edge is
+// written, and revoking the grant afterwards does not touch the edge, so
+// the invariant only holds where something keeps checking it.
+//
+// It takes the grant row rather than a user and a calendar because the
+// edges belong to the grantee and are invisible to anybody else. A
+// caller passing the wrong user would read an empty edge list and a nil
+// error, which is indistinguishable from nothing to do, while the edges
+// kept writing. The row carries the only pair that can be right.
+func (e *Engine) EnforceGrants(ctx context.Context, grant storage.CalendarGrant) (Report, error) {
 	var edges []storage.Edge
 
-	if err := e.scope.WithUser(ctx, userID, func(ctx context.Context) error {
-		found, err := e.edges.ListByCalendar(ctx, calendarID)
+	if err := e.scope.WithUser(ctx, grant.GranteeUserID, func(ctx context.Context) error {
+		found, err := e.edges.ListByCalendar(ctx, grant.CalendarID)
 		if err != nil {
 			return err
 		}
@@ -95,7 +100,7 @@ func (e *Engine) EnforceGrants(ctx context.Context, userID, calendarID uuid.UUID
 
 		return nil
 	}); err != nil {
-		return Report{}, fmt.Errorf("list edges over calendar %s: %w", calendarID, err)
+		return Report{}, fmt.Errorf("list edges over calendar %s: %w", grant.CalendarID, err)
 	}
 
 	var (

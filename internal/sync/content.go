@@ -124,11 +124,30 @@ func instant(t provider.EventTime) (time.Time, error) {
 // show as one copy serving two source events rather than as lost data.
 const occurrenceSeparator = "#"
 
+// occurrenceLayout is how a wall clock reading is written into an
+// occurrence's key and read back out of it.
+const occurrenceLayout = "20060102T150405"
+
 // occurrenceID is the source event id one expanded occurrence is mapped
 // under. It is stable for the occurrence's place in the series, so an
 // occurrence moved to another time keeps the same mapping row.
 func occurrenceID(masterID string, start provider.EventTime) string {
-	return masterID + occurrenceSeparator + start.Wall.Format("20060102T150405")
+	return masterID + occurrenceSeparator + start.Wall.Format(occurrenceLayout)
+}
+
+// occurrenceStart reads the wall clock reading back out of an
+// occurrence's key, and reports whether the key is one of masterID's.
+func occurrenceStart(sourceEventID, masterID string) (time.Time, bool) {
+	if !isOccurrenceOf(sourceEventID, masterID) {
+		return time.Time{}, false
+	}
+
+	at, err := time.ParseInLocation(occurrenceLayout, strings.TrimPrefix(sourceEventID, masterID+occurrenceSeparator), time.UTC)
+	if err != nil {
+		return time.Time{}, false
+	}
+
+	return at, true
 }
 
 // isOccurrenceOf reports whether a mapped source event id is one

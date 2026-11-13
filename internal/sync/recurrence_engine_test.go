@@ -121,6 +121,114 @@ func TestEngine_Recurrence_removesAnOccurrenceTheRuleStoppedProducing(t *testing
 	}
 }
 
+func TestEngine_Recurrence_leavesNothingBehindWhenTheDetailLevelIsLowered(t *testing.T) {
+	t.Parallel()
+
+	// The target holds rules, so a full copy edge writes one master. The
+	// busy block preset drops the recurrence field, which switches the
+	// edge to expansion: the master's own key is never written again, and
+	// the copy under it would otherwise stand in the target forever, at
+	// the detail level the user just lowered away from.
+	h := newHarness(t, setup{
+		targetCaps: provider.Capabilities{CalendarCreation: true, Attendees: true, NativeRecurrence: true},
+		level:      storage.DetailLevelFull,
+		window:     shortWindow,
+	})
+	h.put(weekly("RRULE:FREQ=WEEKLY;COUNT=3"))
+	h.reconcile()
+
+	if got := len(h.copies()); got != 1 {
+		t.Fatalf("copies at the full level: got %d, want 1", got)
+	}
+
+	h.setDetailLevel(storage.DetailLevelBusyBlock)
+
+	report := h.reconcile()
+	if got := report.CountReason(sync.ReasonStrategyChanged); got != 1 {
+		t.Fatalf("strategy changes: got %d, want 1 (all: %v)", got, actions(report))
+	}
+
+	copies := h.copies()
+	if len(copies) != 3 {
+		t.Fatalf("copies after lowering the level: got %d, want 3", len(copies))
+	}
+	for _, copied := range copies {
+		if copied.Summary != "" || copied.Description != "" || copied.Location != "" {
+			t.Fatalf("a copy still carries detail a busy block drops: %+v", copied)
+		}
+		if len(copied.Attendees) != 0 || len(copied.Recurrence.Rule) != 0 {
+			t.Fatalf("a copy still carries attendees or a rule: %+v", copied)
+		}
+	}
+
+	// The repair is not a one-off: the next pass finds nothing left to do.
+	wantActions(t, h.reconcile(), "none/unchanged", "none/unchanged", "none/unchanged")
+}
+
+func TestEngine_Recurrence_leavesNothingBehindWhenTheDetailLevelIsRaised(t *testing.T) {
+	t.Parallel()
+
+	// The same switch in the other direction: an edge that expanded the
+	// series starts copying the rule, and the one copy per occurrence has
+	// to go, or the target shows the series twice.
+	h := newHarness(t, setup{
+		targetCaps: provider.Capabilities{CalendarCreation: true, Attendees: true, NativeRecurrence: true},
+		level:      storage.DetailLevelBusyBlock,
+		window:     shortWindow,
+	})
+	h.put(weekly("RRULE:FREQ=WEEKLY;COUNT=3"))
+	h.reconcile()
+
+	if got := len(h.copies()); got != 3 {
+		t.Fatalf("copies at the busy block level: got %d, want 3", got)
+	}
+
+	h.setDetailLevel(storage.DetailLevelFull)
+
+	report := h.reconcile()
+	if got := report.CountReason(sync.ReasonStrategyChanged); got != 3 {
+		t.Fatalf("strategy changes: got %d, want 3 (all: %v)", got, actions(report))
+	}
+
+	copies := h.copies()
+	if len(copies) != 1 {
+		t.Fatalf("copies after raising the level: got %d, want 1", len(copies))
+	}
+	if len(copies[0].Recurrence.Rule) != 1 {
+		t.Fatalf("the copy does not carry the rule: %+v", copies[0].Recurrence)
+	}
+
+	wantActions(t, h.reconcile(), "none/unchanged")
+}
+
+func TestEngine_Recurrence_reportsAnOccurrenceThatLeftTheWindow(t *testing.T) {
+	t.Parallel()
+
+	// An occurrence the window rolled past is not a deleted event, and an
+	// operator reading the report has to be able to tell the two apart.
+	h := newHarness(t, setup{window: shortWindow})
+	h.put(weekly("RRULE:FREQ=WEEKLY;COUNT=4"))
+	h.reconcile()
+
+	before := len(h.copies())
+	if before == 0 {
+		t.Fatal("the first pass copied nothing")
+	}
+
+	h.moveNow(testNow.AddDate(0, 0, 21))
+
+	report := h.reconcile()
+	if got := report.CountReason(sync.ReasonOutOfWindow); got == 0 {
+		t.Fatalf("no occurrence reported as out of window (all: %v)", actions(report))
+	}
+	if got := report.CountReason(sync.ReasonSourceGone); got != 0 {
+		t.Fatalf("an occurrence that left the window reads as a deleted source (all: %v)", actions(report))
+	}
+	if got := len(h.copies()); got >= before {
+		t.Fatalf("copies after the window rolled: got %d, want fewer than %d", got, before)
+	}
+}
+
 func TestEngine_Recurrence_usesTheSourcesOwnInstanceForAnOverriddenOccurrence(t *testing.T) {
 	t.Parallel()
 

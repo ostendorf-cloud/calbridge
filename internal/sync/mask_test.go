@@ -5,6 +5,7 @@ package sync
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -27,9 +28,12 @@ func TestMaskFor(t *testing.T) {
 			want:  "summary,description,location,attendees,status,transparency,visibility,recurrence",
 		},
 		{
+			// The visibility travels with the title: a copy that keeps a
+			// private event's title and drops its restriction shows it to
+			// everyone the target calendar is shared with.
 			name:  "title and time",
 			level: storage.DetailLevelTitleTime,
-			want:  "summary,status,transparency,recurrence",
+			want:  "summary,status,transparency,visibility,recurrence",
 		},
 		{
 			name:  "busy block",
@@ -159,6 +163,58 @@ func TestFieldMask_project(t *testing.T) {
 	}
 	if len(reduced.Recurrence.Rule) != 0 || len(reduced.Attendees) != 0 {
 		t.Fatalf("the projection kept what the target cannot store: %+v", reduced)
+	}
+}
+
+func TestFieldMask_project_copiesNothingTheMaskDoesNotName(t *testing.T) {
+	t.Parallel()
+
+	// project is an allow-list: it names each field it copies, so a field
+	// added to provider.Event later is dropped until somebody says
+	// otherwise. This pins that. A source event with every field set,
+	// copied at the narrowest preset, must differ from the empty event in
+	// exactly the five things a busy block is.
+	loud := provider.Event{
+		ID:           "evt-1",
+		UID:          "uid-1",
+		ETag:         "etag-1",
+		Summary:      "Zahnarzt",
+		Description:  "Kontrolle, bitte Karte mitbringen",
+		Location:     "Hauptstrasse 3",
+		Start:        provider.Zoned(time.Date(2026, time.March, 4, 9, 0, 0, 0, time.UTC), "Europe/Berlin"),
+		End:          provider.Zoned(time.Date(2026, time.March, 4, 10, 0, 0, 0, time.UTC), "Europe/Berlin"),
+		Status:       provider.StatusTentative,
+		Transparency: provider.TransparencyTransparent,
+		Visibility:   provider.VisibilityConfidential,
+		Recurrence:   provider.Recurrence{Rule: []string{"RRULE:FREQ=WEEKLY"}},
+		Attendees:    []provider.Attendee{{Email: "praxis@example.com", Name: "Praxis Wagner"}},
+		Organizer:    &provider.Attendee{Email: "praxis@example.com"},
+		Marker:       provider.Marker{Edge: "edge-9", Source: "evt-9"},
+		Created:      time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC),
+		Updated:      time.Date(2026, time.February, 2, 0, 0, 0, 0, time.UTC),
+	}
+	marker := provider.Marker{Edge: "edge-1", Source: "evt-1"}
+
+	target := Endpoint{
+		Connector: stubConnector{caps: provider.Capabilities{NativeRecurrence: true, Attendees: true}},
+		TimeZone:  "Europe/Berlin",
+	}
+
+	got, err := maskBusyBlock.project(loud, target, marker)
+	if err != nil {
+		t.Fatalf("project: %v", err)
+	}
+
+	want := provider.Event{
+		Start:        loud.Start,
+		End:          loud.End,
+		Status:       loud.Status,
+		Transparency: loud.Transparency,
+		Marker:       marker,
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("the busy block copy carries more than start, end, status, transparency and the marker:\ngot  %+v\nwant %+v", got, want)
 	}
 }
 

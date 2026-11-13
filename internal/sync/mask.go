@@ -91,12 +91,18 @@ type FieldMask struct {
 
 // The preset masks the design names. A busy block carries only whether
 // the time is taken and whether the event is happening at all. Title and
-// time adds the title and the repeating rule. A full copy adds everything
-// else this package knows about.
+// time adds the title, the repeating rule and the visibility. A full
+// copy adds everything else this package knows about.
+//
+// The visibility travels with the title on purpose: an event the source
+// marks private is one whose title the owner already restricted, and a
+// copy that drops the restriction while keeping the title shows it to
+// everyone the target calendar is shared with. A busy block carries no
+// title to restrict.
 var (
 	maskBusyBlock = FieldMask{fields: FieldStatus | FieldTransparency}
-	maskTitleTime = FieldMask{fields: maskBusyBlock.fields | FieldSummary | FieldRecurrence}
-	maskFull      = FieldMask{fields: maskTitleTime.fields | FieldDescription | FieldLocation | FieldAttendees | FieldVisibility}
+	maskTitleTime = FieldMask{fields: maskBusyBlock.fields | FieldSummary | FieldRecurrence | FieldVisibility}
+	maskFull      = FieldMask{fields: maskTitleTime.fields | FieldDescription | FieldLocation | FieldAttendees}
 )
 
 // MaskFor returns the preset mask for a detail level.

@@ -63,6 +63,31 @@ type harness struct {
 	targetCal string
 	binding   sync.Binding
 	user      uuid.UUID
+	clock     *time.Time
+}
+
+// setDetailLevel changes what the edge copies, the way a user editing
+// the edge does: the stored row and the binding both move.
+func (h *harness) setDetailLevel(level storage.DetailLevel) {
+	h.t.Helper()
+
+	mask, err := sync.MaskFor(level)
+	if err != nil {
+		h.t.Fatalf("mask for %q: %v", level, err)
+	}
+
+	h.binding.Mask = mask
+	h.binding.Edge.DetailLevel = level
+	h.store.addEdge(h.binding.Edge)
+	h.binder.add(h.binding)
+}
+
+// moveNow moves the moment every pass is measured from, which is how a
+// rolling window is made to roll inside a test.
+func (h *harness) moveNow(at time.Time) {
+	h.t.Helper()
+
+	*h.clock = at
 }
 
 // newHarness builds an edge from one calendar into another, both empty.
@@ -116,6 +141,7 @@ func newHarness(t *testing.T, cfg setup) *harness {
 	binder := newFakeBinder()
 	binder.add(binding)
 
+	clock := cfg.now
 	engine, err := sync.New(sync.Options{
 		Scope:     store,
 		Edges:     store.Edges(),
@@ -124,7 +150,7 @@ func newHarness(t *testing.T, cfg setup) *harness {
 		Mappings:  store.Mappings(),
 		Binder:    binder,
 		Window:    cfg.window,
-		Now:       func() time.Time { return cfg.now },
+		Now:       func() time.Time { return clock },
 	})
 	if err != nil {
 		t.Fatalf("build engine: %v", err)
@@ -141,6 +167,7 @@ func newHarness(t *testing.T, cfg setup) *harness {
 		targetCal: targetCal,
 		binding:   binding,
 		user:      user,
+		clock:     &clock,
 	}
 }
 
