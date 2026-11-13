@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/signal"
 	"syscall"
@@ -44,10 +45,20 @@ func run() error {
 	healthRegistry := health.New()
 	metricsRegistry := metrics.NewRegistry()
 
+	// distFS is cmd/calbridge/embed.go's embedded dist/, written by
+	// "task web:build"; fs.Sub strips the leading "dist" element so
+	// internal/httpapi serves paths exactly as the built index.html
+	// references them.
+	distFS, err := fs.Sub(distFS, "dist")
+	if err != nil {
+		return fmt.Errorf("calbridge: %w", err)
+	}
+
 	handlers, err := httpapi.NewHandler(httpapi.Deps{
 		Logger:          logger,
 		HealthRegistry:  healthRegistry,
 		MetricsRegistry: metricsRegistry,
+		DistFS:          distFS,
 	})
 	if err != nil {
 		return fmt.Errorf("calbridge: build http handler: %w", err)

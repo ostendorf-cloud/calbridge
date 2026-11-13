@@ -5,13 +5,16 @@ package httpapi_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/ostendorf-cloud/govue/health"
 	"github.com/ostendorf-cloud/govue/logging"
@@ -19,6 +22,19 @@ import (
 
 	"github.com/ostendorf-cloud/calbridge/internal/httpapi"
 )
+
+// indexHTML is the SPA shell's own content, distinct from any API error
+// body, so a test can tell the fallback and a JSON answer apart.
+const indexHTML = "<!doctype html><title>calbridge test shell</title>"
+
+// testDistFS is a minimal embedded-build stand-in: an index.html and one
+// real asset, matching what vite's own build always produces.
+func testDistFS() fstest.MapFS {
+	return fstest.MapFS{
+		"index.html":    {Data: []byte(indexHTML)},
+		"assets/app.js": {Data: []byte("// test asset")},
+	}
+}
 
 // buildTestHandlers builds a real pair of handlers over a fresh
 // health.Registry and metrics registry, so a test exercises the actual
@@ -34,6 +50,7 @@ func buildTestHandlers(t *testing.T, registry *health.Registry) httpapi.Handlers
 		Logger:          logging.New(io.Discard, slog.LevelError),
 		HealthRegistry:  registry,
 		MetricsRegistry: metrics.NewRegistry(),
+		DistFS:          testDistFS(),
 	})
 	if err != nil {
 		t.Fatalf("httpapi.NewHandler() error = %v", err)
@@ -51,6 +68,7 @@ func TestNewHandler(t *testing.T) {
 		_, err := httpapi.NewHandler(httpapi.Deps{
 			HealthRegistry:  health.New(),
 			MetricsRegistry: metrics.NewRegistry(),
+			DistFS:          testDistFS(),
 		})
 		if err == nil {
 			t.Fatal("NewHandler() error = nil, want an error for a missing logger")
@@ -63,6 +81,7 @@ func TestNewHandler(t *testing.T) {
 		_, err := httpapi.NewHandler(httpapi.Deps{
 			Logger:          logging.New(io.Discard, slog.LevelError),
 			MetricsRegistry: metrics.NewRegistry(),
+			DistFS:          testDistFS(),
 		})
 		if err == nil {
 			t.Fatal("NewHandler() error = nil, want an error for a missing health registry")
@@ -75,9 +94,23 @@ func TestNewHandler(t *testing.T) {
 		_, err := httpapi.NewHandler(httpapi.Deps{
 			Logger:         logging.New(io.Discard, slog.LevelError),
 			HealthRegistry: health.New(),
+			DistFS:         testDistFS(),
 		})
 		if err == nil {
 			t.Fatal("NewHandler() error = nil, want an error for a missing metrics registry")
+		}
+	})
+
+	t.Run("missing dist filesystem is an error", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := httpapi.NewHandler(httpapi.Deps{
+			Logger:          logging.New(io.Discard, slog.LevelError),
+			HealthRegistry:  health.New(),
+			MetricsRegistry: metrics.NewRegistry(),
+		})
+		if err == nil {
+			t.Fatal("NewHandler() error = nil, want an error for a missing dist filesystem")
 		}
 	})
 
@@ -88,7 +121,7 @@ func TestNewHandler(t *testing.T) {
 		if err == nil {
 			t.Fatal("NewHandler() error = nil, want an error for every missing dependency")
 		}
-		if !errorContainsAll(err, "logger is required", "health registry is required", "metrics registry is required") {
+		if !errorContainsAll(err, "logger is required", "health registry is required", "metrics registry is required", "dist filesystem is required") {
 			t.Errorf("NewHandler() error = %v, want it to name every missing dependency", err)
 		}
 	})
@@ -218,18 +251,188 @@ func TestRequestIDHeaderIsSetOnEveryResponse(t *testing.T) {
 	}
 }
 
-func TestUnmatchedRouteAnswers404(t *testing.T) {
+func TestUnmatchedAPIRouteAnswersJSON404(t *testing.T) {
 	t.Parallel()
 
 	handlers := buildTestHandlers(t, nil)
 
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/does-not-exist", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/does-not-exist", nil)
 	rec := httptest.NewRecorder()
 
 	handlers.Public.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want %d for an unmatched route", rec.Code, http.StatusNotFound)
+		t.Errorf("status = %d, want %d for an unmatched API route", rec.Code, http.StatusNotFound)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json for an unmatched API route", ct)
+	}
+}
+
+func TestUnmatchedNonAPIRouteServesTheSPAShell(t *testing.T) {
+	t.Parallel()
+
+	handlers := buildTestHandlers(t, nil)
+
+	for _, path := range []string{"/", "/does-not-exist", "/edges/123"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+
+			handlers.Public.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Errorf("status = %d, want %d for the SPA fallback", rec.Code, http.StatusOK)
+			}
+			if rec.Body.String() != indexHTML {
+				t.Errorf("body = %q, want the embedded index.html", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestSPAFallbackServesARealAsset(t *testing.T) {
+	t.Parallel()
+
+	handlers := buildTestHandlers(t, nil)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/assets/app.js", nil)
+	rec := httptest.NewRecorder()
+
+	handlers.Public.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d for a real asset", rec.Code, http.StatusOK)
+	}
+	if rec.Body.String() != "// test asset" {
+		t.Errorf("body = %q, want the asset's own content", rec.Body.String())
+	}
+}
+
+// testClient is an http.Client with a cookie jar, pointed at a server
+// wrapping handlers.Public, so a test can exercise the login, me and
+// logout contract the way a browser actually would: cookies carried
+// across requests, never read or replayed by hand.
+func testClient(t *testing.T, handlers httpapi.Handlers) (*http.Client, string) {
+	t.Helper()
+
+	server := httptest.NewServer(handlers.Public)
+	t.Cleanup(server.Close)
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar.New() error = %v", err)
+	}
+
+	return &http.Client{Jar: jar}, server.URL
+}
+
+// do sends method/url/body through client and closes the response body
+// once t ends, so every call site reads the response without repeating
+// the request construction or the cleanup.
+func do(t *testing.T, client *http.Client, method, url, body, csrfToken string) *http.Response {
+	t.Helper()
+
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+
+	req, err := http.NewRequestWithContext(t.Context(), method, url, reader)
+	if err != nil {
+		t.Fatalf("build %s %s request: %v", method, url, err)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if csrfToken != "" {
+		req.Header.Set("X-CSRF-Token", csrfToken)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, url, err)
+	}
+	t.Cleanup(func() {
+		_ = resp.Body.Close()
+	})
+
+	return resp
+}
+
+type meResponse struct {
+	Email     string `json:"email"`
+	CSRFToken string `json:"csrf_token"`
+}
+
+func TestMeWithoutASessionIsUnauthenticated(t *testing.T) {
+	t.Parallel()
+
+	client, baseURL := testClient(t, buildTestHandlers(t, nil))
+
+	resp := do(t, client, http.MethodGet, baseURL+"/api/v1/me", "", "")
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d with no session", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestLoginRequiresAnEmail(t *testing.T) {
+	t.Parallel()
+
+	client, baseURL := testClient(t, buildTestHandlers(t, nil))
+
+	resp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/login", `{}`, "")
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d for an empty email", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestLoginStartsASessionMeAnswersItAndLogoutEndsIt(t *testing.T) {
+	t.Parallel()
+
+	client, baseURL := testClient(t, buildTestHandlers(t, nil))
+
+	loginResp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/login", `{"email":"owner@example.com"}`, "")
+	if loginResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("login status = %d, want %d", loginResp.StatusCode, http.StatusNoContent)
+	}
+
+	meResp := do(t, client, http.MethodGet, baseURL+"/api/v1/me", "", "")
+	if meResp.StatusCode != http.StatusOK {
+		t.Fatalf("me status = %d, want %d once logged in", meResp.StatusCode, http.StatusOK)
+	}
+
+	var me meResponse
+	if err := json.NewDecoder(meResp.Body).Decode(&me); err != nil {
+		t.Fatalf("decode /api/v1/me body: %v", err)
+	}
+	if me.Email != "owner@example.com" {
+		t.Errorf("me.Email = %q, want %q", me.Email, "owner@example.com")
+	}
+	if me.CSRFToken == "" {
+		t.Error("me.CSRFToken is empty, want the session's own csrf token")
+	}
+
+	// A logout without the CSRF token the session actually holds is
+	// refused: the protector must guard this route like every other
+	// unsafe one.
+	forbidden := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/logout", "", "")
+	if forbidden.StatusCode != http.StatusForbidden {
+		t.Errorf("logout without a csrf token status = %d, want %d", forbidden.StatusCode, http.StatusForbidden)
+	}
+
+	logoutResp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/logout", "", me.CSRFToken)
+	if logoutResp.StatusCode != http.StatusNoContent {
+		t.Errorf("logout status = %d, want %d", logoutResp.StatusCode, http.StatusNoContent)
+	}
+
+	afterLogout := do(t, client, http.MethodGet, baseURL+"/api/v1/me", "", "")
+	if afterLogout.StatusCode != http.StatusUnauthorized {
+		t.Errorf("me status after logout = %d, want %d", afterLogout.StatusCode, http.StatusUnauthorized)
 	}
 }
 
