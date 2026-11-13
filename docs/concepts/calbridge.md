@@ -31,6 +31,10 @@ Selective calendar mirroring across providers, one detail level per edge.
   CalDAV profile, without changing the sync engine, the database schema or the UI.
 - A user grants another user access to one of their calendars at a maximum detail level; the grantee
   builds edges that the grant bounds.
+- Anyone can create an account themselves, with a password or with a provider sign-in, without an
+  invite and without an account in anyone's identity provider.
+- An AI agent can read the sync topology and set up an edge or a grant through an MCP server, within
+  the same authorisation rules a person gets.
 - A change reaches its targets within a minute where the provider pushes a notification, and within
   the reconcile interval otherwise.
 - Deleting an edge removes every event it wrote, and leaves nothing behind in the target account.
@@ -44,7 +48,7 @@ Selective calendar mirroring across providers, one detail level per edge.
   engine must detect rather than a supported mode.
 - No providers beyond the three named: the CalDAV connector is generic, but iCloud is the only
   profile shipped and tested in the first version, and Exchange on-premises is out entirely.
-- No public landing page, no self-signup, no billing.
+- No billing, no plans, no public landing page beyond what Google's verification requires.
 - No mobile application; the web UI is responsive and that is all.
 
 ## Approach
@@ -53,8 +57,17 @@ Selective calendar mirroring across providers, one detail level per edge.
   `charts/calbridge`, plus a `docker-compose.yaml` for local work.
 - Postgres with dbmate migrations and sqlc, row level security per tenant, enforced by a database
   role that is `NOSUPERUSER NOBYPASSRLS`.
-- Login through govue's `oidc` against Keycloak, plus local accounts with password and TOTP issued
-  by invite.
+- calbridge owns identity: a local account with password and TOTP, or sign in with Google,
+  Microsoft or Apple through govue's `oidc`. There is no dependency on an external identity
+  provider, which is what lets a stranger sign up rather than be invited into one cluster.
+- Signing in with a provider asks for identity scopes only. Connecting that provider's calendar is
+  a separate consent step, because the calendar scopes are sensitive and asking for them at sign-up
+  costs both trust and Google's verification.
+- Apple is offered as a sign-in, which grants identity and nothing else; an iCloud calendar is
+  still connected separately with an Apple ID and an app-specific password.
+- A provider identity used to sign in is never matched against a provider account someone else
+  connected as a calendar. The collision creates a separate account, so controlling a mailbox never
+  becomes a way into another user's calbridge account.
 - `internal/provider` defines one connector interface: list calendars, read changes since a token,
   create, update and delete an event the connector itself owns.
 - A connector registers itself into a registry under a provider id, so adding one is a new package
@@ -88,6 +101,16 @@ Selective calendar mirroring across providers, one detail level per edge.
   homepage and privacy policy that Google's brand and domain validation checks.
 - A grant is its own record (owner, grantee, calendar, maximum detail level) and is checked on every
   edge write, so revoking it stops the sync without the grantee's cooperation.
+- A separate MCP server, its own binary and deployment, lets an AI agent read the sync topology and
+  create or change edges and grants on a user's behalf, so setting up a share can be asked for
+  rather than clicked.
+- The MCP server cannot create, change or delete a provider connection, so no agent ever handles a
+  credential or reaches a calendar the user has not already connected by hand.
+- It authenticates either by OAuth against calbridge's own accounts, for a client that speaks the
+  MCP authorisation flow, or by a scoped API token the user mints and revokes in the UI, shown once
+  and stored hashed.
+- It calls the same authorisation rules as the web API rather than its own copy, so a grant bounds
+  an agent exactly as it bounds a person.
 
 ## Alternatives
 
@@ -120,6 +143,12 @@ Selective calendar mirroring across providers, one detail level per edge.
   access to the whole iCloud account, and breaks silently when the user revokes it.
 - iCloud `sync-collection` pages its results and can truncate a response, so the CalDAV connector
   has to handle partial answers and invalidated tokens rather than assume one round trip.
+- Open signup turns calbridge from one person's tool into a service holding strangers' calendar
+  credentials, which raises the bar on abuse handling, account recovery and the encryption key's
+  custody well above what a private deployment needs.
+- An MCP server that can create grants is a path from a compromised agent or a leaked token to a
+  shared calendar. Keeping connections out of its reach, scoping and expiring its tokens, and
+  logging every grant it creates are what keep that bounded.
 
 ## Open questions
 
@@ -147,6 +176,12 @@ Selective calendar mirroring across providers, one detail level per edge.
 - The sync graph is drawn with Vue Flow rather than a hand-rolled canvas.
 - Connectors register themselves and declare capabilities, and CalDAV is generic with per-server
   profiles, so a provider is added without touching the engine.
+- calbridge owns identity, with local accounts and provider sign-in, rather than depending on an
+  external identity provider.
+- A provider identity used for sign-in is never linked to a provider account someone else connected
+  as a calendar.
+- The MCP server is its own binary, may not touch connections, and authenticates by OAuth or a
+  scoped API token.
 
 ## Delivery order
 
@@ -154,3 +189,4 @@ Selective calendar mirroring across providers, one detail level per edge.
 2. The connector interface and the iCloud CalDAV connector, with a reconcile loop and polling only.
 3. The Google and Microsoft connectors, then push notifications and the webhook endpoint.
 4. The Vue Flow canvas, detail-level editing and cross-user grants.
+5. The MCP server, once there are edges and grants for it to create.
