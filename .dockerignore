@@ -4,3 +4,6 @@
 docs
 bin
 *.md
+web/node_modules
+web/.pnpm-store
+cmd/calbridge/dist

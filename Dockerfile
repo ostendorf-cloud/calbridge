@@ -18,8 +18,13 @@ WORKDIR /src
 # distributing it with v25, so the pinned node image above carries no corepack
 # binary at all. This is the migration nodejs/corepack documents. See the
 # Deviations section in AGENTS.md for why a tool arrives through npm here and
-# nowhere else.
-RUN npm install -g corepack && corepack enable && corepack prepare pnpm@12.19.0 --activate
+# nowhere else. Pinned to an exact version, like every other tool in this
+# file, rather than left to resolve whatever npm serves on the day this
+# image builds; internal/depsync's TestDockerfilePnpmPinMatchesMise checks
+# the pnpm pin just below against mise.toml's own, but corepack itself has
+# no second file to check it against, so a human bump is the only update
+# path for this line.
+RUN npm install -g corepack@0.36.0 && corepack enable && corepack prepare pnpm@12.19.0 --activate
 
 COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml web/
 RUN cd web && pnpm install --frozen-lockfile

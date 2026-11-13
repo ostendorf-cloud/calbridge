@@ -20,6 +20,27 @@ export function detectPreferredLocale(languages: readonly string[]): Locale {
   return primary === 'en' ? 'en' : DEFAULT_LOCALE
 }
 
+/** localeStorageKey is where a chosen locale persists across visits.
+ *  Nothing writes it yet: a later issue's locale toggle is the first
+ *  writer, and reading it already here means that toggle needs no
+ *  change to main.ts's own startup order once it lands. */
+const localeStorageKey = 'calbridge-locale'
+
+/** readStoredLocale reads a previously chosen locale back out of storage,
+ *  or undefined when none was stored, the key held something other than
+ *  a supported locale, or storage itself is unreachable (a private
+ *  window, cleared site data, or storage blocked outright). */
+export function readStoredLocale(
+  storage: Pick<Storage, 'getItem'> = localStorage,
+): Locale | undefined {
+  try {
+    const stored = storage.getItem(localeStorageKey)
+    return stored && isLocale(stored) ? stored : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** createAppI18n builds one vue-i18n instance. English falls back to
  *  German for any key not yet translated, rather than showing the raw
  *  key: fallbackLocale is what gives that for free, since German is

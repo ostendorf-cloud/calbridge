@@ -11,6 +11,13 @@
  * slate blue-grey neutral with a calendar-blue accent, chosen only to be
  * professional and readable, not as a considered brand decision. A later
  * branding pass replaces the seed colours and regenerates.
+ *
+ * No check runs today to fail when calbridge.css stops matching
+ * seed.json: the generator the regeneration command above calls lives in
+ * govue's own scripts/, which web/package.json's pnpm git dependency
+ * does not publish (its "files" field ships src/ only), so nothing in
+ * this repository can invoke it without a separate govue checkout. A
+ * task check:theme is worth adding once that generator can run in CI.
  */
 @import '@ostendorf-cloud/govue/styles.css';
 @import './theme/calbridge.css';

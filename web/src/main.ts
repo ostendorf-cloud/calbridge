@@ -2,7 +2,7 @@ import { createApp } from 'vue'
 import { useTheme } from '@ostendorf-cloud/govue'
 
 import App from './App.vue'
-import { createAppI18n, detectPreferredLocale, isLocale, type Locale } from './i18n'
+import { createAppI18n, detectPreferredLocale, readStoredLocale } from './i18n'
 import { createAppRouter } from './router'
 import './styles.css'
 
@@ -12,18 +12,13 @@ import './styles.css'
 // useTheme's own documented default.
 useTheme({ theme: 'calbridge' })
 
-function readStoredLocale(): Locale | undefined {
-  try {
-    const stored = localStorage.getItem('calbridge-locale')
-    return stored && isLocale(stored) ? stored : undefined
-  } catch {
-    // A private window, cleared site data, or storage that is blocked.
-    return undefined
-  }
-}
-
 const initialLocale =
   readStoredLocale() ?? detectPreferredLocale(navigator.languages ?? [navigator.language])
+
+// The lang attribute index.html ships statically has to be set from the
+// resolved locale before any content renders, or an English visitor gets
+// the English strings inside a document still declared as German.
+document.documentElement.lang = initialLocale
 
 const i18n = createAppI18n(initialLocale)
 const router = createAppRouter()
