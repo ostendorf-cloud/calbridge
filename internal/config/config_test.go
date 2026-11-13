@@ -4,23 +4,42 @@
 package config
 
 import (
+	"encoding/hex"
 	"testing"
 	"time"
 )
 
-// env returns a getenv function backed by m, so a test can start from a
-// known map and change one entry.
-func env(m map[string]string) func(string) string {
-	return func(key string) string { return m[key] }
+// validEnv returns a getenv function satisfying every required field, so
+// a test can start from a known-good baseline and change one thing. A
+// key set to "" in overrides is removed from the environment instead of
+// set to an empty string, so a test can exercise a missing required
+// field.
+func validEnv(overrides map[string]string) func(string) string {
+	env := map[string]string{
+		"DATABASE_URL":      "postgres://localhost:5432/calbridge?sslmode=disable",
+		"DATABASE_USER":     "calbridge",
+		"DATABASE_PASSWORD": "a-password",
+		"ENCRYPTION_KEY":    hex.EncodeToString(make([]byte, 32)),
+	}
+
+	for k, v := range overrides {
+		if v == "" {
+			delete(env, k)
+			continue
+		}
+		env[k] = v
+	}
+
+	return func(key string) string { return env[key] }
 }
 
 func TestLoad(t *testing.T) {
 	t.Parallel()
 
-	t.Run("defaults with no environment set", func(t *testing.T) {
+	t.Run("happy path", func(t *testing.T) {
 		t.Parallel()
 
-		cfg, err := Load(env(nil))
+		cfg, err := Load(validEnv(nil))
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
@@ -36,12 +55,18 @@ func TestLoad(t *testing.T) {
 		if cfg.LogLevel.String() != "INFO" {
 			t.Errorf("LogLevel = %v, want default info", cfg.LogLevel)
 		}
+		if cfg.DatabaseUser != "calbridge" {
+			t.Errorf("DatabaseUser = %q, want calbridge", cfg.DatabaseUser)
+		}
+		if len(cfg.EncryptionKey) != 32 {
+			t.Errorf("EncryptionKey decodes to %d bytes, want 32", len(cfg.EncryptionKey))
+		}
 	})
 
 	t.Run("listen addr override", func(t *testing.T) {
 		t.Parallel()
 
-		cfg, err := Load(env(map[string]string{"LISTEN_ADDR": ":9090"}))
+		cfg, err := Load(validEnv(map[string]string{"LISTEN_ADDR": ":9090"}))
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
@@ -53,7 +78,7 @@ func TestLoad(t *testing.T) {
 	t.Run("admin listen addr override", func(t *testing.T) {
 		t.Parallel()
 
-		cfg, err := Load(env(map[string]string{"ADMIN_LISTEN_ADDR": ":9091"}))
+		cfg, err := Load(validEnv(map[string]string{"ADMIN_LISTEN_ADDR": ":9091"}))
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
@@ -65,7 +90,7 @@ func TestLoad(t *testing.T) {
 	t.Run("drain delay override", func(t *testing.T) {
 		t.Parallel()
 
-		cfg, err := Load(env(map[string]string{"DRAIN_DELAY": "5s"}))
+		cfg, err := Load(validEnv(map[string]string{"DRAIN_DELAY": "5s"}))
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
@@ -77,7 +102,7 @@ func TestLoad(t *testing.T) {
 	t.Run("drain delay below the minimum is an error", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := Load(env(map[string]string{"DRAIN_DELAY": "100ms"}))
+		_, err := Load(validEnv(map[string]string{"DRAIN_DELAY": "100ms"}))
 		if err == nil {
 			t.Fatal("Load() error = nil, want an error for a DRAIN_DELAY below the minimum")
 		}
@@ -86,7 +111,7 @@ func TestLoad(t *testing.T) {
 	t.Run("log level override", func(t *testing.T) {
 		t.Parallel()
 
-		cfg, err := Load(env(map[string]string{"LOG_LEVEL": "debug"}))
+		cfg, err := Load(validEnv(map[string]string{"LOG_LEVEL": "debug"}))
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
@@ -98,9 +123,72 @@ func TestLoad(t *testing.T) {
 	t.Run("invalid log level is an error", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := Load(env(map[string]string{"LOG_LEVEL": "not-a-level"}))
+		_, err := Load(validEnv(map[string]string{"LOG_LEVEL": "not-a-level"}))
 		if err == nil {
 			t.Fatal("Load() error = nil, want an error for an invalid LOG_LEVEL")
+		}
+	})
+
+	t.Run("missing database url is an error", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := Load(validEnv(map[string]string{"DATABASE_URL": ""}))
+		if err == nil {
+			t.Fatal("Load() error = nil, want an error for a missing DATABASE_URL")
+		}
+	})
+
+	t.Run("missing database user is an error", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := Load(validEnv(map[string]string{"DATABASE_USER": ""}))
+		if err == nil {
+			t.Fatal("Load() error = nil, want an error for a missing DATABASE_USER")
+		}
+	})
+
+	t.Run("missing database password is an error", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := Load(validEnv(map[string]string{"DATABASE_PASSWORD": ""}))
+		if err == nil {
+			t.Fatal("Load() error = nil, want an error for a missing DATABASE_PASSWORD")
+		}
+	})
+
+	t.Run("missing encryption key is an error", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := Load(validEnv(map[string]string{"ENCRYPTION_KEY": ""}))
+		if err == nil {
+			t.Fatal("Load() error = nil, want an error for a missing ENCRYPTION_KEY")
+		}
+	})
+
+	t.Run("encryption key too short", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := Load(validEnv(map[string]string{"ENCRYPTION_KEY": hex.EncodeToString(make([]byte, 16))}))
+		if err == nil {
+			t.Fatal("Load() error = nil, want an error for an encryption key under 32 bytes")
+		}
+	})
+
+	t.Run("encryption key too long", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := Load(validEnv(map[string]string{"ENCRYPTION_KEY": hex.EncodeToString(make([]byte, 64))}))
+		if err == nil {
+			t.Fatal("Load() error = nil, want an error for an encryption key over 32 bytes")
+		}
+	})
+
+	t.Run("encryption key not hex", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := Load(validEnv(map[string]string{"ENCRYPTION_KEY": "not-hex!"}))
+		if err == nil {
+			t.Fatal("Load() error = nil, want an error for a non-hex ENCRYPTION_KEY")
 		}
 	})
 }
@@ -108,13 +196,16 @@ func TestLoad(t *testing.T) {
 // TestLoadWithNilGetenvReadsTheRealProcessEnvironment is its own top
 // level test, not a TestLoad subtest: t.Setenv forbids a parallel
 // ancestor, and TestLoad's own subtests above all call t.Parallel(). It
-// pins the two keys a runner's own ambient environment could otherwise
-// set, for example a LOG_LEVEL left exported by the shell that started
-// this test run, rather than asserting only that Load(nil) returns no
-// error regardless of what that environment happens to contain.
+// sets every required variable itself, through t.Setenv, rather than
+// relying on validEnv's map, since Load(nil) reads the real process
+// environment, not a map.
 func TestLoadWithNilGetenvReadsTheRealProcessEnvironment(t *testing.T) {
 	t.Setenv("LISTEN_ADDR", "")
 	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("DATABASE_URL", "postgres://localhost:5432/calbridge?sslmode=disable")
+	t.Setenv("DATABASE_USER", "calbridge")
+	t.Setenv("DATABASE_PASSWORD", "a-password")
+	t.Setenv("ENCRYPTION_KEY", hex.EncodeToString(make([]byte, 32)))
 
 	cfg, err := Load(nil)
 	if err != nil {
