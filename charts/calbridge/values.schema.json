@@ -64,7 +64,7 @@
     },
     "service": {
       "type": "object",
-      "required": ["type", "port"],
+      "required": ["type", "port", "adminPort"],
       "properties": {
         "type": {
           "type": "string",
@@ -74,6 +74,12 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 65535
+        },
+        "adminPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "The administrative container port cmd/calbridge serves liveness, readiness and metrics on through govue's httpserver.RunAdmin. Must match config.adminListenAddr. Exposed on the Service as its own named port; the Ingress and the HTTPRoute still only ever route to service.port, never here."
         }
       }
     },
@@ -142,11 +148,22 @@
     "nodeSelector": { "type": "object" },
     "tolerations": { "type": "array" },
     "affinity": { "type": "object" },
+    "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1 },
     "config": {
       "type": "object",
-      "required": ["listenAddr"],
+      "required": ["listenAddr", "adminListenAddr", "drainDelay"],
       "properties": {
         "listenAddr": { "type": "string", "minLength": 1 },
+        "adminListenAddr": {
+          "type": "string",
+          "minLength": 1,
+          "description": "ADMIN_LISTEN_ADDR. Must match service.adminPort. Liveness, readiness and metrics are served here, never on listenAddr; see service.adminPort's own description."
+        },
+        "drainDelay": {
+          "type": "string",
+          "minLength": 1,
+          "description": "DRAIN_DELAY, a Go duration such as \"5s\". Must stay above readinessProbe.periodSeconds times readinessProbe.failureThreshold."
+        },
         "logLevel": {
           "type": "string",
           "enum": ["debug", "info", "warn", "error"]

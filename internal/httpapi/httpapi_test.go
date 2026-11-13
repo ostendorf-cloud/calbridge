@@ -15,29 +15,31 @@ import (
 
 	"github.com/ostendorf-cloud/govue/health"
 	"github.com/ostendorf-cloud/govue/logging"
+	"github.com/ostendorf-cloud/govue/metrics"
 
 	"github.com/ostendorf-cloud/calbridge/internal/httpapi"
 )
 
-// buildTestHandler builds a real handler over a fresh health.Registry, so
-// a test exercises the actual middleware chain and routing, with no
-// network.
-func buildTestHandler(t *testing.T, registry *health.Registry) http.Handler {
+// buildTestHandlers builds a real pair of handlers over a fresh
+// health.Registry and metrics registry, so a test exercises the actual
+// middleware chains and routing, with no network.
+func buildTestHandlers(t *testing.T, registry *health.Registry) httpapi.Handlers {
 	t.Helper()
 
 	if registry == nil {
 		registry = health.New()
 	}
 
-	handler, err := httpapi.NewHandler(httpapi.Deps{
-		Logger:         logging.New(io.Discard, slog.LevelError),
-		HealthRegistry: registry,
+	handlers, err := httpapi.NewHandler(httpapi.Deps{
+		Logger:          logging.New(io.Discard, slog.LevelError),
+		HealthRegistry:  registry,
+		MetricsRegistry: metrics.NewRegistry(),
 	})
 	if err != nil {
 		t.Fatalf("httpapi.NewHandler() error = %v", err)
 	}
 
-	return handler
+	return handlers
 }
 
 func TestNewHandler(t *testing.T) {
@@ -46,7 +48,10 @@ func TestNewHandler(t *testing.T) {
 	t.Run("missing logger is an error", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := httpapi.NewHandler(httpapi.Deps{HealthRegistry: health.New()})
+		_, err := httpapi.NewHandler(httpapi.Deps{
+			HealthRegistry:  health.New(),
+			MetricsRegistry: metrics.NewRegistry(),
+		})
 		if err == nil {
 			t.Fatal("NewHandler() error = nil, want an error for a missing logger")
 		}
@@ -55,9 +60,24 @@ func TestNewHandler(t *testing.T) {
 	t.Run("missing health registry is an error", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := httpapi.NewHandler(httpapi.Deps{Logger: logging.New(io.Discard, slog.LevelError)})
+		_, err := httpapi.NewHandler(httpapi.Deps{
+			Logger:          logging.New(io.Discard, slog.LevelError),
+			MetricsRegistry: metrics.NewRegistry(),
+		})
 		if err == nil {
 			t.Fatal("NewHandler() error = nil, want an error for a missing health registry")
+		}
+	})
+
+	t.Run("missing metrics registry is an error", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := httpapi.NewHandler(httpapi.Deps{
+			Logger:         logging.New(io.Discard, slog.LevelError),
+			HealthRegistry: health.New(),
+		})
+		if err == nil {
+			t.Fatal("NewHandler() error = nil, want an error for a missing metrics registry")
 		}
 	})
 
@@ -68,17 +88,17 @@ func TestNewHandler(t *testing.T) {
 		if err == nil {
 			t.Fatal("NewHandler() error = nil, want an error for every missing dependency")
 		}
-		if !errorContainsBoth(err, "logger is required", "health registry is required") {
-			t.Errorf("NewHandler() error = %v, want it to name both missing dependencies", err)
+		if !errorContainsAll(err, "logger is required", "health registry is required", "metrics registry is required") {
+			t.Errorf("NewHandler() error = %v, want it to name every missing dependency", err)
 		}
 	})
 }
 
-func TestHealthAndMetricsEndpoints(t *testing.T) {
+func TestAdminHealthAndMetricsEndpoints(t *testing.T) {
 	t.Parallel()
 
 	registry := health.New()
-	handler := buildTestHandler(t, registry)
+	handlers := buildTestHandlers(t, registry)
 
 	tests := []struct {
 		name       string
@@ -97,10 +117,31 @@ func TestHealthAndMetricsEndpoints(t *testing.T) {
 			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, tt.path, nil)
 			rec := httptest.NewRecorder()
 
-			handler.ServeHTTP(rec, req)
+			handlers.Admin.ServeHTTP(rec, req)
 
 			if rec.Code != tt.wantStatus {
 				t.Errorf("status = %d, want %d", rec.Code, tt.wantStatus)
+			}
+		})
+	}
+}
+
+func TestAdminHealthAndMetricsEndpointsAreUnreachableOnPublic(t *testing.T) {
+	t.Parallel()
+
+	handlers := buildTestHandlers(t, nil)
+
+	for _, path := range []string{"/healthz", "/readyz", "/metrics"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+
+			handlers.Public.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Errorf("status = %d, want %d: liveness, readiness and metrics must not be reachable on Public", rec.Code, http.StatusNotFound)
 			}
 		})
 	}
@@ -110,14 +151,14 @@ func TestReadinessFailsOnceDraining(t *testing.T) {
 	t.Parallel()
 
 	registry := health.New()
-	handler := buildTestHandler(t, registry)
+	handlers := buildTestHandlers(t, registry)
 
 	registry.Drain()
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 
-	handler.ServeHTTP(rec, req)
+	handlers.Admin.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want %d once draining", rec.Code, http.StatusServiceUnavailable)
@@ -129,27 +170,27 @@ func TestReadinessFailsOnAFailingCheck(t *testing.T) {
 
 	registry := health.New()
 	registry.Add("fixture", 0, func(context.Context) error { return errors.New("unreachable") })
-	handler := buildTestHandler(t, registry)
+	handlers := buildTestHandlers(t, registry)
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 
-	handler.ServeHTTP(rec, req)
+	handlers.Admin.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want %d for a failing check", rec.Code, http.StatusServiceUnavailable)
 	}
 }
 
-func TestSecurityHeadersAreSetOnEveryResponse(t *testing.T) {
+func TestSecurityHeadersAreSetOnEveryPublicResponse(t *testing.T) {
 	t.Parallel()
 
-	handler := buildTestHandler(t, nil)
+	handlers := buildTestHandlers(t, nil)
 
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/does-not-exist", nil)
 	rec := httptest.NewRecorder()
 
-	handler.ServeHTTP(rec, req)
+	handlers.Public.ServeHTTP(rec, req)
 
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Errorf("X-Content-Type-Options = %q, want %q", got, "nosniff")
@@ -159,37 +200,49 @@ func TestSecurityHeadersAreSetOnEveryResponse(t *testing.T) {
 func TestRequestIDHeaderIsSetOnEveryResponse(t *testing.T) {
 	t.Parallel()
 
-	handler := buildTestHandler(t, nil)
+	handlers := buildTestHandlers(t, nil)
 
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/healthz", nil)
-	rec := httptest.NewRecorder()
+	for name, handler := range map[string]http.Handler{"public": handlers.Public, "admin": handlers.Admin} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	handler.ServeHTTP(rec, req)
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/does-not-exist", nil)
+			rec := httptest.NewRecorder()
 
-	if got := rec.Header().Get("X-Request-Id"); got == "" {
-		t.Error("X-Request-Id header is empty, want a generated request id")
+			handler.ServeHTTP(rec, req)
+
+			if got := rec.Header().Get("X-Request-Id"); got == "" {
+				t.Error("X-Request-Id header is empty, want a generated request id")
+			}
+		})
 	}
 }
 
 func TestUnmatchedRouteAnswers404(t *testing.T) {
 	t.Parallel()
 
-	handler := buildTestHandler(t, nil)
+	handlers := buildTestHandlers(t, nil)
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/does-not-exist", nil)
 	rec := httptest.NewRecorder()
 
-	handler.ServeHTTP(rec, req)
+	handlers.Public.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want %d for an unmatched route", rec.Code, http.StatusNotFound)
 	}
 }
 
-// errorContainsBoth reports whether err's message contains both substrings,
-// used only to assert that NewHandler joins every construction problem
-// into one error rather than reporting the first and discarding the rest.
-func errorContainsBoth(err error, a, b string) bool {
+// errorContainsAll reports whether err's message contains every one of
+// subs, used only to assert that NewHandler joins every construction
+// problem into one error rather than reporting the first and discarding
+// the rest.
+func errorContainsAll(err error, subs ...string) bool {
 	msg := err.Error()
-	return strings.Contains(msg, a) && strings.Contains(msg, b)
+	for _, sub := range subs {
+		if !strings.Contains(msg, sub) {
+			return false
+		}
+	}
+	return true
 }

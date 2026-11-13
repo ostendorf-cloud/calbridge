@@ -1,0 +1,55 @@
+{{/*
+Validations that must fail the render before any object is emitted. Kept
+out of the workload templates they would otherwise clutter: a validation
+is a decision about the values, not a Kubernetes object, so it belongs
+where a reader looks for one rather than inside templates/deployment.yaml.
+This file renders no object itself; every entry below only ever fails or
+produces no output.
+*/}}
+
+{{/*
+Enable at most one route to the Service: rendering both an Ingress and an
+HTTPRoute for the same backend would leave two controllers, potentially two
+different ones, both claiming to own traffic for this release, which is a
+configuration mistake to fail loudly on rather than something to render and
+let collide at runtime.
+*/}}
+{{- if and .Values.ingress.enabled .Values.httproute.enabled -}}
+{{ fail "ingress.enabled and httproute.enabled cannot both be true: enable at most one route to the Service." }}
+{{- end -}}
+
+{{/*
+config.listenAddr and service.port both name the same public container
+port by two different values. Letting them disagree renders a Service
+and a set of probes that still point at the old port while cmd/calbridge
+actually listens on the new one, and the pod then crash-loops on its own
+liveness probe.
+*/}}
+{{- if ne (include "calbridge.portFromAddr" .Values.config.listenAddr) (.Values.service.port | toString) -}}
+{{ fail (printf "config.listenAddr (%s) and service.port (%v) disagree on the port: both must name the same container port." .Values.config.listenAddr .Values.service.port) }}
+{{- end -}}
+
+{{/*
+The same disagreement, for the administrative listener: config.adminListenAddr
+and service.adminPort must name the same port, so the admin containerPort and
+the liveness, readiness and metrics probes stay pointed at where
+cmd/calbridge actually listens.
+*/}}
+{{- if ne (include "calbridge.portFromAddr" .Values.config.adminListenAddr) (.Values.service.adminPort | toString) -}}
+{{ fail (printf "config.adminListenAddr (%s) and service.adminPort (%v) disagree on the port: both must name the same container port." .Values.config.adminListenAddr .Values.service.adminPort) }}
+{{- end -}}
+
+{{/*
+podLabels merges onto the pod template at the same level as
+calbridge.labels, which includes calbridge.selectorLabels. A user-supplied
+app.kubernetes.io/name or app.kubernetes.io/instance there would silently
+change what the Deployment's own immutable selector matches, which
+Kubernetes then refuses at upgrade time with a "field is immutable" error
+that names neither podLabels nor this chart. Failing here instead, with
+the actual cause, is strictly better than reproducing that error.
+*/}}
+{{- range $key, $_ := .Values.podLabels -}}
+{{- if or (eq $key "app.kubernetes.io/name") (eq $key "app.kubernetes.io/instance") -}}
+{{ fail (printf "podLabels must not set %s: it collides with calbridge's own immutable selector label." $key) }}
+{{- end -}}
+{{- end -}}

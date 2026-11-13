@@ -41,9 +41,9 @@ task check
 
 Runs every check this repository has: Go format, vet and lint, the Go test
 suite, markdown lint, YAML lint, a GitHub Actions workflow lint, a secret
-scan, the Go build, Helm chart lint and schema validation, and the Helm
-chart's own `helm-unittest` suite. `task --list` shows the individual
-targets.
+scan, the Go build, the container image build, Helm chart lint and schema
+validation, and the Helm chart's own `helm-unittest` suite. `task --list`
+shows the individual targets.
 
 Releases will be driven by
 [release-me](https://github.com/ostendorf-cloud/release-me) once a first

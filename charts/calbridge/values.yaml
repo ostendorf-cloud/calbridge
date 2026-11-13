@@ -46,14 +46,29 @@ securityContext:
 
 service:
   type: ClusterIP
-  # Also used as the container port and for the probes: must match the port
-  # encoded in config.listenAddr (default ":8080" for both).
+  # Also used as the public container port: must match the port encoded in
+  # config.listenAddr (default ":8080" for both). No probe targets this
+  # port; see adminPort below.
   port: 8080
+  # The second, administrative container port cmd/calbridge listens on
+  # through govue's httpserver.RunAdmin: liveness, readiness and metrics
+  # live here, nowhere on port above. Must match the port encoded in
+  # config.adminListenAddr (default ":8081" for both).
+  #
+  # Exposed on the Service as its own named port (see templates/service.yaml);
+  # templates/ingress.yaml and templates/httproute.yaml both still only ever
+  # route to port above, never to this one, so a caller reaching this
+  # application through either still cannot scrape its metrics or poll its
+  # probes that way. Leaving this off the Service entirely would not
+  # narrow that further: a pod IP is routable from anywhere in the cluster
+  # regardless of whether the Service also exposes the port. Restricting
+  # that for real is a NetworkPolicy, which this chart does not ship.
+  adminPort: 8081
 
 # Disabled by default. Enable at most one of ingress and httproute: the
 # render fails with a readable message when both are enabled, rather than
 # emitting two conflicting routes to the same Service (see
-# templates/deployment.yaml's fail guard).
+# templates/validations.yaml).
 ingress:
   enabled: false
   className: ""
@@ -106,17 +121,40 @@ livenessProbe:
   periodSeconds: 10
   failureThreshold: 3
 
+# periodSeconds times failureThreshold is the drain window: how long the
+# Service and the route keep sending new connections to this pod after it
+# starts shutting down, before Kubernetes removes it from Endpoints. At
+# 2s times 1, that is 2 seconds; config.drainDelay (5s) stays above it, so
+# govue's httpserver.Serve has already failed the readiness check for one
+# full probe period before it closes the listener. A longer window here
+# (for example the 10s/3 default periodSeconds and failureThreshold still
+# used elsewhere in this chart) would need a correspondingly longer
+# config.drainDelay to keep that ordering true.
 readinessProbe:
   initialDelaySeconds: 5
-  periodSeconds: 10
-  failureThreshold: 3
+  periodSeconds: 2
+  failureThreshold: 1
 
 nodeSelector: {}
 tolerations: []
 affinity: {}
 
+# Must stay above config.drainDelay plus however long an in-flight request
+# may take to finish once shutdown starts (httpserver.DefaultShutdownTimeout,
+# 20s), so the kubelet never SIGKILLs the container before cmd/calbridge's
+# own graceful shutdown sequence has a chance to finish on its own.
+terminationGracePeriodSeconds: 30
+
 # Plain, non-secret configuration, mapped 1:1 from internal/config.Config
 # (see that package's own doc comment for the authoritative list).
 config:
   listenAddr: ":8080"
+  # ADMIN_LISTEN_ADDR: the second listener liveness, readiness and metrics
+  # move to; see service.adminPort above for why it is not exposed through
+  # the Ingress or the HTTPRoute. Must match service.adminPort.
+  adminListenAddr: ":8081"
+  # DRAIN_DELAY: must stay above readinessProbe.periodSeconds times
+  # readinessProbe.failureThreshold; see readinessProbe's own comment
+  # above for why.
+  drainDelay: "5s"
   logLevel: "info"

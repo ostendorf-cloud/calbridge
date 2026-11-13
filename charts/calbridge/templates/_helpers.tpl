@@ -62,3 +62,15 @@ Create the name of the service account to use.
 {{- default "default" .Values.serviceAccount.name -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Extract the numeric port from an "address:port" string such as ":8080",
+"0.0.0.0:8080" or "[::1]:8080", by taking everything after its last colon.
+Used by templates/validations.yaml to fail the render when a listen
+address and its matching Service port value disagree, rather than let a
+misconfigured deployment crash-loop on its own probes.
+*/}}
+{{- define "calbridge.portFromAddr" -}}
+{{- $parts := splitList ":" . -}}
+{{- last $parts -}}
+{{- end -}}

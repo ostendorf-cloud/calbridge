@@ -86,7 +86,8 @@ task check
 `task --list` shows the individual targets. `task check` runs every check
 this repository has: Go format, vet and lint, the Go test suite, markdown
 lint, YAML lint, a GitHub Actions workflow lint, a secret scan, the Go
-build, Helm chart lint and schema validation, and the Helm chart's own
-`helm-unittest` suite. A later issue that adds Vue or database tooling adds
-its own `lint:*`, `test:*` or `validate` target and extends `check` with it,
-rather than folding its check into an existing target.
+build, the container image build, Helm chart lint and schema validation,
+and the Helm chart's own `helm-unittest` suite. A later issue that adds
+Vue or database tooling adds its own `lint:*`, `test:*` or `validate`
+target and extends `check` with it, rather than folding its check into an
+existing target.
