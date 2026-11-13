@@ -59,6 +59,9 @@ func run() error {
 		HealthRegistry:  healthRegistry,
 		MetricsRegistry: metricsRegistry,
 		DistFS:          distFS,
+		AllowPlainHTTP:  cfg.SessionAllowPlainHTTP,
+		RateLimitBurst:  cfg.RateLimitBurst,
+		RateLimitPer:    cfg.RateLimitPer,
 	})
 	if err != nil {
 		return fmt.Errorf("calbridge: build http handler: %w", err)

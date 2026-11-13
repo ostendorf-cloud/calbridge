@@ -47,10 +47,12 @@
 // protector, applied directly to the handler the mux dispatches to, the
 // same reasoning middleware.RateLimit and metrics.HTTP.Middleware give
 // for sitting on the mux rather than in the outer chain (see
-// middleware.RateLimit's own doc comment). A later issue's webhook
-// endpoint belongs on Public too, mounted ahead of the CSRF protector,
-// since a provider's push notification carries no session and no token
-// to check.
+// middleware.RateLimit's own doc comment). The login route gets the rate
+// limiter ahead of the protector besides: it is the one route a request
+// needs no session to reach at all, see "The session and CSRF contract"
+// below. A later issue's webhook endpoint belongs on Public too, mounted
+// ahead of the CSRF protector, since a provider's push notification
+// carries no session and no token to check.
 //
 // Admin gets a deliberately short chain instead, matching govue's own
 // adminHandler: Recover and RequestID only. A probe or a scrape is not
@@ -81,10 +83,19 @@
 // restart, or being configurable at all, is not a property this shell
 // needs, and inventing a secret and a database-free persistence story
 // for a handler #5 is about to replace is not worth doing twice.
-// AllowPlainHTTP is forced on for the same reason this milestone has no
-// TLS-terminating ingress of its own yet; a later issue that wires a real
-// session configuration (see solobill's internal/config for the shape)
-// replaces this constant along with the rest of this contract.
+// AllowPlainHTTP, by contrast, comes through Deps from
+// config.Config.SessionAllowPlainHTTP: it defaults to false, the secure
+// choice, since charts/calbridge can expose the service through a
+// TLS-terminating Ingress or HTTPRoute, and a plain HTTP docker-compose
+// run opts in explicitly rather than inheriting it as the shipped
+// default.
+//
+// handleLogin starting a session for any email with no account to check
+// it against is also what makes it the one route a request needs no
+// session at all to reach, which is why it alone gets the rate limiter
+// ahead of the CSRF protector: see config.Config's RateLimitBurst and
+// RateLimitPer, and maxSessions below for the budget that limiter is
+// sized against.
 package httpapi
 
 import (
@@ -95,14 +106,17 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/ostendorf-cloud/govue/api"
+	"github.com/ostendorf-cloud/govue/clientip"
 	"github.com/ostendorf-cloud/govue/csrf"
 	"github.com/ostendorf-cloud/govue/health"
 	"github.com/ostendorf-cloud/govue/metrics"
 	"github.com/ostendorf-cloud/govue/middleware"
+	"github.com/ostendorf-cloud/govue/ratelimit"
 	"github.com/ostendorf-cloud/govue/session"
 )
 
@@ -113,7 +127,25 @@ import (
 // of memory instead of inheriting a bound sized for a different kind of
 // deployment. See solobill's cmd/solobill for the same reasoning applied
 // to a real deployment's own scale.
+//
+// The number is deliberate only together with the login rate limiter
+// below: handleLogin starts a session for any email with no account
+// check, and session.MemoryStore.Save evicts an arbitrary tracked
+// session once the store is full, so an unthrottled login would let one
+// client force 1000 evictions in well under a minute. Capped at
+// config.Config's default of ten login starts a minute per client, one
+// client alone needs well over a day to cycle through the whole store;
+// a distributed flood across many clients is a different threat this
+// bound does not claim to close, matching the login route's wider
+// design as a shell with no account system to check a client against
+// yet.
 const maxSessions = 1000
+
+// maxRateLimitKeys bounds the number of distinct client addresses the
+// login rate limiter tracks at once, matching govue's own example
+// application and solobill's internal/httpapi: a flood of one-shot
+// addresses must not grow that map without bound either.
+const maxRateLimitKeys = 100_000
 
 // csrfKeyBytes is the length of the CSRF signing key NewHandler generates
 // on every start, matching session.MinKeyBytes: a key shorter than this
@@ -140,6 +172,18 @@ type Deps struct {
 	// stripped to its own root via fs.Sub), served as the fallback for
 	// any unmatched GET that is not under apiPathPrefix.
 	DistFS fs.FS
+
+	// AllowPlainHTTP mirrors config.Config.SessionAllowPlainHTTP: it drops
+	// the session cookie's Secure attribute and the security headers'
+	// HSTS, for a plain HTTP development run. Left false, the default,
+	// for anything reachable from outside the machine it runs on.
+	AllowPlainHTTP bool
+
+	// RateLimitBurst and RateLimitPer configure the token bucket the
+	// login route is rate limited with. See maxSessions's own doc
+	// comment for why that route specifically needs one.
+	RateLimitBurst int
+	RateLimitPer   time.Duration
 }
 
 // Handlers is what NewHandler builds: Public, served on the listener the
@@ -178,7 +222,14 @@ func NewHandler(d Deps) (Handlers, error) {
 
 	sessions, err := session.New(session.Config{
 		Store:          session.NewMemoryStore(nil, maxSessions),
-		AllowPlainHTTP: true,
+		AllowPlainHTTP: d.AllowPlainHTTP,
+	})
+	fail(err)
+
+	limiter := ratelimit.New(d.RateLimitBurst, d.RateLimitPer, maxRateLimitKeys)
+	rateLimit, err := middleware.NewRateLimit(middleware.RateLimitConfig{
+		Limiter:  limiter,
+		ClientIP: clientip.NewResolver(nil),
 	})
 	fail(err)
 
@@ -218,6 +269,11 @@ func NewHandler(d Deps) (Handlers, error) {
 	a := &app{sessions: sessions, csrfKey: csrfKey}
 
 	security := middleware.DefaultSecurity()
+	if d.AllowPlainHTTP {
+		// A browser reached over plain HTTP must never be told to
+		// upgrade every future visit to HTTPS.
+		security.HSTS = 0
+	}
 	accessLog := middleware.AccessLog{}
 	httpMetrics := metrics.NewHTTP(d.MetricsRegistry)
 	metricsHandler := metrics.Handler(d.MetricsRegistry)
@@ -230,9 +286,17 @@ func NewHandler(d Deps) (Handlers, error) {
 		return middleware.Chain(h, protector.Middleware)
 	}
 
+	// loginRoute adds the rate limiter ahead of the CSRF protector, for
+	// the one route above that a request needs no session to reach at
+	// all. See maxSessions's own doc comment for what an unthrottled
+	// login would let a client do.
+	loginRoute := func(h http.Handler) http.Handler {
+		return middleware.Chain(h, rateLimit.Middleware, protector.Middleware)
+	}
+
 	mux := http.NewServeMux()
 
-	mux.Handle("POST /api/v1/auth/login", route(api.Handle(a.handleLogin)))
+	mux.Handle("POST /api/v1/auth/login", loginRoute(api.Handle(a.handleLogin)))
 	mux.Handle("GET /api/v1/me", route(api.Handle(a.handleMe)))
 	mux.Handle("POST /api/v1/auth/logout", route(api.Handle(a.handleLogout)))
 
