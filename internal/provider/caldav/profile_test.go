@@ -5,6 +5,8 @@ package caldav
 
 import (
 	"errors"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/ostendorf-cloud/calbridge/internal/provider"
@@ -110,24 +112,56 @@ func TestProfile_AllowsHost(t *testing.T) {
 	}
 }
 
-func TestICloud_DeclaresWhatWasMeasured(t *testing.T) {
+func TestQuirks_SteerTheRequestAndTheReading(t *testing.T) {
 	t.Parallel()
 
-	if ICloud.Endpoint != "https://caldav.icloud.com/" {
-		t.Errorf("endpoint is %q", ICloud.Endpoint)
-	}
-	if ICloud.Auth != AuthStyleBasic {
-		t.Errorf("auth style is %s, want basic: Apple publishes no OAuth flow for calendars", ICloud.Auth)
-	}
-	if !ICloud.Quirks.NoFreeBusyReport {
-		t.Error("the free/busy report was measured as refused with 400")
-	}
-	if !ICloud.Quirks.SyncReportsCollection {
-		t.Error("a sync report lists the collection itself, which the connector has to drop")
-	}
-	if !ICloud.Quirks.IgnoresSyncLimit {
-		t.Error("DAV:limit was measured as ignored")
-	}
+	// A quirk earns its place by changing what the connector sends or
+	// accepts. These are the two that do, read off a profile with the
+	// quirk and one without it, so the table entry is what decides and
+	// not a branch on a server name.
+	honours := ICloud
+	honours.Quirks.IgnoresSyncLimit = false
+	honours.Quirks.SyncReportsCollection = false
+
+	t.Run("a server that honours a limit is sent one", func(t *testing.T) {
+		t.Parallel()
+
+		withLimit, err := marshalBody(syncCollection{
+			Level: "1",
+			Limit: &limitProps{NResults: syncPageSize},
+		})
+		if err != nil {
+			t.Fatalf("build the request body: %v", err)
+		}
+		if !strings.Contains(string(withLimit), "nresults") {
+			t.Errorf("the body names no limit:\n%s", withLimit)
+		}
+	})
+
+	t.Run("a server that lists the collection has that entry dropped", func(t *testing.T) {
+		t.Parallel()
+
+		calendar, err := url.Parse("https://p42-caldav.icloud.com/20241234/calendars/home/")
+		if err != nil {
+			t.Fatalf("parse the calendar url: %v", err)
+		}
+		ms := multistatus{
+			SyncToken: "token-1",
+			Responses: []davResp{{Href: "/20241234/calendars/home/"}},
+		}
+
+		page, err := readSyncPage(ICloud, calendar, ms)
+		if err != nil {
+			t.Fatalf("read the sync page: %v", err)
+		}
+		if len(page.changed) != 0 || len(page.deletes) != 0 {
+			t.Errorf("the collection was read as an event resource: %+v", page)
+		}
+
+		if _, err := readSyncPage(honours, calendar, ms); !errors.Is(err, ErrServer) {
+			t.Fatalf("got %v, want a profile without the quirk to report the entry it did not expect", err)
+		}
+	})
 }
 
 func TestProfileByName(t *testing.T) {

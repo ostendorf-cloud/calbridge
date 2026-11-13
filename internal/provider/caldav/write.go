@@ -61,7 +61,7 @@ func (c *Connector) CreateCalendar(ctx context.Context, cred provider.Credential
 	if err != nil {
 		return provider.Calendar{}, err
 	}
-	if !p.Capabilities.CalendarCreation {
+	if !c.Capabilities().CalendarCreation {
 		return provider.Calendar{}, fmt.Errorf("caldav profile %q: create calendar: %w", p.Name, provider.ErrUnsupported)
 	}
 
@@ -90,11 +90,44 @@ func (c *Connector) CreateCalendar(ctx context.Context, cred provider.Credential
 	if err != nil {
 		return provider.Calendar{}, err
 	}
-	if err := expect(res, "MKCALENDAR", http.StatusCreated); err != nil {
+	if err := createdCalendar(res); err != nil {
 		return provider.Calendar{}, err
 	}
 
 	return provider.Calendar{ID: collectionID(&at), Name: name, Managed: true}, nil
+}
+
+// createdCalendar reads the answer to a MKCALENDAR.
+//
+// RFC 4791 section 5.3.1.1 gives a server two ways to answer: 201 when
+// the collection was created with every property it was asked for, and
+// 207 carrying a status per property when one could not be set, in which
+// case the server "MUST NOT create the calendar collection". A 207 whose
+// property statuses are all successful is a creation too, which is how
+// at least one server reports one, so the status of the properties, not
+// the status of the request, is what decides.
+func createdCalendar(res result) error {
+	if res.status == http.StatusCreated {
+		return nil
+	}
+	if err := expect(res, "MKCALENDAR", http.StatusMultiStatus); err != nil {
+		return err
+	}
+	ms, err := parseMultistatus(res, "MKCALENDAR")
+	if err != nil {
+		return err
+	}
+	for _, r := range ms.Responses {
+		for _, ps := range r.Propstat {
+			code, ok := statusCode(ps.Status)
+			if !ok || code/100 != 2 {
+				return fmt.Errorf("caldav MKCALENDAR could not set a property (%s) and created nothing: %w",
+					ps.Status, ErrServer)
+			}
+		}
+	}
+
+	return nil
 }
 
 // DeleteCalendar removes a calendar calbridge created.
@@ -103,7 +136,7 @@ func (c *Connector) DeleteCalendar(ctx context.Context, cred provider.Credential
 	if err != nil {
 		return err
 	}
-	if !p.Capabilities.CalendarCreation {
+	if !c.Capabilities().CalendarCreation {
 		return fmt.Errorf("caldav profile %q: delete calendar: %w", p.Name, provider.ErrUnsupported)
 	}
 	at, err := parseCalendarURL(p, calendarID)
@@ -142,7 +175,8 @@ func (c *Connector) CreateEvent(
 	if err != nil {
 		return provider.Event{}, err
 	}
-	stored, err := accept(p, event)
+	caps := c.Capabilities()
+	stored, err := accept(p, caps, event)
 	if err != nil {
 		return provider.Event{}, err
 	}
@@ -154,7 +188,7 @@ func (c *Connector) CreateEvent(
 	now := c.now().UTC()
 	stored.Created, stored.Updated = now, now
 
-	object, err := encodeResource(stored, now, p.Capabilities)
+	object, err := encodeResource(stored, now, caps)
 	if err != nil {
 		return provider.Event{}, err
 	}
@@ -182,7 +216,8 @@ func (c *Connector) UpdateEvent(
 	if err != nil {
 		return provider.Event{}, err
 	}
-	stored, err := accept(p, event)
+	caps := c.Capabilities()
+	stored, err := accept(p, caps, event)
 	if err != nil {
 		return provider.Event{}, err
 	}
@@ -199,7 +234,7 @@ func (c *Connector) UpdateEvent(
 	stored.Created = held.Created
 	stored.Updated = c.now().UTC()
 
-	object, err := encodeResource(stored, stored.Updated, p.Capabilities)
+	object, err := encodeResource(stored, stored.Updated, caps)
 	if err != nil {
 		return provider.Event{}, err
 	}
@@ -372,10 +407,19 @@ func (c *Connector) readEvent(
 	return provider.Event{}, fmt.Errorf("caldav resource %q holds only overridden occurrences: %w", name, ErrServer)
 }
 
-// accept applies what the profile declares to an event on its way to the
-// server: it refuses what the server cannot express and drops what it
-// may drop, so a capability a caller read is the same answer it gets.
-func accept(p Profile, event provider.Event) (provider.Event, error) {
+// accept applies the declared capabilities to an event on its way to the
+// server: it refuses what cannot be expressed and drops what may be
+// dropped, so a capability a caller read is the same answer it gets.
+//
+// caps is what Connector.Capabilities returns, not the profile's own
+// value. The two differ as soon as a second profile is added, because
+// the interface asks one connector for one answer and that answer is the
+// intersection. Gating on the profile instead would let a connector
+// declare that it writes no attendee and then write one for the server
+// that happens to allow it, which is the outcome the declaration is
+// there to rule out. The profile is still what names the server in a
+// message.
+func accept(p Profile, caps provider.Capabilities, event provider.Event) (provider.Event, error) {
 	if err := event.Validate(); err != nil {
 		return provider.Event{}, err
 	}
@@ -383,13 +427,13 @@ func accept(p Profile, event provider.Event) (provider.Event, error) {
 		return provider.Event{}, fmt.Errorf(
 			"caldav cannot write one overridden occurrence on its own: %w", provider.ErrUnsupported)
 	}
-	if event.Recurrence.IsMaster() && !p.Capabilities.NativeRecurrence {
+	if event.Recurrence.IsMaster() && !caps.NativeRecurrence {
 		return provider.Event{}, fmt.Errorf("caldav profile %q: recurrence rule: %w", p.Name, provider.ErrUnsupported)
 	}
-	if event.Start.Kind == provider.TimeKindFloating && !p.Capabilities.FloatingTimes {
+	if event.Start.Kind == provider.TimeKindFloating && !caps.FloatingTimes {
 		return provider.Event{}, fmt.Errorf("caldav profile %q: floating time: %w", p.Name, provider.ErrUnsupported)
 	}
-	if !p.Capabilities.Attendees {
+	if !caps.Attendees {
 		event.Attendees = nil
 	}
 	// Every server names the organiser after the writing account, so the

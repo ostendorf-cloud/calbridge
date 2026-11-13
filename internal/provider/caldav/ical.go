@@ -6,6 +6,8 @@ package caldav
 import (
 	"fmt"
 	"strings"
+
+	"github.com/ostendorf-cloud/calbridge/internal/provider"
 )
 
 // This file holds the iCalendar stream format of RFC 5545 section 3.1:
@@ -285,8 +287,23 @@ func escapeText(value string) string {
 }
 
 // icalWriter builds an iCalendar stream.
+//
+// Every value reaches the stream through line, which refuses a line
+// break instead of writing it. A line break that survived into a
+// property would end the content line and start another one, and the
+// object would then hold a property nothing in this package put there:
+// an ATTENDEE on a connector that declares it writes none, for one, which
+// against a server implementing RFC 6638 is a real invitation to a real
+// address. The refusal is the choice rather than stripping the break,
+// because a stripped break silently changes what the source calendar
+// said, and the engine can act on provider.ErrInvalidEvent while it
+// cannot act on a value it was never told was altered.
+//
+// The writer carries the first refusal and writes nothing after it, so
+// one check at the end of a build covers every line in it.
 type icalWriter struct {
 	out strings.Builder
+	err error
 }
 
 // begin opens a component.
@@ -309,6 +326,35 @@ func (w *icalWriter) raw(name string, params []string, value string) {
 // line writes one content line, folded to the 75 octet limit RFC 5545
 // section 3.1 sets.
 func (w *icalWriter) line(name string, params []string, value string, escape bool) {
+	if w.err != nil {
+		return
+	}
+	if err := checkStructural(name); err != nil {
+		w.err = fmt.Errorf("property name %q: %w", name, err)
+
+		return
+	}
+	for _, p := range params {
+		if err := checkStructural(p); err != nil {
+			w.err = fmt.Errorf("parameter of %s: %w", name, err)
+
+			return
+		}
+	}
+	// An escaped text value may hold a line break, because escapeText
+	// turns it into the two characters RFC 5545 section 3.3.11 gives it
+	// and it never reaches the stream as a break. Every other value is
+	// written as it stands and may hold none.
+	check := checkStructural
+	if escape {
+		check = checkText
+	}
+	if err := check(value); err != nil {
+		w.err = fmt.Errorf("value of %s: %w", name, err)
+
+		return
+	}
+
 	var b strings.Builder
 	b.WriteString(name)
 	for _, p := range params {
@@ -326,6 +372,45 @@ func (w *icalWriter) line(name string, params []string, value string, escape boo
 
 // String returns the stream built so far.
 func (w *icalWriter) String() string { return w.out.String() }
+
+// checkStructural refuses a part of a content line that carries a
+// character the line format cannot hold: a carriage return or a line
+// feed would end the line and start another, and any other control
+// character is outside what RFC 5545 section 3.1 allows.
+func checkStructural(part string) error {
+	for _, r := range part {
+		if r == '\r' || r == '\n' {
+			return fmt.Errorf("holds a line break: %w", provider.ErrInvalidEvent)
+		}
+		if isControl(r) {
+			return fmt.Errorf("holds the control character %#U: %w", r, provider.ErrInvalidEvent)
+		}
+	}
+
+	return nil
+}
+
+// checkText refuses a text value that carries a control character other
+// than the horizontal tab and the line breaks escaping turns into two
+// characters of their own.
+func checkText(value string) error {
+	for _, r := range value {
+		if r == '\r' || r == '\n' || r == '\t' {
+			continue
+		}
+		if isControl(r) {
+			return fmt.Errorf("holds the control character %#U: %w", r, provider.ErrInvalidEvent)
+		}
+	}
+
+	return nil
+}
+
+// isControl reports whether the rune is a C0 or C1 control, or the
+// delete character, none of which a content line may carry.
+func isControl(r rune) bool {
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
+}
 
 // maxLineOctets is the limit RFC 5545 section 3.1 sets on a content
 // line, counted in octets and excluding the line break.

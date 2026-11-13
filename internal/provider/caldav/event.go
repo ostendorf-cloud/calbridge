@@ -174,16 +174,67 @@ func decodeRecurrenceRule(component *icalComponent) []string {
 func renderLine(line icalLine) string {
 	var b strings.Builder
 	b.WriteString(line.Name)
-	for _, key := range sortedKeys(line.Params) {
+	for _, p := range lineParams(line) {
 		b.WriteString(";")
-		b.WriteString(key)
-		b.WriteString("=")
-		b.WriteString(quoteParam(strings.Join(line.Params[key], ",")))
+		b.WriteString(p)
 	}
 	b.WriteString(":")
 	b.WriteString(line.Value)
 
 	return b.String()
+}
+
+// lineParams renders a line's parameters in a stable order.
+func lineParams(line icalLine) []string {
+	keys := sortedKeys(line.Params)
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, key+"="+quoteParam(strings.Join(line.Params[key], ",")))
+	}
+
+	return out
+}
+
+// recurrenceLines reads the caller's recurrence entries back as parsed
+// content lines, so each entry can only ever be the single recurrence
+// property it claims to be.
+//
+// The normalised event carries the rule as text the connector wrote on a
+// previous read, and text is what a source provider put there. Writing
+// it back out as it stands would let one entry carry a line break and
+// become two properties, so each one is parsed, checked, and rendered
+// from the parse rather than from the string.
+func recurrenceLines(rule []string) ([]icalLine, error) {
+	out := make([]icalLine, 0, len(rule))
+	for _, entry := range rule {
+		lines, err := contentLines(entry)
+		if err != nil {
+			return nil, fmt.Errorf("recurrence entry: %w", provider.ErrInvalidEvent)
+		}
+		if len(lines) != 1 {
+			return nil, fmt.Errorf(
+				"recurrence entry holds %d properties rather than one: %w", len(lines), provider.ErrInvalidEvent)
+		}
+		if !isRecurrenceProp(lines[0].Name) {
+			return nil, fmt.Errorf(
+				"recurrence entry is a %s, which is not a recurrence property: %w", lines[0].Name, provider.ErrInvalidEvent)
+		}
+		out = append(out, lines[0])
+	}
+
+	return out, nil
+}
+
+// isRecurrenceProp reports whether the name is one of the properties a
+// repeating master's rule is made of.
+func isRecurrenceProp(name string) bool {
+	for _, p := range recurrenceProps {
+		if p == name {
+			return true
+		}
+	}
+
+	return false
 }
 
 // sortedKeys returns a map's keys in a stable order.
@@ -540,15 +591,23 @@ func encodeResource(event provider.Event, stamp time.Time, caps provider.Capabil
 		return "", err
 	}
 
+	rule, err := recurrenceLines(event.Recurrence.Rule)
+	if err != nil {
+		return "", err
+	}
+
 	var w icalWriter
 	w.begin("VCALENDAR")
 	w.raw("VERSION", nil, "2.0")
 	w.raw("PRODID", nil, productID)
 	w.raw("CALSCALE", nil, "GREGORIAN")
 
-	for _, zone := range zonesOf(event) {
-		block, err := vtimezone(zone, event.Start.Wall.Year())
+	for _, zone := range zonesOf(event, rule) {
+		block, covered, err := vtimezone(zone, event.Start.Wall.Year())
 		if err != nil {
+			return "", err
+		}
+		if err := coversEvent(zone, covered, event, rule); err != nil {
 			return "", err
 		}
 		w.out.WriteString(block)
@@ -579,8 +638,8 @@ func encodeResource(event provider.Event, stamp time.Time, caps provider.Capabil
 	if class := encodeVisibility(event.Visibility); class != "" {
 		w.raw("CLASS", nil, class)
 	}
-	for _, line := range event.Recurrence.Rule {
-		w.out.WriteString(fold(line))
+	for _, line := range rule {
+		w.raw(line.Name, lineParams(line), line.Value)
 	}
 	if caps.Attendees {
 		for _, a := range event.Attendees {
@@ -595,6 +654,10 @@ func encodeResource(event provider.Event, stamp time.Time, caps provider.Capabil
 	}
 	w.end("VEVENT")
 	w.end("VCALENDAR")
+
+	if w.err != nil {
+		return "", w.err
+	}
 
 	return w.String(), nil
 }
@@ -616,18 +679,94 @@ func attendeeParams(a provider.Attendee) []string {
 
 // zonesOf returns the IANA zones the event names, in a stable order and
 // without repeats.
-func zonesOf(event provider.Event) []string {
+//
+// A recurrence line names a zone too: an RDATE or an EXDATE carries its
+// own TZID, and RFC 5545 section 3.6.5 wants a VTIMEZONE for every TZID
+// in the object, not only for the ones on the endpoints. An excluded
+// occurrence written with a zone the object does not describe is read
+// against another offset and lands on the wrong hour.
+func zonesOf(event provider.Event, rule []icalLine) []string {
 	var out []string
+	add := func(zone string) {
+		if zone == "" || zone == "UTC" || containsString(out, zone) {
+			return
+		}
+		if _, err := time.LoadLocation(zone); err != nil {
+			return
+		}
+		out = append(out, zone)
+	}
+
 	for _, t := range []provider.EventTime{event.Start, event.End} {
-		if t.Kind != provider.TimeKindZoned || t.Zone == "" {
-			continue
+		if t.Kind == provider.TimeKindZoned {
+			add(t.Zone)
 		}
-		if !containsString(out, t.Zone) {
-			out = append(out, t.Zone)
-		}
+	}
+	for _, line := range rule {
+		add(normaliseTZID(line.param("TZID")))
 	}
 
 	return out
+}
+
+// coversEvent reports whether a zone's generated VTIMEZONE describes the
+// whole span the event can reach. A zone whose changes follow a yearly
+// rule is described without end, and covered is then the zero time. A
+// zone whose changes do not is described only to the last transition the
+// generator wrote out, and an event reaching past that would be read
+// against the wrong offset with nothing to say so.
+func coversEvent(zone string, covered time.Time, event provider.Event, rule []icalLine) error {
+	if covered.IsZero() {
+		return nil
+	}
+	if isUnbounded(rule) {
+		return fmt.Errorf(
+			"time zone %q changes on no yearly rule, so an event repeating without end cannot be described past %s: %w",
+			zone, covered.Format("2006"), provider.ErrUnsupported)
+	}
+	if last := latestOf(event, rule); last.After(covered) {
+		return fmt.Errorf(
+			"time zone %q changes on no yearly rule, so an event reaching %s cannot be described past %s: %w",
+			zone, last.Format("2006"), covered.Format("2006"), provider.ErrUnsupported)
+	}
+
+	return nil
+}
+
+// isUnbounded reports whether the rule repeats with no end: an RRULE
+// that names neither UNTIL nor COUNT runs forever (RFC 5545 section
+// 3.3.10).
+func isUnbounded(rule []icalLine) bool {
+	for _, line := range rule {
+		if line.Name != "RRULE" {
+			continue
+		}
+		upper := strings.ToUpper(line.Value)
+		if !strings.Contains(upper, "UNTIL=") && !strings.Contains(upper, "COUNT=") {
+			return true
+		}
+	}
+
+	return false
+}
+
+// latestOf returns the latest wall time the event can reach: its end, or
+// the UNTIL of a rule that runs past it.
+func latestOf(event provider.Event, rule []icalLine) time.Time {
+	last := event.End.Wall
+	for _, line := range rule {
+		for _, part := range strings.Split(line.Value, ";") {
+			name, value, found := strings.Cut(part, "=")
+			if !found || !strings.EqualFold(name, "UNTIL") {
+				continue
+			}
+			if at := decodeTimestamp(strings.TrimSuffix(value, "Z") + "Z"); at.After(last) {
+				last = at
+			}
+		}
+	}
+
+	return last
 }
 
 // containsString reports whether the slice already holds the value.

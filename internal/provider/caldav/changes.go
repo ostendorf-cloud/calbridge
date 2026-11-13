@@ -234,9 +234,12 @@ func rejectedToken(p Profile, res result, token provider.SyncToken) error {
 		XMLName        xml.Name  `xml:"DAV: error"`
 		ValidSyncToken *struct{} `xml:"DAV: valid-sync-token"`
 	}
-	if err := xml.Unmarshal(res.body, &problems); err == nil && problems.ValidSyncToken == nil {
-		// The server named a different precondition, so the token is not
-		// what it objected to.
+	if err := xml.Unmarshal(res.body, &problems); err != nil || problems.ValidSyncToken == nil {
+		// Only a body that parses and names DAV:valid-sync-token says the
+		// token was the problem. A refusal naming another precondition,
+		// an empty body, or an error page from something between here and
+		// the server, all leave the stored position good: discarding it
+		// on a guess costs a full initial sync for nothing.
 		return fmt.Errorf("caldav REPORT sync-collection answered %d %s: %w",
 			res.status, http.StatusText(res.status), ErrServer)
 	}
@@ -305,7 +308,14 @@ func (c *Connector) readResources(
 		}
 		prop := r.prop()
 		if prop.CalendarData == "" {
-			continue
+			// The sync report named this resource as changed and the
+			// multiget then handed over no object for it. Skipping it
+			// would return a page the caller reads as complete, store its
+			// token, and never see the change again, which is the one
+			// outcome this connector exists to prevent.
+			return nil, fmt.Errorf(
+				"caldav server named %q as changed and returned no calendar data for it: %w",
+				lastSegment(at.Path), ErrServer)
 		}
 		events, err := decodeResource(lastSegment(at.Path), prop.CalendarData)
 		if err != nil {
