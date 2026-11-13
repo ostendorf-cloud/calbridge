@@ -38,11 +38,11 @@ esac
 
 chart="charts/calbridge"
 
-# config.databaseUrl, config.databaseUser and existingSecret.name have no
-# usable default (see values.yaml) and are required by values.schema.json,
-# so every combination below needs them set, the default values
-# combination included.
-baseline="existingSecret.name=calbridge-secrets,config.databaseUrl=postgres://postgres.example.svc:5432/calbridge?sslmode=require,config.databaseUser=calbridge_app"
+# config.databaseUrl, config.databaseUser, migrationJob.databaseUser and
+# existingSecret.name have no usable default (see values.yaml) and are
+# required by values.schema.json, so every combination below needs them
+# set, the default values combination included.
+baseline="existingSecret.name=calbridge-secrets,config.databaseUrl=postgres://postgres.example.svc:5432/calbridge?sslmode=require,config.databaseUser=calbridge_app,migrationJob.databaseUser=calbridge_migrator"
 
 names=(
   "default values"

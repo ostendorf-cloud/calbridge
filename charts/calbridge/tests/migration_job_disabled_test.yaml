@@ -10,6 +10,7 @@ set:
     databaseUser: calbridge_app
   migrationJob:
     enabled: false
+    databaseUser: calbridge_migrator
 tests:
   - it: renders neither the Job nor its ConfigMap, leaving nothing orphaned
     asserts:

@@ -8,6 +8,8 @@ set:
   config:
     databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
     databaseUser: calbridge_app
+  migrationJob:
+    databaseUser: calbridge_migrator
 tests:
   - it: fails the render when both ingress and httproute are enabled
     template: templates/validations.yaml

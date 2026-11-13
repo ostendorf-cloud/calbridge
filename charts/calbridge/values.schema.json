@@ -192,16 +192,25 @@
     },
     "migrationJob": {
       "type": "object",
-      "required": ["enabled"],
+      "required": ["enabled", "databaseUser"],
       "properties": {
         "enabled": { "type": "boolean" },
-        "databaseUser": { "type": "string" },
+        "databaseUser": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A separate role, distinct from config.databaseUser, that owns every table db/migrations creates and applies them. Required; no usable default. See README.md's \"Migrations run as a separate role\" section."
+        },
         "image": {
           "type": "object",
-          "required": ["repository", "tag"],
+          "required": ["repository", "tag", "digest"],
           "properties": {
             "repository": { "type": "string", "minLength": 1 },
-            "tag": { "type": "string", "minLength": 1 }
+            "tag": { "type": "string", "minLength": 1 },
+            "digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "description": "The dbmate image's digest, matching docker-compose.yaml's own pin, for Renovate's pinDigests."
+            }
           }
         },
         "annotations": { "type": "object" },

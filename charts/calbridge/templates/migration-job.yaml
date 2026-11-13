@@ -6,21 +6,19 @@ command is idempotent (it tracks applied migrations in its own
 schema_migrations table), so re-running it on every upgrade against an
 already-migrated database is safe.
 
-One role, or two: left empty, the default, migrationJob.databaseUser
-falls back to config.databaseUser, so this Job authenticates as the exact
-same role the Deployment itself uses. That role is still fully bound by
-FORCE ROW LEVEL SECURITY for every ordinary application query (ownership
-is irrelevant to FORCE), but PostgreSQL's own ALTER TABLE reference makes
-ownership, not FORCE, what ALTER TABLE itself checks - so that same role,
-because it owns the tables db/migrations creates, can also run
+This Job always authenticates as migrationJob.databaseUser, a role
+distinct from config.databaseUser (templates/validations.yaml fails the
+render otherwise): that role OWNS the tables db/migrations creates, and
+PostgreSQL's own ALTER TABLE reference makes ownership, not
+FORCE ROW LEVEL SECURITY, what ALTER TABLE itself checks, so a role that
+both migrates and serves the application could run
 ALTER TABLE ... NO FORCE ROW LEVEL SECURITY or drop the policy outright.
-Setting migrationJob.databaseUser to a separate role the application
-itself never authenticates as closes that gap, mirroring
-docker-compose.yaml's own bootstrap-superuser-for-migrations-only split.
-See README.md's "One role, or two" section for the full reasoning, and
-values.yaml's own comment on config.databaseUser for the operator-facing
-requirement (NOSUPERUSER NOBYPASSRLS) this chart cannot enforce from here
-either way.
+Keeping the two roles separate, mirroring docker-compose.yaml's own
+bootstrap-superuser-for-migrations-only split, is what closes that gap.
+See README.md's "Migrations run as a separate role" section for the full
+reasoning, and values.yaml's own comment on config.databaseUser for the
+operator-facing requirement (NOSUPERUSER NOBYPASSRLS) this chart cannot
+enforce from here either way.
 
 The official dbmate image has a shell (unlike this application's own
 distroless runtime image), used here only to assemble the full connection
@@ -38,7 +36,7 @@ values.yaml's existingSecret.databasePasswordKey comment and README.md),
 not a limitation this Job works around silently.
 */}}
 {{- if .Values.migrationJob.enabled -}}
-{{- $migrationUser := .Values.migrationJob.databaseUser | default .Values.config.databaseUser -}}
+{{- $migrationUser := .Values.migrationJob.databaseUser -}}
 {{- $migrationSecretKey := .Values.existingSecret.migrationDatabasePasswordKey | default .Values.existingSecret.databasePasswordKey -}}
 apiVersion: batch/v1
 kind: Job
@@ -70,7 +68,7 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: migrate
-          image: "{{ .Values.migrationJob.image.repository }}:{{ .Values.migrationJob.image.tag }}"
+          image: "{{ .Values.migrationJob.image.repository }}:{{ .Values.migrationJob.image.tag }}@{{ .Values.migrationJob.image.digest }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           # Overrides the image's own ENTRYPOINT (["/usr/local/bin/dbmate"])
           # to assemble DATABASE_URL first; see this file's own doc comment

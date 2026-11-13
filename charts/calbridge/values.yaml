@@ -196,15 +196,10 @@ config:
   # NOBYPASSRLS, not this chart, which has no way to enforce that from
   # here.
   #
-  # By default this one role also runs db/migrations (via migrationJob
-  # below), and that role then OWNS the tables it creates. FORCE ROW
-  # LEVEL SECURITY still binds every ordinary application query the same
-  # role runs (ownership is irrelevant to FORCE), but PostgreSQL's own
-  # ALTER TABLE reference makes ownership, not FORCE, what ALTER TABLE
-  # itself checks - so this role, because it owns those tables, can also
-  # run ALTER TABLE ... NO FORCE ROW LEVEL SECURITY or drop the policy
-  # outright. Set migrationJob.databaseUser to a separate role instead to
-  # close that gap; see README.md's "One role, or two" section.
+  # This role never runs db/migrations itself: migrationJob.databaseUser,
+  # a required, separate role, owns every table this chart's schema
+  # creates instead, so this role never owns a single one of them. See
+  # README.md's "Migrations run as a separate role" section.
   databaseUser: ""
 
 # This chart never creates a Secret from plaintext values (see README.md).
@@ -230,10 +225,10 @@ existingSecret:
   # see db/migrations.
   encryptionKeyKey: "ENCRYPTION_KEY"
   # Password key for migrationJob.databaseUser, in this same Secret. Left
-  # empty, the default, falls back to databasePasswordKey above (the
-  # single-role case). Set this together with migrationJob.databaseUser
-  # to use a separate password for the separate migration role; see
-  # README.md's "One role, or two" section.
+  # empty, the default, falls back to databasePasswordKey above, for a
+  # migration role whose password happens to live under the same key.
+  # Set this when the two roles' passwords live under different keys
+  # instead; see README.md's "Migrations run as a separate role" section.
   migrationDatabasePasswordKey: ""
 
 # A pre-install,pre-upgrade Helm hook Job that runs "dbmate up" against the
@@ -248,28 +243,27 @@ existingSecret:
 # upgrade is safe, not merely tolerated.
 migrationJob:
   enabled: true
-  # Optional: a separate, higher-privileged role that OWNS every table
+  # Required: a separate, higher-privileged role that OWNS every table
   # db/migrations creates and applies them, distinct from
   # config.databaseUser (which the Deployment's pods connect as for
-  # ordinary queries). Mirrors docker-compose.yaml's own
-  # bootstrap-superuser-for-migrations-only split. Left empty, the
-  # default, this Job authenticates as config.databaseUser instead: a
-  # single role that owns its own tables, which IS still bound by
-  # FORCE ROW LEVEL SECURITY for every ordinary application query, but
-  # which can, precisely because it owns the tables, run
+  # ordinary queries), mirroring docker-compose.yaml's own
+  # bootstrap-superuser-for-migrations-only split. No usable default: a
+  # role that is also config.databaseUser owns its own tables, and can,
+  # precisely because it owns them, run
   # ALTER TABLE ... NO FORCE ROW LEVEL SECURITY or drop the policy
   # outright (PostgreSQL's ALTER TABLE reference: ownership is what that
-  # command checks, FORCE notwithstanding). Set this to a role the
-  # application itself never authenticates as to close that gap; see
-  # README.md.
+  # command checks, FORCE notwithstanding), which is exactly the weaker
+  # posture this chart no longer allows to render; see README.md.
   databaseUser: ""
   image:
     # The same official dbmate image docker-compose.yaml already uses
-    # for its own "migrate" service, pinned to the same tag
-    # (docker-compose.yaml's own comment: "Pinned to 2.38.1, the latest
-    # patch in the 2.38 line mise.toml already pins dbmate to").
+    # for its own "migrate" service, pinned to the same tag and the same
+    # digest (docker-compose.yaml's own comment: "Pinned to 2.38.1, the
+    # latest patch in the 2.38 line mise.toml already pins dbmate to"),
+    # so Renovate's pinDigests keeps both in step with each other.
     repository: ghcr.io/amacneil/dbmate
     tag: "2.38.1"
+    digest: "sha256:b0c8a87bfef4f2819fdb0a68ca357a44d12fb90d23eca695fcfc3b7e159cb1c5"
   annotations: {}
   resources:
     requests:
