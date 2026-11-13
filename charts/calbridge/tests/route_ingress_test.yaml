@@ -1,0 +1,47 @@
+suite: ingress enabled
+templates:
+  - templates/ingress.yaml
+  - templates/httproute.yaml
+set:
+  ingress:
+    enabled: true
+    className: nginx
+    hosts:
+      - host: calbridge.example.org
+        paths:
+          - path: /
+            pathType: Prefix
+tests:
+  - it: renders exactly one Ingress
+    template: templates/ingress.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: Ingress
+
+  - it: renders no HTTPRoute
+    template: templates/httproute.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: uses the configured ingress class and host
+    template: templates/ingress.yaml
+    asserts:
+      - equal:
+          path: spec.ingressClassName
+          value: nginx
+      - equal:
+          path: spec.rules[0].host
+          value: calbridge.example.org
+
+  - it: points the backend at the chart's own Service and port
+    template: templates/ingress.yaml
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.port.number
+          value: 8080
+      - equal:
+          path: spec.rules[0].http.paths[0].pathType
+          value: Prefix

@@ -1,0 +1,19 @@
+apiVersion: v2
+name: calbridge
+description: Selective calendar mirroring across providers.
+type: application
+# No dependencies: Postgres already runs in the cluster this chart installs into, so this
+# chart never bundles a Postgres subchart, the shape charts/solobill already uses.
+#
+# version and appVersion are stamped by release-me on every release; see release-me.yaml.
+version: 0.1.0
+appVersion: 0.1.0
+home: https://github.com/ostendorf-cloud/calbridge
+sources:
+  - https://github.com/ostendorf-cloud/calbridge
+maintainers:
+  - name: Simon Ostendorf
+    email: github@simon-ostendorf.de
+keywords:
+  - calendar
+  - calbridge

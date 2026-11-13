@@ -1,0 +1,56 @@
+suite: port and label validations
+templates:
+  - templates/validations.yaml
+tests:
+  - it: fails the render when config.listenAddr and service.port disagree
+    set:
+      config:
+        listenAddr: ":9000"
+    asserts:
+      - failedTemplate:
+          errorMessage: >-
+            config.listenAddr (:9000) and service.port (8080) disagree on the port: both
+            must name the same container port.
+
+  - it: fails the render when config.adminListenAddr and service.adminPort disagree
+    set:
+      config:
+        adminListenAddr: ":9001"
+    asserts:
+      - failedTemplate:
+          errorMessage: >-
+            config.adminListenAddr (:9001) and service.adminPort (8081) disagree on the
+            port: both must name the same container port.
+
+  - it: renders fine when every listen address matches its service port
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: fails the render when podLabels sets the selector's name label
+    set:
+      podLabels:
+        app.kubernetes.io/name: evil
+    asserts:
+      - failedTemplate:
+          errorMessage: >-
+            podLabels must not set app.kubernetes.io/name: it collides with calbridge's own
+            immutable selector label.
+
+  - it: fails the render when podLabels sets the selector's instance label
+    set:
+      podLabels:
+        app.kubernetes.io/instance: evil
+    asserts:
+      - failedTemplate:
+          errorMessage: >-
+            podLabels must not set app.kubernetes.io/instance: it collides with calbridge's
+            own immutable selector label.
+
+  - it: renders fine with an unrelated pod label
+    set:
+      podLabels:
+        team: calendar
+    asserts:
+      - hasDocuments:
+          count: 0

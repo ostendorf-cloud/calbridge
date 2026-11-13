@@ -1,0 +1,76 @@
+{{/*
+Expand the name of the chart.
+*/}}
+{{- define "calbridge.name" -}}
+{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+Create a default fully qualified app name.
+We truncate at 63 chars because some Kubernetes name fields are limited to
+this (by the DNS naming spec).
+*/}}
+{{- define "calbridge.fullname" -}}
+{{- if .Values.fullnameOverride -}}
+{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- $name := default .Chart.Name .Values.nameOverride -}}
+{{- if contains $name .Release.Name -}}
+{{- .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Create chart name and version as used by the chart label.
+*/}}
+{{- define "calbridge.chart" -}}
+{{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+Common labels.
+*/}}
+{{- define "calbridge.labels" -}}
+helm.sh/chart: {{ include "calbridge.chart" . }}
+{{ include "calbridge.selectorLabels" . }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/component: server
+app.kubernetes.io/part-of: {{ include "calbridge.name" . }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end -}}
+
+{{/*
+Selector labels. Deliberately excludes app.kubernetes.io/version: a selector
+must stay stable across an image upgrade, matchLabels is immutable once a
+Deployment exists.
+*/}}
+{{- define "calbridge.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "calbridge.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
+{{/*
+Create the name of the service account to use.
+*/}}
+{{- define "calbridge.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create -}}
+{{- default (include "calbridge.fullname" .) .Values.serviceAccount.name -}}
+{{- else -}}
+{{- default "default" .Values.serviceAccount.name -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Extract the numeric port from an "address:port" string such as ":8080",
+"0.0.0.0:8080" or "[::1]:8080", by taking everything after its last colon.
+Used by templates/validations.yaml to fail the render when a listen
+address and its matching Service port value disagree, rather than let a
+misconfigured deployment crash-loop on its own probes.
+*/}}
+{{- define "calbridge.portFromAddr" -}}
+{{- $parts := splitList ":" . -}}
+{{- last $parts -}}
+{{- end -}}

@@ -27,10 +27,83 @@ tasks:
     cmds:
       - gitleaks git --no-banner --redact
 
+  lint:fmt:
+    desc: Go format check through golangci-lint
+    cmds:
+      - golangci-lint fmt --diff
+
+  lint:vet:
+    desc: Go vet
+    cmds:
+      - go vet ./...
+
+  lint:golangci:
+    desc: golangci-lint run
+    cmds:
+      - golangci-lint run ./...
+
+  build:
+    desc: Compile the calbridge binary
+    cmds:
+      - go build -o bin/calbridge ./cmd/calbridge
+
+  build:image:
+    desc: Build the container image, without pushing it anywhere
+    cmds:
+      - docker build .
+
+  test:go:
+    desc: Go test
+    cmds:
+      - go test -race -count=1 ./...
+
+  lint:helm:
+    desc: Helm chart lint and schema validation
+    cmds:
+      - scripts/validate-chart.sh lint
+
+  validate:kubeconform:
+    desc: Schema validation of the rendered Helm chart against the Kubernetes API
+    cmds:
+      - scripts/validate-chart.sh kubeconform
+
+  # helm only finds a plugin inside HELM_PLUGINS. The mise entry's postinstall copies
+  # helm-unittest into helm's own plugin directory, but that hook runs only on a fresh
+  # install: a cached tool skips it, and CI then fails with "unknown command unittest".
+  # This builds a plugin directory holding exactly one entry, pointing at whatever mise
+  # resolved, so the target no longer depends on the hook having run. mise's install
+  # parent cannot be used directly: it also holds the version aliases, and helm then
+  # sees several plugins all claiming the same name.
+  helm:plugins:
+    desc: Link helm-unittest into a plugin directory helm can read
+    internal: true
+    run: once
+    cmds:
+      - rm -rf .task/helm-plugins
+      - mkdir -p .task/helm-plugins
+      - ln -s "$(mise where 'github:helm-unittest/helm-unittest')" .task/helm-plugins/unittest
+
+  test:helm:
+    desc: Helm chart unit tests
+    deps: [helm:plugins]
+    env:
+      HELM_PLUGINS: .task/helm-plugins
+    cmds:
+      - helm unittest charts/calbridge
+
   check:
     desc: Every check, one after another
     cmds:
+      - task: lint:fmt
+      - task: lint:vet
+      - task: lint:golangci
       - task: lint:markdown
       - task: lint:yaml
       - task: lint:actions
       - task: lint:secrets
+      - task: build
+      - task: build:image
+      - task: test:go
+      - task: lint:helm
+      - task: validate:kubeconform
+      - task: test:helm
