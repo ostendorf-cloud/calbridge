@@ -7,6 +7,8 @@ set:
   config:
     databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
     databaseUser: calbridge_app
+  migrationJob:
+    databaseUser: calbridge_migrator
   startupProbe:
     enabled: true
 tests:

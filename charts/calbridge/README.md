@@ -29,46 +29,49 @@ Installs [calbridge](https://github.com/ostendorf-cloud/calbridge) on a Kubernet
 helm install calbridge charts/calbridge \
   --set existingSecret.name=calbridge-secrets \
   --set config.databaseUrl=postgres://postgres.example.svc:5432/calbridge?sslmode=require \
-  --set config.databaseUser=calbridge_app
+  --set config.databaseUser=calbridge_app \
+  --set migrationJob.databaseUser=calbridge_migrator
 ```
 
-The chart has no usable default for `existingSecret.name`, `config.databaseUrl` or
-`config.databaseUser`: the render fails an install or upgrade that leaves any of them empty,
-with a message naming the missing key. The default values otherwise install calbridge with
-neither an `Ingress` nor a Gateway API `HTTPRoute`: nothing routes external traffic to it until
-one is enabled.
+The chart has no usable default for `existingSecret.name`, `config.databaseUrl`,
+`config.databaseUser` or `migrationJob.databaseUser`: the render fails an install or upgrade
+that leaves any of them empty, with a message naming the missing key. The default values
+otherwise install calbridge with neither an `Ingress` nor a Gateway API `HTTPRoute`: nothing
+routes external traffic to it until one is enabled.
 
 This chart is also published as an OCI artifact, versioned in lock-step with every release, once
 a publish workflow for it exists; none does yet, so for now install or `helm pull` it by path
 from a checkout of this repository, as above.
 
-## One role, or two
+## Migrations run as a separate role
 
-Unlike `docker-compose.yaml`'s own local development setup, which brings its own throwaway
-Postgres and therefore has to script a second, restricted role itself (a bootstrap superuser
-used only to apply `db/migrations`, and a separate `NOSUPERUSER NOBYPASSRLS` role the
-application actually connects as, see that file's own comment for the full reasoning), this
-chart's Postgres already runs in the cluster it installs into.
+This chart's own migration Job (below) always authenticates as `migrationJob.databaseUser`, a
+role distinct from `config.databaseUser` (the render fails otherwise, naming both), configured
+alongside its own password key, `existingSecret.migrationDatabasePasswordKey` (falling back to
+`existingSecret.databasePasswordKey` when left unset). This mirrors
+`docker-compose.yaml`'s own two-role split: a bootstrap superuser used only to apply
+`db/migrations`, and a separate, restricted role the application actually connects as, see that
+file's own comment for the full reasoning.
 
-By default, this chart's own migration Job (below) and its Deployment authenticate as the
-exact same role, configured once by `config.databaseUser` and
-`existingSecret.databasePasswordKey`. A correctly-provisioned `NOSUPERUSER NOBYPASSRLS` role
-is still fully bound by `FORCE ROW LEVEL SECURITY` for every ordinary application query:
-ownership is irrelevant to `FORCE`, only a superuser or a `BYPASSRLS` role bypasses it. But
-that same role, because it is the one that ran `db/migrations` and therefore OWNS every table
-this chart's schema creates, can also run `ALTER TABLE ... NO FORCE ROW LEVEL SECURITY` or
-drop the policy outright: PostgreSQL's own `ALTER TABLE` reference documents ownership, not
-`FORCE`, as what that command checks. A single role that both migrates and serves the
-application therefore accepts a weaker boundary than `docker-compose.yaml`'s own two-role
-split: a compromised or buggy application process could not just read another user's rows
-through a live connection, but could also switch the protection off for every user at once, by
-virtue of owning the tables.
+The reason the two must differ: `migrationJob.databaseUser` runs `db/migrations` and therefore
+OWNS every table this chart's schema creates. A correctly-provisioned `config.databaseUser`
+(`NOSUPERUSER NOBYPASSRLS`) is still fully bound by `FORCE ROW LEVEL SECURITY` for every
+ordinary application query, since ownership is irrelevant to `FORCE` and only a superuser or a
+`BYPASSRLS` role bypasses it. But a role that both migrates and serves the application would,
+precisely because it owns the tables, also be able to run
+`ALTER TABLE ... NO FORCE ROW LEVEL SECURITY` or drop the policy outright: PostgreSQL's own
+`ALTER TABLE` reference documents ownership, not `FORCE`, as what that command checks. Letting
+the two collapse into one role would accept a weaker boundary than
+`docker-compose.yaml`'s own two-role split: a compromised or buggy application process could
+not just read another user's rows through a live connection, but could also switch the
+protection off for every user at once, by virtue of owning the tables. This chart therefore
+never renders with the two equal.
 
-Set `migrationJob.databaseUser` (and, if its password lives under a different key in the same
-Secret, `existingSecret.migrationDatabasePasswordKey`) to a separate role the application
-itself never authenticates as, to get the stronger, two-role boundary instead, mirroring
-`docker-compose.yaml`'s own bootstrap-superuser-for-migrations-only split. Left empty, the
-default, this chart keeps the single-role behaviour above.
+`migrationJob.databaseUser` additionally needs `EXECUTE` on `users_find_by_email`
+(`db/migrations`'s own pre-login email lookup) granted to `config.databaseUser`, the same way
+`docker-compose.yaml`'s own `grant-app-role` service grants it to `calbridge_app`: provisioning
+that grant, like every other table-level grant `config.databaseUser` needs on a database this
+chart does not itself own, is the cluster operator's responsibility; see "Database" below.
 
 ## Migrations
 
@@ -177,9 +180,9 @@ defaults already satisfy both orderings; changing one means checking the other t
 
 This chart ships with no Postgres subchart: the database is a connection this chart takes as
 configuration (`config.databaseUrl`, `config.databaseUser`, `existingSecret`), reachable from
-the cluster, not a dependency this chart installs or manages itself. See "One role, or two",
-"Migrations" and "Secrets" above for what it requires, and `internal/config` for the full list
-`cmd/calbridge` reads today.
+the cluster, not a dependency this chart installs or manages itself. See "Migrations run as a
+separate role", "Migrations" and "Secrets" above for what it requires, and `internal/config`
+for the full list `cmd/calbridge` reads today.
 
 ## Values
 
@@ -205,14 +208,14 @@ the cluster, not a dependency this chart installs or manages itself. See "One ro
 | `config.drainDelay` | `DRAIN_DELAY`, a Go duration. Must stay above `readinessProbe.periodSeconds` times `readinessProbe.failureThreshold`. | `5s` |
 | `config.logLevel` | Structured log level. | `info` |
 | `config.databaseUrl` | `DATABASE_URL`, without credentials. Required; no usable default. The role `config.databaseUser` names MUST be `NOSUPERUSER` and `NOBYPASSRLS`. | `""` |
-| `config.databaseUser` | `DATABASE_USER`. Required; no usable default. See "One role, or two" above. | `""` |
+| `config.databaseUser` | `DATABASE_USER`. Required; no usable default. See "Migrations run as a separate role" above. | `""` |
 | `existingSecret.name` | Name of the existing Secret carrying every key below. Required; no usable default. | `""` |
 | `existingSecret.databasePasswordKey` | Key for `DATABASE_PASSWORD` in that Secret. | `DATABASE_PASSWORD` |
 | `existingSecret.encryptionKeyKey` | Key for `ENCRYPTION_KEY` in that Secret. | `ENCRYPTION_KEY` |
 | `existingSecret.migrationDatabasePasswordKey` | Key for `migrationJob.databaseUser`'s password. Falls back to `databasePasswordKey` when empty. | `""` |
 | `migrationJob.enabled` | Run `db/migrations` as a pre-install,pre-upgrade hook Job. See "Migrations" above. | `true` |
-| `migrationJob.databaseUser` | A separate role that applies `db/migrations`, distinct from `config.databaseUser`. See "One role, or two" above. | `""` |
-| `migrationJob.image.repository` / `migrationJob.image.tag` | The dbmate image the migration Job runs. | `ghcr.io/amacneil/dbmate` / `2.38.1` |
+| `migrationJob.databaseUser` | A separate role that applies `db/migrations`, distinct from `config.databaseUser`. Required; no usable default. See "Migrations run as a separate role" above. | `""` |
+| `migrationJob.image.repository` / `migrationJob.image.tag` / `migrationJob.image.digest` | The dbmate image the migration Job runs. | `ghcr.io/amacneil/dbmate` / `2.38.1` / pinned, see `values.yaml` |
 
 See `values.yaml` for the full list, including resources, startup and liveness probes, and pod
 security settings.

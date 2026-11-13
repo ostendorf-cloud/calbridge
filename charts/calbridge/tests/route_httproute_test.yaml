@@ -8,6 +8,8 @@ set:
   config:
     databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
     databaseUser: calbridge_app
+  migrationJob:
+    databaseUser: calbridge_migrator
   httproute:
     enabled: true
     parentRefs:
