@@ -32,13 +32,17 @@ tasks:
     cmds:
       - golangci-lint fmt --diff
 
+  # cmd/calbridge embeds web/'s build output, so its go:embed directive fails
+  # on an empty dist/ unless the frontend exists first.
   lint:vet:
     desc: Go vet
+    deps: [web:build]
     cmds:
       - go vet ./...
 
   lint:golangci:
     desc: golangci-lint run
+    deps: [web:build]
     cmds:
       - golangci-lint run ./...
 
@@ -73,6 +77,7 @@ tasks:
 
   build:
     desc: Compile the calbridge binary
+    deps: [web:build]
     cmds:
       - go build -o bin/calbridge ./cmd/calbridge
 
@@ -83,8 +88,65 @@ tasks:
 
   test:go:
     desc: Go test
+    deps: [web:build]
     cmds:
       - go test -race -count=1 ./...
+
+  check:govue-version:
+    desc: Verify go.mod and web/package.json pin the same govue version
+    cmds:
+      - go test -race -count=1 ./internal/depsync/...
+
+  # The web/ half. Every target below runs inside web/ and depends on web:deps,
+  # so one of them on its own is enough in a fresh checkout and in CI.
+  web:deps:
+    desc: Install the web/ dependencies
+    dir: web
+    run: once
+    cmds:
+      - pnpm install --frozen-lockfile
+
+  web:lint:
+    desc: ESLint over the web/ package
+    dir: web
+    deps: [web:deps]
+    cmds:
+      - pnpm run lint
+
+  web:format:
+    desc: Prettier format check over the web/ package
+    dir: web
+    deps: [web:deps]
+    cmds:
+      - pnpm run format:check
+
+  web:types:
+    desc: TypeScript and template typecheck of the web/ package
+    dir: web
+    deps: [web:deps]
+    cmds:
+      - pnpm run typecheck
+
+  web:test:
+    desc: Vitest suite of the web/ package
+    dir: web
+    deps: [web:deps]
+    cmds:
+      - pnpm run test
+
+  web:build:
+    desc: Build the SPA bundle into cmd/calbridge/dist
+    dir: web
+    deps: [web:deps]
+    cmds:
+      - pnpm run build
+
+  web:fmt:
+    desc: Format the web/ package
+    dir: web
+    deps: [web:deps]
+    cmds:
+      - pnpm run format
 
   lint:helm:
     desc: Helm chart lint and schema validation
@@ -131,9 +193,15 @@ tasks:
       - task: lint:yaml
       - task: lint:actions
       - task: lint:secrets
+      - task: web:lint
+      - task: web:format
+      - task: web:types
+      - task: web:test
+      - task: web:build
       - task: build
       - task: build:image
       - task: test:go
+      - task: check:govue-version
       - task: lint:helm
       - task: validate:kubeconform
       - task: test:helm
