@@ -3,6 +3,11 @@ templates:
   - templates/ingress.yaml
   - templates/httproute.yaml
 set:
+  existingSecret:
+    name: calbridge-secrets
+  config:
+    databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
+    databaseUser: calbridge_app
   ingress:
     enabled: true
     className: nginx

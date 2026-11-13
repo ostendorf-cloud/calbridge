@@ -3,6 +3,11 @@ templates:
   - templates/httproute.yaml
   - templates/ingress.yaml
 set:
+  existingSecret:
+    name: calbridge-secrets
+  config:
+    databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
+    databaseUser: calbridge_app
   httproute:
     enabled: true
     parentRefs:

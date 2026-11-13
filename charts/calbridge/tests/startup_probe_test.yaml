@@ -2,6 +2,11 @@ suite: startup probe enabled
 templates:
   - templates/deployment.yaml
 set:
+  existingSecret:
+    name: calbridge-secrets
+  config:
+    databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
+    databaseUser: calbridge_app
   startupProbe:
     enabled: true
 tests:

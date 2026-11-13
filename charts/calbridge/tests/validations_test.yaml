@@ -1,6 +1,12 @@
 suite: port and label validations
 templates:
   - templates/validations.yaml
+set:
+  existingSecret:
+    name: calbridge-secrets
+  config:
+    databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
+    databaseUser: calbridge_app
 tests:
   - it: fails the render when config.listenAddr and service.port disagree
     set:

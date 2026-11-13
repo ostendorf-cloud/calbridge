@@ -1,13 +1,14 @@
 # syntax=docker/dockerfile:1
 
 # Go build stage: compiles a fully static binary. CGO_ENABLED=0 is safe
-# here: this milestone links no database driver and no other cgo
-# dependency at all (see internal/config and internal/httpapi), so there
-# is no libc dependency this build is dropping by going static. Pinned to
-# 1.27.0-bookworm, the exact patch mise.toml pins go to: see mise.toml's
-# own comment for why golangci-lint 2.15.0 specifically needs that exact
-# patch, a constraint this image is kept aligned with even though
-# golangci-lint itself never runs here.
+# here: jackc/pgx/v5, the Postgres driver internal/storage/postgres uses,
+# is pure Go with no cgo dependency of its own, and nothing else in this
+# binary links one either, so there is no libc dependency this build is
+# dropping by going static. Pinned to 1.27.0-bookworm, the exact patch
+# mise.toml pins go to: see mise.toml's own comment for why
+# golangci-lint 2.15.0 specifically needs that exact patch, a constraint
+# this image is kept aligned with even though golangci-lint itself never
+# runs here.
 FROM golang:1.27.0-bookworm AS build
 
 WORKDIR /src

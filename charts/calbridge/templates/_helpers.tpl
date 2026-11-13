@@ -64,6 +64,26 @@ Create the name of the service account to use.
 {{- end -}}
 
 {{/*
+Fully qualified name of the migration Job and its ConfigMap.
+*/}}
+{{- define "calbridge.migration.fullname" -}}
+{{- printf "%s-migrate" (include "calbridge.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+Migration Job labels, mirroring calbridge.labels with its own component.
+*/}}
+{{- define "calbridge.migration.labels" -}}
+helm.sh/chart: {{ include "calbridge.chart" . }}
+app.kubernetes.io/name: {{ include "calbridge.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/component: migration
+app.kubernetes.io/part-of: {{ include "calbridge.name" . }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end -}}
+
+{{/*
 Extract the numeric port from an "address:port" string such as ":8080",
 "0.0.0.0:8080" or "[::1]:8080", by taking everything after its last colon.
 Used by templates/validations.yaml to fail the render when a listen

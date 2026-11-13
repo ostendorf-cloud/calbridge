@@ -2,6 +2,12 @@ suite: ingress and httproute both enabled
 templates:
   - templates/validations.yaml
   - templates/deployment.yaml
+set:
+  existingSecret:
+    name: calbridge-secrets
+  config:
+    databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
+    databaseUser: calbridge_app
 tests:
   - it: fails the render when both ingress and httproute are enabled
     template: templates/validations.yaml

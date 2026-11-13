@@ -56,6 +56,27 @@ spec:
               value: {{ .Values.config.logLevel | quote }}
             - name: DRAIN_DELAY
               value: {{ .Values.config.drainDelay | quote }}
+            # No credentials here: internal/config.Config.DatabaseURL
+            # carries no credentials by its own contract; DATABASE_USER
+            # and DATABASE_PASSWORD below are assembled into a real
+            # connection separately
+            # (internal/storage/postgres.NewPoolWithCredentials). The
+            # role named here MUST be NOSUPERUSER and NOBYPASSRLS; see
+            # values.yaml's own comment on config.databaseUser.
+            - name: DATABASE_URL
+              value: {{ .Values.config.databaseUrl | quote }}
+            - name: DATABASE_USER
+              value: {{ .Values.config.databaseUser | quote }}
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingSecret.name }}
+                  key: {{ .Values.existingSecret.databasePasswordKey }}
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingSecret.name }}
+                  key: {{ .Values.existingSecret.encryptionKeyKey }}
           {{- if .Values.startupProbe.enabled }}
           startupProbe:
             httpGet:
