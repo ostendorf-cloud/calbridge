@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
-# Validates charts/calbridge for its default values and every documented non-default
-# combination, so CI and a local run share the exact same logic. The combinations below
-# mirror charts/calbridge/tests/*_test.yaml exactly: default, ingress enabled, httproute
-# enabled, startup probe enabled, service account disabled. Every one of them also carries
-# the baseline below: config.databaseUrl, config.databaseUser and existingSecret.name have
-# no usable default and are required by values.schema.json, so even "default values" fails
-# to render without them.
+# Validates charts/calbridge: a must-succeed set for its default values and every documented
+# non-default combination, and a must-fail set proving every templates/validations.yaml and
+# templates/httproute.yaml guard actually rejects the values it is meant to reject. Shared by
+# task lint:helm and task validate:kubeconform so CI and a local run check the exact same
+# combinations. Every combination, succeed and fail alike, also carries the baseline below:
+# config.databaseUrl, config.databaseUser and existingSecret.name have no usable default and are
+# required by values.schema.json, so even "default values" fails to render without them.
 #
 # Takes exactly one mode argument:
-#   lint        - helm lint, one job per check (Taskfile's lint:helm / CI's helm-lint job)
+#   lint        - helm lint over the must-succeed set, then helm template over the must-fail
+#                 set, one job per check (Taskfile's lint:helm / CI's helm-lint job)
 #   kubeconform - helm template piped into kubeconform, its own job (CI's kubeconform job)
-# kept as two modes of one script, not two near-duplicate scripts, so the five --set
-# combinations above live in exactly one place.
+# kept as two modes of one script, not two near-duplicate scripts, so the combinations below
+# live in exactly one place.
+#
+# The must-fail set is checked with helm template, never helm lint: a template's fail call is
+# only logged by helm lint, which still reports "0 chart(s) failed" and exits zero, so a lint
+# pass proves nothing about a guard built on fail. helm template propagates that fail as a
+# non-zero exit, so each must-fail entry asserts both the non-zero exit and the exact message
+# its guard names, which also catches a guard that starts failing for the wrong reason.
 #
 # kubeconform's own default schema location has no schema for a Gateway API HTTPRoute: it
 # is a CustomResourceDefinition, not a built in Kubernetes type, so the default registry
@@ -87,5 +94,66 @@ for i in "${!names[@]}"; do
       ;;
   esac
 done
+
+if [ "$mode" = "lint" ]; then
+  # Each entry names the guard it exercises in templates/validations.yaml or
+  # templates/httproute.yaml, its --set arguments on top of baseline above, and the
+  # exact message the guard's fail call names. Asserting the exact message, not merely
+  # a non-zero exit, also catches a guard that starts failing for a different reason.
+  fail_names=(
+    "both ingress.enabled and httproute.enabled true"
+    "httproute.enabled true with parentRefs naming no Gateway"
+    "config.listenAddr disagreeing with service.port"
+    "config.adminListenAddr disagreeing with service.adminPort"
+    "migrationJob.databaseUser equal to config.databaseUser"
+    "podLabels setting the reserved app.kubernetes.io/name selector key"
+    "podLabels setting the reserved app.kubernetes.io/instance selector key"
+  )
+
+  fail_sets=(
+    "${baseline},ingress.enabled=true,ingress.className=nginx,ingress.hosts[0].host=calbridge.example.org,ingress.hosts[0].paths[0].path=/,ingress.hosts[0].paths[0].pathType=Prefix,httproute.enabled=true,httproute.parentRefs[0].name=eg"
+    "${baseline},httproute.enabled=true"
+    "${baseline},config.listenAddr=:9000"
+    "${baseline},config.adminListenAddr=:9001"
+    "${baseline},migrationJob.databaseUser=calbridge_app"
+    "${baseline},podLabels.app\.kubernetes\.io/name=evil"
+    "${baseline},podLabels.app\.kubernetes\.io/instance=evil"
+  )
+
+  fail_messages=(
+    "ingress.enabled and httproute.enabled cannot both be true: enable at most one route to the Service."
+    "httproute.enabled is true but httproute.parentRefs names no Gateway: set at least one parentRefs entry's name."
+    "config.listenAddr (:9000) and service.port (8080) disagree on the port: both must name the same container port."
+    "config.adminListenAddr (:9001) and service.adminPort (8081) disagree on the port: both must name the same container port."
+    "migrationJob.databaseUser (calbridge_app) must not equal config.databaseUser: the application's own role must never own the tables row level security protects it from. See README.md."
+    "podLabels must not set app.kubernetes.io/name: it collides with calbridge's own immutable selector label."
+    "podLabels must not set app.kubernetes.io/instance: it collides with calbridge's own immutable selector label."
+  )
+
+  for i in "${!fail_names[@]}"; do
+    name="${fail_names[$i]}"
+    set_args="${fail_sets[$i]}"
+    expected="${fail_messages[$i]}"
+
+    echo "==> validating must-fail combination (template): ${name}"
+
+    render_output=""
+    render_status=0
+    render_output="$(helm template "${chart}" --set "${set_args}" 2>&1)" || render_status=$?
+
+    if [ "${render_status}" -eq 0 ]; then
+      echo "validate-chart: combination '${name}' was expected to fail its guard but rendered successfully" >&2
+      exit 1
+    fi
+
+    if [[ "${render_output}" != *"${expected}"* ]]; then
+      echo "validate-chart: combination '${name}' failed, but not with its guard's own message" >&2
+      echo "validate-chart: expected the output to contain: ${expected}" >&2
+      echo "validate-chart: actual output:" >&2
+      echo "${render_output}" >&2
+      exit 1
+    fi
+  done
+fi
 
 echo "all combinations valid (${mode})"
