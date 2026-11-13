@@ -1,0 +1,844 @@
+// Copyright 2026 Simon Ostendorf
+// SPDX-License-Identifier: Elastic-2.0
+
+//go:build integration
+
+// This file needs a real, reachable Postgres and is excluded from a plain
+// "go test ./..." by the build tag above; "task test:integration" is the
+// only Taskfile target that passes "-tags=integration". DATABASE_URL still
+// gets checked at runtime too, and t.Skip()s without it, so running this
+// binary by hand with the tag but no database gives a clear skip instead
+// of a confusing dial failure.
+package postgres_test
+
+import (
+	"context"
+	"errors"
+	"net/url"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ostendorf-cloud/calbridge/internal/storage"
+	"github.com/ostendorf-cloud/calbridge/internal/storage/postgres"
+)
+
+// testAppRole is a role this test creates on the target Postgres if it is
+// not already there, and then runs every assertion below through. It is
+// deliberately NOSUPERUSER and NOBYPASSRLS: a Postgres superuser bypasses
+// row level security regardless of FORCE ROW LEVEL SECURITY, so running
+// these assertions as the admin connection from DATABASE_URL (ordinarily
+// the postgres image's default superuser, which CI also uses to run the
+// migrations beforehand) would prove nothing about row level security at
+// all. testAppPassword and testEncryptionKey are fixed, obviously-fake
+// values that only ever reach a disposable test Postgres (a CI service
+// container, or a developer's own local one); neither is a credential
+// for anything real.
+const (
+	testAppRole     = "calbridge_test_app"
+	testAppPassword = "calbridge-test-only-not-a-real-secret"
+)
+
+// testEncryptionKey is 32 bytes, matching the AES-256 key length
+// postgres.NewStore requires; its content is arbitrary and never used
+// outside this test binary.
+var testEncryptionKey = []byte("01234567890123456789012345678901"[:32])
+
+// connectionRawRow mirrors the connections table's own column order and
+// names, used only to decode a literal, deliberately unscoped "SELECT *
+// FROM connections" below: that query has to stay exactly that, with no
+// column list and no WHERE clause, to prove what it is meant to prove,
+// so the test needs a destination shaped like the whole table rather
+// than like one of its own queries.
+type connectionRawRow struct {
+	ID          uuid.UUID `db:"id"`
+	UserID      uuid.UUID `db:"user_id"`
+	Provider    string    `db:"provider"`
+	DisplayName string    `db:"display_name"`
+	Credentials []byte    `db:"credentials"`
+	CreatedAt   time.Time `db:"created_at"`
+	UpdatedAt   time.Time `db:"updated_at"`
+}
+
+// TestRowLevelSecurity is the single most important test in this
+// milestone: it proves that Postgres row level security, not application
+// code, is what actually keeps one user's rows out of another user's
+// reach, including when a query does not even try to scope itself.
+func TestRowLevelSecurity(t *testing.T) {
+	adminURL := os.Getenv("DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("DATABASE_URL not set; skipping the Postgres-backed row level security test")
+	}
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	restrictedURL := setUpTestAppRole(ctx, t, adminPool, adminURL)
+
+	restrictedPool, err := postgres.NewPool(ctx, restrictedURL)
+	if err != nil {
+		t.Fatalf("open restricted pool as %s: %v", testAppRole, err)
+	}
+	t.Cleanup(restrictedPool.Close)
+
+	store, err := postgres.NewStore(restrictedPool, testEncryptionKey)
+	if err != nil {
+		t.Fatalf("build store: %v", err)
+	}
+
+	userA, err := store.Users().Create(ctx, storage.User{Email: "a-" + uuid.NewString() + "@example.com", Status: storage.UserStatusActive})
+	if err != nil {
+		t.Fatalf("create user A: %v", err)
+	}
+
+	userB, err := store.Users().Create(ctx, storage.User{Email: "b-" + uuid.NewString() + "@example.com", Status: storage.UserStatusActive})
+	if err != nil {
+		t.Fatalf("create user B: %v", err)
+	}
+
+	var connectionA, connectionB storage.Connection
+
+	if err := store.WithUser(ctx, userA.ID, func(ctx context.Context) error {
+		var err error
+		connectionA, err = store.Connections().Create(ctx, storage.Connection{
+			UserID:      userA.ID,
+			Provider:    storage.ConnectionProviderGoogle,
+			DisplayName: "A's Google account",
+			Credentials: []byte("user-a-refresh-token"),
+		})
+
+		return err
+	}); err != nil {
+		t.Fatalf("create connection under user A: %v", err)
+	}
+
+	if err := store.WithUser(ctx, userB.ID, func(ctx context.Context) error {
+		var err error
+		connectionB, err = store.Connections().Create(ctx, storage.Connection{
+			UserID:      userB.ID,
+			Provider:    storage.ConnectionProviderGoogle,
+			DisplayName: "B's Google account",
+			Credentials: []byte("user-b-refresh-token"),
+		})
+
+		return err
+	}); err != nil {
+		t.Fatalf("create connection under user B: %v", err)
+	}
+
+	t.Run("user A sees only its own connection through the repository", func(t *testing.T) {
+		var connections []storage.Connection
+
+		if err := store.WithUser(ctx, userA.ID, func(ctx context.Context) error {
+			var err error
+			connections, err = store.Connections().List(ctx)
+
+			return err
+		}); err != nil {
+			t.Fatalf("list connections as user A: %v", err)
+		}
+
+		assertOnlyConnection(t, connections, connectionA.ID)
+	})
+
+	t.Run("user B sees only its own connection through the repository", func(t *testing.T) {
+		var connections []storage.Connection
+
+		if err := store.WithUser(ctx, userB.ID, func(ctx context.Context) error {
+			var err error
+			connections, err = store.Connections().List(ctx)
+
+			return err
+		}); err != nil {
+			t.Fatalf("list connections as user B: %v", err)
+		}
+
+		assertOnlyConnection(t, connections, connectionB.ID)
+	})
+
+	t.Run("credentials round-trip decrypted and never touch the database in clear", func(t *testing.T) {
+		var raw []byte
+
+		if err := adminPool.QueryRow(ctx, `SELECT credentials FROM connections WHERE id = $1`, connectionA.ID).Scan(&raw); err != nil {
+			t.Fatalf("read raw credentials as admin: %v", err)
+		}
+
+		if string(raw) == "user-a-refresh-token" {
+			t.Fatal("connections.credentials holds the refresh token in clear, want it encrypted at rest")
+		}
+
+		var found storage.Connection
+
+		if err := store.WithUser(ctx, userA.ID, func(ctx context.Context) error {
+			var err error
+			found, err = store.Connections().FindByID(ctx, connectionA.ID)
+
+			return err
+		}); err != nil {
+			t.Fatalf("find connection as user A: %v", err)
+		}
+
+		if string(found.Credentials) != "user-a-refresh-token" {
+			t.Errorf("decrypted credentials = %q, want %q", found.Credentials, "user-a-refresh-token")
+		}
+	})
+
+	t.Run("an unscoped SELECT star on a transaction scoped to user B still sees only user B", func(t *testing.T) {
+		tx, err := restrictedPool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+
+		if _, err := tx.Exec(ctx, `SELECT set_config('app.user_id', $1, true)`, userB.ID.String()); err != nil {
+			t.Fatalf("set_config: %v", err)
+		}
+
+		rows, err := tx.Query(ctx, `SELECT * FROM connections`)
+		if err != nil {
+			t.Fatalf("SELECT * FROM connections: %v", err)
+		}
+
+		ids := connectionIDs(t, rows)
+
+		if len(ids) != 1 || ids[0] != connectionB.ID {
+			t.Fatalf("SELECT * FROM connections while scoped to user B = %v, want exactly [%v]", ids, connectionB.ID)
+		}
+	})
+
+	t.Run("no user set at all returns zero rows, not every row and not an error", func(t *testing.T) {
+		tx, err := restrictedPool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+
+		// Deliberately no set_config call on this transaction at all: this
+		// is the "a connection never scoped by WithUser" case.
+
+		rows, err := tx.Query(ctx, `SELECT * FROM connections`)
+		if err != nil {
+			t.Fatalf("SELECT * FROM connections with no user set: %v", err)
+		}
+
+		ids := connectionIDs(t, rows)
+
+		if len(ids) != 0 {
+			t.Fatalf("SELECT * FROM connections with no user set = %v, want none", ids)
+		}
+	})
+
+	t.Run("a user-scoped transaction that commits, then an unscoped transaction on the same connection, still sees zero rows", func(t *testing.T) {
+		// This is the case that actually failed against a real Postgres in
+		// solobill's own equivalent test: a physical connection, not a
+		// fresh one, held onto across two transactions via a single
+		// pool.Acquire, exactly what a connection pool hands an unrelated
+		// later request once it gives this connection back. set_config(...,
+		// true) only reverts its *value* at COMMIT; the custom parameter
+		// it created keeps existing for the rest of the session, as an
+		// empty string, not as "unset". So the second, deliberately
+		// unscoped transaction below must still see zero rows and no
+		// error, not every row and not a cast failure on "".
+		conn, err := restrictedPool.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("acquire connection: %v", err)
+		}
+		defer conn.Release()
+
+		scoped, err := conn.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin scoped transaction: %v", err)
+		}
+
+		if _, err := scoped.Exec(ctx, `SELECT set_config('app.user_id', $1, true)`, userB.ID.String()); err != nil {
+			t.Fatalf("set_config: %v", err)
+		}
+
+		if _, err := scoped.Exec(ctx, `SELECT 1`); err != nil {
+			t.Fatalf("exercise the scoped transaction: %v", err)
+		}
+
+		if err := scoped.Commit(ctx); err != nil {
+			t.Fatalf("commit scoped transaction: %v", err)
+		}
+
+		unscoped, err := conn.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin unscoped transaction on the same connection: %v", err)
+		}
+		defer func() { _ = unscoped.Rollback(ctx) }()
+
+		// Deliberately no set_config call on this second transaction: the
+		// connection already carries app.user_id from the one above.
+
+		rows, err := unscoped.Query(ctx, `SELECT * FROM connections`)
+		if err != nil {
+			t.Fatalf("SELECT * FROM connections on a reused connection with no user set: %v", err)
+		}
+
+		ids := connectionIDs(t, rows)
+
+		if len(ids) != 0 {
+			t.Fatalf("SELECT * FROM connections on a reused connection with no user set = %v, want none", ids)
+		}
+	})
+
+	t.Run("the admin connection, a superuser that bypasses row level security, still sees both connections", func(t *testing.T) {
+		rows, err := adminPool.Query(ctx, `SELECT * FROM connections WHERE id = ANY($1)`, []uuid.UUID{connectionA.ID, connectionB.ID})
+		if err != nil {
+			t.Fatalf("admin SELECT: %v", err)
+		}
+
+		ids := connectionIDs(t, rows)
+
+		if len(ids) != 2 {
+			t.Fatalf("admin SELECT found %d of the 2 connections, want 2: "+
+				"either the inserts above did not actually happen, or row level security "+
+				"is unexpectedly also filtering a superuser connection", len(ids))
+		}
+	})
+
+	t.Run("an INSERT scoped to user B with user_id set to user A is rejected", func(t *testing.T) {
+		// The WITH CHECK half of the policy, exercised on INSERT: a new
+		// row whose user_id does not match the scope the transaction was
+		// set_config'd to must be refused, not silently written under
+		// the wrong user.
+		tx, err := restrictedPool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+
+		if _, err := tx.Exec(ctx, `SELECT set_config('app.user_id', $1, true)`, userB.ID.String()); err != nil {
+			t.Fatalf("set_config: %v", err)
+		}
+
+		_, err = tx.Exec(ctx,
+			`INSERT INTO connections (user_id, provider, credentials) VALUES ($1, 'google', 'x')`,
+			userA.ID)
+		if err == nil {
+			t.Fatal("INSERT with user_id = user A while scoped to user B succeeded, want it rejected by WITH CHECK")
+		}
+	})
+
+	t.Run("an UPDATE scoped to user A moving a row's user_id to user B either keeps the original user or is rejected", func(t *testing.T) {
+		// The WITH CHECK half of the policy, exercised on UPDATE this
+		// time: the new row version (user_id = user B) is checked
+		// against the scope the transaction is set_config'd to (user A),
+		// so the row can never actually move to another user.
+		tx, err := restrictedPool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+
+		if _, err := tx.Exec(ctx, `SELECT set_config('app.user_id', $1, true)`, userA.ID.String()); err != nil {
+			t.Fatalf("set_config: %v", err)
+		}
+
+		var gotUserID uuid.UUID
+
+		err = tx.QueryRow(ctx,
+			`UPDATE connections SET user_id = $1 WHERE id = $2 RETURNING user_id`,
+			userB.ID, connectionA.ID,
+		).Scan(&gotUserID)
+		if err != nil {
+			// Rejected outright: WITH CHECK doing its job, the preferred
+			// and expected outcome.
+			return
+		}
+
+		if gotUserID != userA.ID {
+			t.Fatalf("UPDATE moved connection A's user_id to %v, want it to stay %v or be rejected entirely", gotUserID, userA.ID)
+		}
+	})
+
+	t.Run("FindByID for another user's connection id returns not found, not the real row", func(t *testing.T) {
+		err := store.WithUser(ctx, userA.ID, func(ctx context.Context) error {
+			_, err := store.Connections().FindByID(ctx, connectionB.ID)
+
+			return err
+		})
+		if err == nil {
+			t.Fatal("FindByID(connectionB.ID) while scoped to user A succeeded, want storage.ErrNotFound")
+		}
+		if !errors.Is(err, storage.ErrNotFound) {
+			t.Fatalf("FindByID(connectionB.ID) while scoped to user A: err = %v, want errors.Is(err, storage.ErrNotFound)", err)
+		}
+	})
+
+	t.Run("a calendar created under user A is invisible while scoped to user B", func(t *testing.T) {
+		var calendar storage.Calendar
+
+		if err := store.WithUser(ctx, userA.ID, func(ctx context.Context) error {
+			created, err := store.Calendars().Create(ctx, storage.Calendar{
+				UserID:       userA.ID,
+				ConnectionID: connectionA.ID,
+				ExternalID:   "external-" + uuid.NewString(),
+				Name:         "Privat",
+			})
+			if err != nil {
+				return err
+			}
+
+			calendar = created
+
+			return nil
+		}); err != nil {
+			t.Fatalf("create calendar under user A: %v", err)
+		}
+
+		err := store.WithUser(ctx, userB.ID, func(ctx context.Context) error {
+			_, err := store.Calendars().FindByID(ctx, calendar.ID)
+
+			return err
+		})
+		if err == nil {
+			t.Fatal("FindByID found user A's calendar while scoped to user B, want storage.ErrNotFound")
+		}
+		if !errors.Is(err, storage.ErrNotFound) {
+			t.Fatalf("err = %v, want errors.Is(err, storage.ErrNotFound)", err)
+		}
+	})
+
+	t.Run("an edge created under user A is invisible while scoped to user B", func(t *testing.T) {
+		var edge storage.Edge
+
+		if err := store.WithUser(ctx, userA.ID, func(ctx context.Context) error {
+			source, err := store.Calendars().Create(ctx, storage.Calendar{
+				UserID: userA.ID, ConnectionID: connectionA.ID,
+				ExternalID: "ext-src-" + uuid.NewString(), Name: "Source",
+			})
+			if err != nil {
+				return err
+			}
+
+			target, err := store.Calendars().Create(ctx, storage.Calendar{
+				UserID: userA.ID, ConnectionID: connectionA.ID,
+				ExternalID: "ext-dst-" + uuid.NewString(), Name: "Target", Managed: true,
+			})
+			if err != nil {
+				return err
+			}
+
+			created, err := store.Edges().Create(ctx, storage.Edge{
+				UserID: userA.ID, SourceCalendarID: source.ID, TargetCalendarID: target.ID,
+				DetailLevel: storage.DetailLevelBusyBlock,
+			})
+			if err != nil {
+				return err
+			}
+
+			edge = created
+
+			return nil
+		}); err != nil {
+			t.Fatalf("create edge under user A: %v", err)
+		}
+
+		err := store.WithUser(ctx, userB.ID, func(ctx context.Context) error {
+			_, err := store.Edges().FindByID(ctx, edge.ID)
+
+			return err
+		})
+		if !errors.Is(err, storage.ErrNotFound) {
+			t.Fatalf("FindByID(edge.ID) while scoped to user B: err = %v, want errors.Is(err, storage.ErrNotFound)", err)
+		}
+	})
+
+	t.Run("a calendar grant is visible to its owner and its grantee, and to neither a third user", func(t *testing.T) {
+		userC, err := store.Users().Create(ctx, storage.User{Email: "c-" + uuid.NewString() + "@example.com", Status: storage.UserStatusActive})
+		if err != nil {
+			t.Fatalf("create user C: %v", err)
+		}
+
+		var sharedCalendar storage.Calendar
+
+		if err := store.WithUser(ctx, userA.ID, func(ctx context.Context) error {
+			created, err := store.Calendars().Create(ctx, storage.Calendar{
+				UserID: userA.ID, ConnectionID: connectionA.ID,
+				ExternalID: "ext-shared-" + uuid.NewString(), Name: "Shared with B",
+			})
+
+			sharedCalendar = created
+
+			return err
+		}); err != nil {
+			t.Fatalf("create calendar to grant: %v", err)
+		}
+
+		var grant storage.CalendarGrant
+
+		if err := store.WithUser(ctx, userA.ID, func(ctx context.Context) error {
+			created, err := store.CalendarGrants().Create(ctx, storage.CalendarGrant{
+				OwnerUserID: userA.ID, GranteeUserID: userB.ID,
+				CalendarID: sharedCalendar.ID, MaxDetailLevel: storage.DetailLevelTitleTime,
+			})
+
+			grant = created
+
+			return err
+		}); err != nil {
+			t.Fatalf("create grant: %v", err)
+		}
+
+		if err := store.WithUser(ctx, userA.ID, func(ctx context.Context) error {
+			_, err := store.CalendarGrants().FindByID(ctx, grant.ID)
+
+			return err
+		}); err != nil {
+			t.Fatalf("owner cannot see its own grant: %v", err)
+		}
+
+		if err := store.WithUser(ctx, userB.ID, func(ctx context.Context) error {
+			_, err := store.CalendarGrants().FindByID(ctx, grant.ID)
+
+			return err
+		}); err != nil {
+			t.Fatalf("grantee cannot see the grant made to it: %v", err)
+		}
+
+		err = store.WithUser(ctx, userC.ID, func(ctx context.Context) error {
+			_, err := store.CalendarGrants().FindByID(ctx, grant.ID)
+
+			return err
+		})
+		if !errors.Is(err, storage.ErrNotFound) {
+			t.Fatalf("third user saw a grant naming neither as owner nor grantee: err = %v, want storage.ErrNotFound", err)
+		}
+	})
+
+	t.Run("the table owner is still scoped by row level security because of FORCE", func(t *testing.T) {
+		// Every role exercised above is either DATABASE_URL's own role, a
+		// superuser that bypasses row level security unconditionally
+		// (FORCE included; see the subtest above), or testAppRole,
+		// NOSUPERUSER NOBYPASSRLS but not the connections table's owner,
+		// so ENABLE alone would already keep it scoped regardless of
+		// FORCE. Neither actually exercises what FORCE itself adds:
+		// binding the table's own OWNER to the policy too (ENABLE alone
+		// exempts the owner). This subtest makes testOwnerRole, which is
+		// NOSUPERUSER NOBYPASSRLS, own connections for its duration
+		// (restored via t.Cleanup) and proves the policy still applies
+		// to it.
+		ownerURL := setUpTestOwnerRole(ctx, t, adminPool, adminURL)
+		makeTemporaryOwner(ctx, t, adminPool, "connections", testOwnerRole)
+
+		ownerPool, err := postgres.NewPool(ctx, ownerURL)
+		if err != nil {
+			t.Fatalf("open pool as %s: %v", testOwnerRole, err)
+		}
+		defer ownerPool.Close()
+
+		tx, err := ownerPool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+
+		if _, err := tx.Exec(ctx, `SELECT set_config('app.user_id', $1, true)`, userB.ID.String()); err != nil {
+			t.Fatalf("set_config: %v", err)
+		}
+
+		rows, err := tx.Query(ctx, `SELECT * FROM connections`)
+		if err != nil {
+			t.Fatalf("SELECT * FROM connections as the table owner, scoped to user B: %v", err)
+		}
+
+		ids := connectionIDs(t, rows)
+
+		if len(ids) != 1 || ids[0] != connectionB.ID {
+			t.Fatalf("SELECT * FROM connections as the table owner, scoped to user B = %v, want exactly [%v]; "+
+				"if every row comes back instead, FORCE ROW LEVEL SECURITY is not actually binding the table owner",
+				ids, connectionB.ID)
+		}
+	})
+}
+
+// testOwnerRole and testOwnerPassword name a second disposable test role,
+// alongside testAppRole: NOSUPERUSER NOBYPASSRLS like testAppRole, but
+// this one is temporarily made the owner of a table (see
+// makeTemporaryOwner), which testAppRole never is. testOwnerPassword is a
+// fixed, obviously-fake value, the same way testAppPassword is.
+const (
+	testOwnerRole     = "calbridge_test_owner"
+	testOwnerPassword = "calbridge-test-only-not-a-real-secret-owner"
+)
+
+// setUpTestOwnerRole creates testOwnerRole if it does not exist yet, the
+// same idempotent pattern setUpTestAppRole uses, and returns a connection
+// string for it. It grants no table privileges: ownership, which
+// makeTemporaryOwner confers separately, already carries every privilege
+// on the table it owns.
+func setUpTestOwnerRole(ctx context.Context, t *testing.T, adminPool *pgxpool.Pool, adminURL string) string {
+	t.Helper()
+
+	createRole := `
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '` + testOwnerRole + `') THEN
+        CREATE ROLE ` + testOwnerRole + ` LOGIN PASSWORD '` + testOwnerPassword + `' NOSUPERUSER NOBYPASSRLS;
+    END IF;
+END
+$$;`
+
+	if _, err := adminPool.Exec(ctx, createRole); err != nil {
+		t.Fatalf("create %s role: %v", testOwnerRole, err)
+	}
+
+	ownerURL, err := url.Parse(adminURL)
+	if err != nil {
+		t.Fatalf("parse DATABASE_URL: %v", err)
+	}
+
+	ownerURL.User = url.UserPassword(testOwnerRole, testOwnerPassword)
+
+	return ownerURL.String()
+}
+
+// makeTemporaryOwner makes role the owner of tableName for the rest of
+// the calling test, restoring whichever role owned it before via
+// t.Cleanup. This is the only way to actually exercise FORCE ROW LEVEL
+// SECURITY: it is specifically the clause that binds a table's OWNER to
+// its own policy, and nothing else this suite connects as is both
+// non-superuser and the table's owner at the same time.
+func makeTemporaryOwner(ctx context.Context, t *testing.T, adminPool *pgxpool.Pool, tableName, role string) {
+	t.Helper()
+
+	var originalOwner string
+
+	if err := adminPool.QueryRow(ctx,
+		`SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname = $1`, tableName,
+	).Scan(&originalOwner); err != nil {
+		t.Fatalf("read current owner of %s: %v", tableName, err)
+	}
+
+	if _, err := adminPool.Exec(ctx, `ALTER TABLE `+tableName+` OWNER TO `+role); err != nil {
+		t.Fatalf("make %s own %s: %v", role, tableName, err)
+	}
+
+	t.Cleanup(func() {
+		if _, err := adminPool.Exec(context.Background(), `ALTER TABLE `+tableName+` OWNER TO `+originalOwner); err != nil {
+			t.Errorf("restore %s as owner of %s: %v", originalOwner, tableName, err)
+		}
+	})
+}
+
+// TestEveryUserScopedTableEnforcesRowLevelSecurity introspects the schema
+// itself, rather than naming identities, connections, calendars, edges,
+// calendar_grants and event_mapping by hand, so it catches a future table
+// that references users but forgets ENABLE ROW LEVEL SECURITY,
+// FORCE ROW LEVEL SECURITY or CREATE POLICY: exactly the three properties
+// the targeted tests above assume rather than verify generically. "User
+// scoped" is defined here as "has at least one foreign key column
+// referencing users(id)", which catches both the plain user_id columns
+// most tables carry and calendar_grants' owner_user_id/grantee_user_id
+// pair, rather than assuming every such column is literally named
+// user_id. It runs as DATABASE_URL's own admin/superuser role: querying
+// pg_class, pg_policies and information_schema needs no special
+// privilege, and this test is about the schema's shape, not about who
+// can read which row, so the restricted role TestRowLevelSecurity's own
+// tests exercise is beside the point here.
+func TestEveryUserScopedTableEnforcesRowLevelSecurity(t *testing.T) {
+	adminURL := os.Getenv("DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("DATABASE_URL not set; skipping the Postgres-backed row level security introspection test")
+	}
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	rows, err := adminPool.Query(ctx, `
+SELECT DISTINCT
+    c.relname,
+    c.relrowsecurity,
+    c.relforcerowsecurity,
+    EXISTS (
+        SELECT 1 FROM pg_policies p
+        WHERE p.schemaname = 'public' AND p.tablename = c.relname
+    ) AS has_policy
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN information_schema.table_constraints tc
+    ON tc.table_schema = 'public' AND tc.table_name = c.relname AND tc.constraint_type = 'FOREIGN KEY'
+JOIN information_schema.constraint_column_usage ccu
+    ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+WHERE n.nspname = 'public'
+  AND c.relkind = 'r'
+  AND ccu.table_name = 'users'
+  AND c.relname <> 'users'
+ORDER BY c.relname`)
+	if err != nil {
+		t.Fatalf("introspect user-scoped tables: %v", err)
+	}
+
+	type userScopedTable struct {
+		Name        string `db:"relname"`
+		RowSecurity bool   `db:"relrowsecurity"`
+		ForceRLS    bool   `db:"relforcerowsecurity"`
+		HasPolicy   bool   `db:"has_policy"`
+	}
+
+	tables, err := pgx.CollectRows(rows, pgx.RowToStructByName[userScopedTable])
+	if err != nil {
+		t.Fatalf("scan user-scoped tables: %v", err)
+	}
+
+	if len(tables) == 0 {
+		t.Fatal("introspection found no table referencing users at all; " +
+			"either the query above is broken, or db/migrations has not actually been applied")
+	}
+
+	for _, table := range tables {
+		t.Run(table.Name, func(t *testing.T) {
+			if !table.RowSecurity {
+				t.Errorf("table %q references users but ROW LEVEL SECURITY is not enabled", table.Name)
+			}
+			if !table.ForceRLS {
+				t.Errorf("table %q references users but FORCE ROW LEVEL SECURITY is not set", table.Name)
+			}
+			if !table.HasPolicy {
+				t.Errorf("table %q references users but carries no row level security policy at all", table.Name)
+			}
+		})
+	}
+}
+
+// TestIdentitiesNeverResolveThroughConnections proves, at the schema
+// level, that identities (a provider identity used to sign in) and
+// connections (a provider account connected as a calendar) are genuinely
+// separate: no foreign key, in either direction, connects the two
+// tables, so no query can follow a column from one straight into the
+// other. db/migrations records the reasoning; this test is what actually
+// enforces it stays true as the schema evolves. internal/auth, a later
+// step, is what will add the lookup that resolves a sign-in identity to
+// a user; it is deliberately absent from this milestone (see the issue's
+// "no login" scope), so there is no application code to exercise here
+// beyond the schema's own shape and the two repositories' own, disjoint
+// result types.
+func TestIdentitiesNeverResolveThroughConnections(t *testing.T) {
+	adminURL := os.Getenv("DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("DATABASE_URL not set; skipping the Postgres-backed identity/connection separation test")
+	}
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	var count int
+
+	if err := adminPool.QueryRow(ctx, `
+SELECT count(*)
+FROM information_schema.table_constraints tc
+JOIN information_schema.constraint_column_usage ccu
+    ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+WHERE tc.table_schema = 'public'
+  AND tc.constraint_type = 'FOREIGN KEY'
+  AND (
+    (tc.table_name = 'identities' AND ccu.table_name = 'connections')
+    OR (tc.table_name = 'connections' AND ccu.table_name = 'identities')
+  )`).Scan(&count); err != nil {
+		t.Fatalf("introspect identities/connections foreign keys: %v", err)
+	}
+
+	if count != 0 {
+		t.Fatalf("found %d foreign key(s) between identities and connections, want 0: "+
+			"a provider identity used to sign in must never be resolvable through a connection, or the reverse", count)
+	}
+}
+
+// setUpTestAppRole creates testAppRole on the database adminURL points
+// at, if it does not exist yet, grants it exactly the privileges the
+// application needs on the user-scoped tables, and returns a connection
+// string for it. Role creation has no "IF NOT EXISTS" in Postgres, so
+// this checks pg_roles itself to stay safe to run repeatedly against the
+// same, persistent database.
+func setUpTestAppRole(ctx context.Context, t *testing.T, adminPool *pgxpool.Pool, adminURL string) string {
+	t.Helper()
+
+	createRole := `
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '` + testAppRole + `') THEN
+        CREATE ROLE ` + testAppRole + ` LOGIN PASSWORD '` + testAppPassword + `' NOSUPERUSER NOBYPASSRLS;
+    END IF;
+END
+$$;`
+
+	if _, err := adminPool.Exec(ctx, createRole); err != nil {
+		t.Fatalf("create %s role: %v", testAppRole, err)
+	}
+
+	// Mirrors docker/postgres/init-app-role.sh's own grant to the compose
+	// role: nothing in this codebase deletes a user, so users gets no
+	// DELETE, and every other table gets exactly the privileges its own
+	// repository in internal/storage/postgres actually uses.
+	grant := `
+GRANT USAGE ON SCHEMA public TO ` + testAppRole + `;
+GRANT SELECT, INSERT, UPDATE ON users TO ` + testAppRole + `;
+GRANT SELECT, INSERT, DELETE ON identities, calendars, calendar_grants TO ` + testAppRole + `;
+GRANT SELECT, INSERT, UPDATE, DELETE ON connections, edges, event_mapping TO ` + testAppRole + `;`
+
+	if _, err := adminPool.Exec(ctx, grant); err != nil {
+		t.Fatalf("grant %s privileges: %v", testAppRole, err)
+	}
+
+	restricted, err := url.Parse(adminURL)
+	if err != nil {
+		t.Fatalf("parse DATABASE_URL: %v", err)
+	}
+
+	restricted.User = url.UserPassword(testAppRole, testAppPassword)
+
+	return restricted.String()
+}
+
+// connectionIDs decodes a literal "SELECT * FROM connections" result
+// into the ids it carries. connectionRawRow's "db" tags, not column
+// position, do the matching, so the test stays correct even if a later
+// migration adds a column to connections.
+func connectionIDs(t *testing.T, rows pgx.Rows) []uuid.UUID {
+	t.Helper()
+
+	records, err := pgx.CollectRows(rows, pgx.RowToStructByName[connectionRawRow])
+	if err != nil {
+		t.Fatalf("scan connections: %v", err)
+	}
+
+	ids := make([]uuid.UUID, len(records))
+	for i, record := range records {
+		ids[i] = record.ID
+	}
+
+	return ids
+}
+
+func assertOnlyConnection(t *testing.T, connections []storage.Connection, wantID uuid.UUID) {
+	t.Helper()
+
+	if len(connections) != 1 {
+		t.Fatalf("got %d connections, want exactly 1", len(connections))
+	}
+
+	if connections[0].ID != wantID {
+		t.Fatalf("got connection %v, want %v", connections[0].ID, wantID)
+	}
+}
