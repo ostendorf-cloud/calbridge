@@ -1,0 +1,19 @@
+# Local development only: `docker compose up --build` gives a running
+# calbridge with nothing else, since this milestone has no database and
+# no provider connector yet (see docs/concepts/calbridge.md's delivery
+# order). A later issue that adds Postgres, a provider connector or login
+# extends this file with the services and secrets those need.
+services:
+  calbridge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      LISTEN_ADDR: ":8080"
+      LOG_LEVEL: info
+    ports:
+      # Bound to loopback only: "8080:8080" alone binds every interface,
+      # which on a shared network would expose this service to anyone
+      # else on it.
+      - "127.0.0.1:8080:8080"
