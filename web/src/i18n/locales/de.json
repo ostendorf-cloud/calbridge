@@ -1,0 +1,26 @@
+{
+  "common": {
+    "appName": "calbridge",
+    "skipToContent": "Zum Inhalt springen"
+  },
+  "login": {
+    "title": "Anmelden",
+    "lead": "Dieser Anmeldebereich ist ein Platzhalter für die künftige Kontoanmeldung und prüft nur die Sitzung und den CSRF-Schutz.",
+    "email": "E-Mail",
+    "submit": "Anmelden",
+    "submitting": "Wird angemeldet",
+    "validation": {
+      "email": "Bitte geben Sie eine E-Mail-Adresse an."
+    }
+  },
+  "home": {
+    "title": "Übersicht",
+    "lead": "Diese Ansicht bestätigt nur, dass Sitzung und CSRF-Schutz funktionieren.",
+    "loading": "Profil wird geladen",
+    "loadError": "Profil konnte nicht geladen werden.",
+    "email": "E-Mail",
+    "logout": "Abmelden",
+    "loggingOut": "Wird abgemeldet",
+    "logoutError": "Abmelden ist fehlgeschlagen."
+  }
+}

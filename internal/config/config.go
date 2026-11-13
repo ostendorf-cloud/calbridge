@@ -20,9 +20,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"time"
 
+	"github.com/ostendorf-cloud/govue/clientip"
 	"github.com/ostendorf-cloud/govue/envconf"
 	"github.com/ostendorf-cloud/govue/httpserver"
 	"github.com/ostendorf-cloud/govue/logging"
@@ -35,6 +37,25 @@ import (
 // length is a deployment mistake to fail loudly on rather than stretch
 // or truncate.
 const encryptionKeyBytes = 32
+
+// defaultRateLimitBurst and defaultRateLimitPer throttle the one route a
+// request needs no session to reach: POST /api/v1/auth/login starts a
+// session for any email with no account to check it against (see
+// internal/httpapi's package doc), so without a limit a single client
+// could force session.MemoryStore's eviction of an arbitrary tracked
+// session, repeatedly, in seconds. Ten starts a minute for one resolved
+// client address is generous for a browser and tight for a script, the
+// same budget solobill's own local login uses for the same reason. That
+// resolved address is the TCP peer unless TrustedProxyCIDRs below names
+// the deployment's own proxy: behind charts/calbridge's Ingress or
+// HTTPRoute with no proxy configured, the TCP peer is the ingress
+// controller for every request, so the budget is shared by every client
+// instead of kept one per client. See TrustedProxyCIDRs's own doc
+// comment and the chart's README.
+const (
+	defaultRateLimitBurst = 10
+	defaultRateLimitPer   = time.Minute
+)
 
 // Config is every setting calbridge reads from the environment, loaded
 // and validated once by Load.
@@ -75,6 +96,35 @@ type Config struct {
 	// question docs/concepts/calbridge.md records; this field only
 	// carries whatever the environment supplied.
 	EncryptionKey []byte
+
+	// SessionAllowPlainHTTP drops the Secure attribute (and the __Host-
+	// cookie prefix it is a precondition of) from the session cookie,
+	// which is what lets a session survive a plain HTTP docker-compose
+	// run during local development. The default is false: charts/calbridge
+	// can expose the service through a TLS-terminating Ingress or
+	// HTTPRoute, and a real deployment must leave this false, since
+	// without Secure the session id travels in the clear.
+	SessionAllowPlainHTTP bool
+
+	// RateLimitBurst and RateLimitPer configure the token bucket
+	// internal/httpapi applies to the login route.
+	RateLimitBurst int
+	RateLimitPer   time.Duration
+
+	// TrustedProxyCIDRs lists the addresses internal/httpapi's login rate
+	// limiter trusts to have appended the real client address to
+	// X-Forwarded-For, parsed by govue's clientip.ParseCIDRs. Empty by
+	// default: the limiter then keys every request on its TCP peer, the
+	// secure choice, since trusting the header from an unconfigured proxy
+	// would let a request forge its own rate limit key. charts/calbridge
+	// routes every request through its own Ingress or HTTPRoute, so
+	// without this set the TCP peer calbridge sees is the ingress
+	// controller, not the client, and the limiter's budget ends up shared
+	// by every client instead of kept one per client. Setting this to the
+	// ingress controller's (or Gateway data plane's) address lets the
+	// limiter trust the header that controller appends and recover the
+	// real client address; see the chart's README for how to set it.
+	TrustedProxyCIDRs []netip.Prefix
 }
 
 // Load reads every setting through getenv, collecting every problem into
@@ -113,6 +163,15 @@ func Load(getenv func(string) string) (Config, error) {
 	encryptionKey, err := decodeHexKey("ENCRYPTION_KEY", l.SecretOrFile("ENCRYPTION_KEY"), encryptionKeyBytes)
 	fail(err)
 	cfg.EncryptionKey = encryptionKey
+
+	cfg.SessionAllowPlainHTTP = l.Bool("SESSION_ALLOW_PLAIN_HTTP", false)
+
+	cfg.RateLimitBurst = l.Int("RATE_LIMIT_BURST", defaultRateLimitBurst, 0, 100_000)
+	cfg.RateLimitPer = l.Duration("RATE_LIMIT_PER", defaultRateLimitPer, time.Second, time.Hour)
+
+	trustedProxyCIDRs, err := clientip.ParseCIDRs(l.String("TRUSTED_PROXY_CIDRS", ""))
+	fail(err)
+	cfg.TrustedProxyCIDRs = trustedProxyCIDRs
 
 	if err := errors.Join(append(problems, l.Err())...); err != nil {
 		return Config{}, fmt.Errorf("config: load: %w", err)

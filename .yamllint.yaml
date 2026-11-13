@@ -5,6 +5,10 @@ ignore:
   # plain YAML; values.yaml, Chart.yaml, values.schema.json and tests/ stay
   # linted. Matches solobill's own .yamllint.yaml.
   - charts/*/templates/
+  # Installed dependencies and the lockfile pnpm writes are not ours to lint.
+  # Matches solobill's own .yamllint.yaml.
+  - web/node_modules/
+  - web/pnpm-lock.yaml
 
 rules:
   line-length:

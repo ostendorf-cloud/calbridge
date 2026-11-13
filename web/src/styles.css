@@ -1,0 +1,25 @@
+/*
+ * The token contract plus calbridge's own theme. Tailwind does not scan a
+ * git dependency's sources by default, so @source points it at govue's own
+ * component files, the same way its README documents.
+ *
+ * The seed colours this theme was generated from live in theme/seed.json.
+ * Regenerate by checking out govue at the tag web/package.json pins, then
+ * from its web/ directory: pnpm theme:generate -- --config
+ * <this repo>/web/src/theme/seed.json --out
+ * <this repo>/web/src/theme/calbridge.css. This one is a placeholder: a
+ * slate blue-grey neutral with a calendar-blue accent, chosen only to be
+ * professional and readable, not as a considered brand decision. A later
+ * branding pass replaces the seed colours and regenerates.
+ *
+ * No check runs today to fail when calbridge.css stops matching
+ * seed.json: the generator the regeneration command above calls lives in
+ * govue's own scripts/, which web/package.json's pnpm git dependency
+ * does not publish (its "files" field ships src/ only), so nothing in
+ * this repository can invoke it without a separate govue checkout. A
+ * task check:theme is worth adding once that generator can run in CI.
+ */
+@import '@ostendorf-cloud/govue/styles.css';
+@import './theme/calbridge.css';
+
+@source '../node_modules/@ostendorf-cloud/govue/src';

@@ -184,6 +184,12 @@ services:
       DATABASE_USER: calbridge_app
       DATABASE_PASSWORD: "${APP_DB_PASSWORD:?set in .env, generate with openssl rand -hex 24}"
       ENCRYPTION_KEY: "${ENCRYPTION_KEY:?set in .env, generate with openssl rand -hex 32}"
+      # This compose file serves calbridge over plain HTTP on localhost,
+      # with no TLS-terminating proxy in front of it; without this, the
+      # session cookie's Secure attribute would stop the browser from
+      # ever sending it back, breaking login outright. See
+      # internal/config.Config.SessionAllowPlainHTTP's own doc comment.
+      SESSION_ALLOW_PLAIN_HTTP: "true"
     ports:
       # Bound to loopback only: "8080:8080" alone binds every interface,
       # which on a shared network would expose this service to anyone
