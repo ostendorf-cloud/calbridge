@@ -1,0 +1,26 @@
+{
+  "common": {
+    "appName": "calbridge",
+    "skipToContent": "Skip to content"
+  },
+  "login": {
+    "title": "Log in",
+    "lead": "This sign-in is a placeholder for the real account login to come, and only proves the session and CSRF protection.",
+    "email": "Email",
+    "submit": "Log in",
+    "submitting": "Logging in",
+    "validation": {
+      "email": "Please enter an email address."
+    }
+  },
+  "home": {
+    "title": "Overview",
+    "lead": "This view only proves that the session and CSRF protection work.",
+    "loading": "Loading profile",
+    "loadError": "Could not load the profile.",
+    "email": "Email",
+    "logout": "Log out",
+    "loggingOut": "Logging out",
+    "logoutError": "Logging out failed."
+  }
+}
