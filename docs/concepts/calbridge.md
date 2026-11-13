@@ -69,12 +69,17 @@ Selective calendar mirroring across providers, one detail level per edge.
   connected as a calendar. The collision creates a separate account, so controlling a mailbox never
   becomes a way into another user's calbridge account.
 - `internal/provider` defines one connector interface: list calendars, read changes since a token,
-  create, update and delete an event the connector itself owns.
+  create and delete a calendar it owns, and create, update and delete an event it owns. Deleting a
+  calendar is its own operation, because removing a managed calendar's events is not the same as
+  removing the calendar, and an edge that created one has to be able to take it away again.
 - A connector registers itself into a registry under a provider id, so adding one is a new package
   and one import, never an edit to a switch statement somewhere in the engine.
 - Every connector declares its capabilities (push notifications, native recurrence rules, calendar
-  creation, attendees, free/busy); the engine reads that declaration and picks its strategy, so a
-  provider's gaps are known at registration rather than discovered at runtime.
+  creation, attendees, floating times); the engine reads that declaration and picks its strategy,
+  so a provider's gaps are known at registration rather than discovered at runtime.
+- Free/busy is deliberately not a capability: no part of the design reads it, and negotiating
+  free/busy is a non goal. Floating times is one, because neither Google nor Graph can store a time
+  without a zone, so anchoring a floating source time is a decision the engine must make knowingly.
 - Connectors speak one normalised event type and never leak a provider's own model; everything
   provider-shaped, including id formats, timezone handling and quirks, stays inside its package.
 - Three implementations: Google Calendar API, Microsoft Graph, and a generic CalDAV connector driven
