@@ -1,0 +1,44 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  markdownlint:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+      - uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785  # v5.2.8
+      - run: task lint:markdown
+
+  yamllint:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+      - uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785  # v5.2.8
+      - run: task lint:yaml
+
+  actionlint:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+      - uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785  # v5.2.8
+      - run: task lint:actions
+
+  gitleaks:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          fetch-depth: 0
+      - uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785  # v5.2.8
+      - run: task lint:secrets

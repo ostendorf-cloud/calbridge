@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ostendorf-cloud/skills/main/agent-skills.schema.json",
+  "stacks": {
+    "stack: go": ["cmd/**", "internal/**", "go.mod", "go.sum"],
+    "stack: vue": ["web/**"],
+    "stack: helm": ["charts/**"],
+    "stack: postgres": ["db/migrations/**"],
+    "stack: github-actions": [".github/workflows/**"]
+  }
+}
