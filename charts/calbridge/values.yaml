@@ -1,0 +1,122 @@
+# Default values for calbridge.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/ostendorf-cloud/calbridge
+  # Defaults to .Chart.AppVersion when left empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # No RBAC is created: this application makes no Kubernetes API calls of its own.
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+# Matches the Dockerfile's distroless "nonroot" base image, uid/gid 65532.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+# readOnlyRootFilesystem is safe here: cmd/calbridge keeps no state on disk at
+# all today (internal/config reads only the environment, internal/httpapi
+# writes nothing), and the distroless base image needs no writable path of
+# its own either.
+securityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  # Also used as the container port and for the probes: must match the port
+  # encoded in config.listenAddr (default ":8080" for both).
+  port: 8080
+
+# Disabled by default. Enable at most one of ingress and httproute: the
+# render fails with a readable message when both are enabled, rather than
+# emitting two conflicting routes to the same Service (see
+# templates/deployment.yaml's fail guard).
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: calbridge.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# The Gateway API alternative to ingress above, for a cluster whose ingress
+# controller is a Gateway rather than an Ingress controller. parentRefs names
+# the Gateway (or Gateways) this HTTPRoute attaches to; hostnames narrows
+# which of the Gateway's listeners it binds, matching the Gateway API's own
+# HTTPRoute contract.
+httproute:
+  enabled: false
+  annotations: {}
+  parentRefs:
+    - name: ""
+      namespace: ""
+      sectionName: ""
+  hostnames: []
+
+resources:
+  requests:
+    # A govue HTTP server with no background polling and no database pool
+    # yet: light at idle, matching solobill's own baseline request for a
+    # comparably small Go service.
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    # No CPU limit: request handling is bursty, and a CPU limit would only
+    # throttle the pod mid-request for being briefly busy, not for being
+    # broken. A memory limit stays in place as a safety net against a
+    # genuine leak.
+    memory: 256Mi
+
+# Disabled by default: cmd/calbridge has no slow startup work in front of
+# config.Load today. Enable this only for a deployment that adds one.
+startupProbe:
+  enabled: false
+  initialDelaySeconds: 0
+  periodSeconds: 5
+  failureThreshold: 30
+
+livenessProbe:
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Plain, non-secret configuration, mapped 1:1 from internal/config.Config
+# (see that package's own doc comment for the authoritative list).
+config:
+  listenAddr: ":8080"
+  logLevel: "info"

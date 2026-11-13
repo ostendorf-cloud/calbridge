@@ -1,0 +1,25 @@
+suite: replicaCount and selector label stability
+templates:
+  - templates/deployment.yaml
+tests:
+  - it: defaults to one replica with stable selector labels
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 1
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/name"]
+          value: calbridge
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/instance"]
+          value: RELEASE-NAME
+      - notExists:
+          path: spec.selector.matchLabels["app.kubernetes.io/version"]
+
+  - it: honours an increased replica count
+    set:
+      replicaCount: 3
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 3
