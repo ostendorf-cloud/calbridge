@@ -77,6 +77,8 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.existingSecret.name }}
                   key: {{ .Values.existingSecret.encryptionKeyKey }}
+            - name: TRUSTED_PROXY_CIDRS
+              value: {{ .Values.config.trustedProxyCIDRs | default "" | quote }}
           {{- if .Values.startupProbe.enabled }}
           startupProbe:
             httpGet:

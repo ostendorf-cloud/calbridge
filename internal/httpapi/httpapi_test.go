@@ -5,20 +5,43 @@ package httpapi_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/fstest"
+	"time"
 
+	"github.com/ostendorf-cloud/govue/clientip"
 	"github.com/ostendorf-cloud/govue/health"
 	"github.com/ostendorf-cloud/govue/logging"
 	"github.com/ostendorf-cloud/govue/metrics"
 
 	"github.com/ostendorf-cloud/calbridge/internal/httpapi"
 )
+
+// generousRateLimit is a burst high enough that no test below the rate
+// limiting tests themselves ever trips it, the same reasoning solobill's
+// own httpapi_test.go uses for its default Deps.
+const generousRateLimit = 1000
+
+// indexHTML is the SPA shell's own content, distinct from any API error
+// body, so a test can tell the fallback and a JSON answer apart.
+const indexHTML = "<!doctype html><title>calbridge test shell</title>"
+
+// testDistFS is a minimal embedded-build stand-in: an index.html and one
+// real asset, matching what vite's own build always produces.
+func testDistFS() fstest.MapFS {
+	return fstest.MapFS{
+		"index.html":    {Data: []byte(indexHTML)},
+		"assets/app.js": {Data: []byte("// test asset")},
+	}
+}
 
 // buildTestHandlers builds a real pair of handlers over a fresh
 // health.Registry and metrics registry, so a test exercises the actual
@@ -34,6 +57,9 @@ func buildTestHandlers(t *testing.T, registry *health.Registry) httpapi.Handlers
 		Logger:          logging.New(io.Discard, slog.LevelError),
 		HealthRegistry:  registry,
 		MetricsRegistry: metrics.NewRegistry(),
+		DistFS:          testDistFS(),
+		RateLimitBurst:  generousRateLimit,
+		RateLimitPer:    time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("httpapi.NewHandler() error = %v", err)
@@ -51,6 +77,7 @@ func TestNewHandler(t *testing.T) {
 		_, err := httpapi.NewHandler(httpapi.Deps{
 			HealthRegistry:  health.New(),
 			MetricsRegistry: metrics.NewRegistry(),
+			DistFS:          testDistFS(),
 		})
 		if err == nil {
 			t.Fatal("NewHandler() error = nil, want an error for a missing logger")
@@ -63,6 +90,7 @@ func TestNewHandler(t *testing.T) {
 		_, err := httpapi.NewHandler(httpapi.Deps{
 			Logger:          logging.New(io.Discard, slog.LevelError),
 			MetricsRegistry: metrics.NewRegistry(),
+			DistFS:          testDistFS(),
 		})
 		if err == nil {
 			t.Fatal("NewHandler() error = nil, want an error for a missing health registry")
@@ -75,9 +103,23 @@ func TestNewHandler(t *testing.T) {
 		_, err := httpapi.NewHandler(httpapi.Deps{
 			Logger:         logging.New(io.Discard, slog.LevelError),
 			HealthRegistry: health.New(),
+			DistFS:         testDistFS(),
 		})
 		if err == nil {
 			t.Fatal("NewHandler() error = nil, want an error for a missing metrics registry")
+		}
+	})
+
+	t.Run("missing dist filesystem is an error", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := httpapi.NewHandler(httpapi.Deps{
+			Logger:          logging.New(io.Discard, slog.LevelError),
+			HealthRegistry:  health.New(),
+			MetricsRegistry: metrics.NewRegistry(),
+		})
+		if err == nil {
+			t.Fatal("NewHandler() error = nil, want an error for a missing dist filesystem")
 		}
 	})
 
@@ -88,7 +130,7 @@ func TestNewHandler(t *testing.T) {
 		if err == nil {
 			t.Fatal("NewHandler() error = nil, want an error for every missing dependency")
 		}
-		if !errorContainsAll(err, "logger is required", "health registry is required", "metrics registry is required") {
+		if !errorContainsAll(err, "logger is required", "health registry is required", "metrics registry is required", "dist filesystem is required") {
 			t.Errorf("NewHandler() error = %v, want it to name every missing dependency", err)
 		}
 	})
@@ -126,16 +168,35 @@ func TestAdminHealthAndMetricsEndpoints(t *testing.T) {
 	}
 }
 
+// TestAdminHealthAndMetricsEndpointsAreUnreachableOnPublic covers the two
+// decisions httpapi.go's own comment on the admin-path 404 registrations
+// argues for: registering with no method, so every method gets the 404
+// and not only GET, and registering both the exact path and its
+// trailing-slash subtree, so a path under it cannot fall through to the
+// SPA catch-all either.
 func TestAdminHealthAndMetricsEndpointsAreUnreachableOnPublic(t *testing.T) {
 	t.Parallel()
 
 	handlers := buildTestHandlers(t, nil)
 
-	for _, path := range []string{"/healthz", "/readyz", "/metrics"} {
-		t.Run(path, func(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "liveness", method: http.MethodGet, path: "/healthz"},
+		{name: "readiness", method: http.MethodGet, path: "/readyz"},
+		{name: "metrics", method: http.MethodGet, path: "/metrics"},
+		{name: "liveness trailing slash subtree", method: http.MethodGet, path: "/healthz/"},
+		{name: "metrics subtree path", method: http.MethodGet, path: "/metrics/foo"},
+		{name: "liveness with a non-GET method", method: http.MethodPost, path: "/healthz"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
+			req := httptest.NewRequestWithContext(context.Background(), tt.method, tt.path, nil)
 			rec := httptest.NewRecorder()
 
 			handlers.Public.ServeHTTP(rec, req)
@@ -218,18 +279,417 @@ func TestRequestIDHeaderIsSetOnEveryResponse(t *testing.T) {
 	}
 }
 
-func TestUnmatchedRouteAnswers404(t *testing.T) {
+func TestUnmatchedAPIRouteAnswersJSON404(t *testing.T) {
 	t.Parallel()
 
 	handlers := buildTestHandlers(t, nil)
 
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/does-not-exist", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/does-not-exist", nil)
 	rec := httptest.NewRecorder()
 
 	handlers.Public.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want %d for an unmatched route", rec.Code, http.StatusNotFound)
+		t.Errorf("status = %d, want %d for an unmatched API route", rec.Code, http.StatusNotFound)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json for an unmatched API route", ct)
+	}
+}
+
+func TestUnmatchedNonAPIRouteServesTheSPAShell(t *testing.T) {
+	t.Parallel()
+
+	handlers := buildTestHandlers(t, nil)
+
+	for _, path := range []string{"/", "/does-not-exist", "/edges/123"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+
+			handlers.Public.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Errorf("status = %d, want %d for the SPA fallback", rec.Code, http.StatusOK)
+			}
+			if rec.Body.String() != indexHTML {
+				t.Errorf("body = %q, want the embedded index.html", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestSPAFallbackServesARealAsset(t *testing.T) {
+	t.Parallel()
+
+	handlers := buildTestHandlers(t, nil)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/assets/app.js", nil)
+	rec := httptest.NewRecorder()
+
+	handlers.Public.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d for a real asset", rec.Code, http.StatusOK)
+	}
+	if rec.Body.String() != "// test asset" {
+		t.Errorf("body = %q, want the asset's own content", rec.Body.String())
+	}
+}
+
+// testClient is an http.Client with a cookie jar, pointed at a server
+// wrapping handlers.Public, so a test can exercise the login, me and
+// logout contract the way a browser actually would: cookies carried
+// across requests, never read or replayed by hand.
+func testClient(t *testing.T, handlers httpapi.Handlers) (*http.Client, string) {
+	t.Helper()
+
+	server := httptest.NewServer(handlers.Public)
+	t.Cleanup(server.Close)
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar.New() error = %v", err)
+	}
+
+	return &http.Client{Jar: jar}, server.URL
+}
+
+// do sends method/url/body through client and closes the response body
+// once t ends, so every call site reads the response without repeating
+// the request construction or the cleanup.
+func do(t *testing.T, client *http.Client, method, url, body, csrfToken string) *http.Response {
+	t.Helper()
+
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+
+	req, err := http.NewRequestWithContext(t.Context(), method, url, reader)
+	if err != nil {
+		t.Fatalf("build %s %s request: %v", method, url, err)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if csrfToken != "" {
+		req.Header.Set("X-CSRF-Token", csrfToken)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, url, err)
+	}
+	t.Cleanup(func() {
+		_ = resp.Body.Close()
+	})
+
+	return resp
+}
+
+type meResponse struct {
+	Email     string `json:"email"`
+	CSRFToken string `json:"csrf_token"`
+}
+
+func TestMeWithoutASessionIsUnauthenticated(t *testing.T) {
+	t.Parallel()
+
+	client, baseURL := testClient(t, buildTestHandlers(t, nil))
+
+	resp := do(t, client, http.MethodGet, baseURL+"/api/v1/me", "", "")
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d with no session", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestLoginRequiresAnEmail(t *testing.T) {
+	t.Parallel()
+
+	client, baseURL := testClient(t, buildTestHandlers(t, nil))
+
+	resp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/login", `{}`, "")
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d for an empty email", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestLoginStartsASessionMeAnswersItAndLogoutEndsIt(t *testing.T) {
+	t.Parallel()
+
+	client, baseURL := testClient(t, buildTestHandlers(t, nil))
+
+	loginResp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/login", `{"email":"owner@example.com"}`, "")
+	if loginResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("login status = %d, want %d", loginResp.StatusCode, http.StatusNoContent)
+	}
+
+	meResp := do(t, client, http.MethodGet, baseURL+"/api/v1/me", "", "")
+	if meResp.StatusCode != http.StatusOK {
+		t.Fatalf("me status = %d, want %d once logged in", meResp.StatusCode, http.StatusOK)
+	}
+
+	var me meResponse
+	if err := json.NewDecoder(meResp.Body).Decode(&me); err != nil {
+		t.Fatalf("decode /api/v1/me body: %v", err)
+	}
+	if me.Email != "owner@example.com" {
+		t.Errorf("me.Email = %q, want %q", me.Email, "owner@example.com")
+	}
+	if me.CSRFToken == "" {
+		t.Error("me.CSRFToken is empty, want the session's own csrf token")
+	}
+
+	// A logout without the CSRF token the session actually holds is
+	// refused: the protector must guard this route like every other
+	// unsafe one.
+	forbidden := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/logout", "", "")
+	if forbidden.StatusCode != http.StatusForbidden {
+		t.Errorf("logout without a csrf token status = %d, want %d", forbidden.StatusCode, http.StatusForbidden)
+	}
+
+	logoutResp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/logout", "", me.CSRFToken)
+	if logoutResp.StatusCode != http.StatusNoContent {
+		t.Errorf("logout status = %d, want %d", logoutResp.StatusCode, http.StatusNoContent)
+	}
+
+	afterLogout := do(t, client, http.MethodGet, baseURL+"/api/v1/me", "", "")
+	if afterLogout.StatusCode != http.StatusUnauthorized {
+		t.Errorf("me status after logout = %d, want %d", afterLogout.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+// TestLoginIsRateLimited proves the login route carries its own rate
+// limiter: handleLogin starts a session for any email with no account
+// check, so this is the one route a request needs no session at all to
+// reach, and the one maxSessions's own doc comment relies on being
+// throttled. Each call below uses a fresh client with no cookie jar, so
+// every request arrives with no session of its own and the CSRF
+// protector has nothing to check; they still share one rate limit
+// bucket, since clientip.Resolver keys by the loopback address every one
+// of them connects from.
+func TestLoginIsRateLimited(t *testing.T) {
+	t.Parallel()
+
+	handlers, err := httpapi.NewHandler(httpapi.Deps{
+		Logger:          logging.New(io.Discard, slog.LevelError),
+		HealthRegistry:  health.New(),
+		MetricsRegistry: metrics.NewRegistry(),
+		DistFS:          testDistFS(),
+		RateLimitBurst:  2,
+		RateLimitPer:    time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("httpapi.NewHandler() error = %v", err)
+	}
+
+	server := httptest.NewServer(handlers.Public)
+	t.Cleanup(server.Close)
+
+	loginOnce := func() int {
+		resp := do(t, &http.Client{}, http.MethodPost, server.URL+"/api/v1/auth/login", `{"email":"owner@example.com"}`, "")
+		return resp.StatusCode
+	}
+
+	for i := range 2 {
+		if status := loginOnce(); status != http.StatusNoContent {
+			t.Fatalf("login %d status = %d, want %d", i, status, http.StatusNoContent)
+		}
+	}
+
+	if status := loginOnce(); status != http.StatusTooManyRequests {
+		t.Errorf("login after exhausting the burst status = %d, want %d", status, http.StatusTooManyRequests)
+	}
+}
+
+// TestLoginRateLimitKeyHonoursTrustedProxyOnly proves clientip.Resolver's
+// own contract reaches the login rate limiter correctly: with no trusted
+// proxy configured, a forged X-Forwarded-For is ignored and the limiter
+// keys on the TCP peer alone, matching config.Config.TrustedProxyCIDRs's
+// own doc comment. Configuring the test server's loopback peer as trusted
+// makes the resolver honour that header instead, so two requests that
+// share the same TCP peer but carry different client addresses in it get
+// their own separate budget.
+func TestLoginRateLimitKeyHonoursTrustedProxyOnly(t *testing.T) {
+	t.Parallel()
+
+	loginAs := func(t *testing.T, baseURL, forwardedFor string) int {
+		t.Helper()
+
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL+"/api/v1/auth/login", strings.NewReader(`{"email":"owner@example.com"}`))
+		if err != nil {
+			t.Fatalf("build login request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if forwardedFor != "" {
+			req.Header.Set("X-Forwarded-For", forwardedFor)
+		}
+
+		resp, err := (&http.Client{}).Do(req)
+		if err != nil {
+			t.Fatalf("login: %v", err)
+		}
+		t.Cleanup(func() { _ = resp.Body.Close() })
+
+		return resp.StatusCode
+	}
+
+	t.Run("no trusted proxy configured ignores a forged header", func(t *testing.T) {
+		t.Parallel()
+
+		handlers, err := httpapi.NewHandler(httpapi.Deps{
+			Logger:          logging.New(io.Discard, slog.LevelError),
+			HealthRegistry:  health.New(),
+			MetricsRegistry: metrics.NewRegistry(),
+			DistFS:          testDistFS(),
+			RateLimitBurst:  1,
+			RateLimitPer:    time.Minute,
+		})
+		if err != nil {
+			t.Fatalf("httpapi.NewHandler() error = %v", err)
+		}
+
+		server := httptest.NewServer(handlers.Public)
+		t.Cleanup(server.Close)
+
+		if status := loginAs(t, server.URL, "203.0.113.1"); status != http.StatusNoContent {
+			t.Fatalf("first login status = %d, want %d", status, http.StatusNoContent)
+		}
+
+		// A different forged client address buys no second bucket: with
+		// no trusted proxy, clientip.Resolver never reads
+		// X-Forwarded-For at all and keys this request on the same TCP
+		// peer as the one above.
+		if status := loginAs(t, server.URL, "203.0.113.2"); status != http.StatusTooManyRequests {
+			t.Errorf("second login with a different forged address status = %d, want %d: the rate limiter must key on the TCP peer, not on an untrusted header", status, http.StatusTooManyRequests)
+		}
+	})
+
+	t.Run("a configured trusted proxy honours the header", func(t *testing.T) {
+		t.Parallel()
+
+		loopback, err := clientip.ParseCIDRs("127.0.0.1/32")
+		if err != nil {
+			t.Fatalf("clientip.ParseCIDRs() error = %v", err)
+		}
+
+		handlers, err := httpapi.NewHandler(httpapi.Deps{
+			Logger:            logging.New(io.Discard, slog.LevelError),
+			HealthRegistry:    health.New(),
+			MetricsRegistry:   metrics.NewRegistry(),
+			DistFS:            testDistFS(),
+			RateLimitBurst:    1,
+			RateLimitPer:      time.Minute,
+			TrustedProxyCIDRs: loopback,
+		})
+		if err != nil {
+			t.Fatalf("httpapi.NewHandler() error = %v", err)
+		}
+
+		server := httptest.NewServer(handlers.Public)
+		t.Cleanup(server.Close)
+
+		// httptest.NewServer listens on 127.0.0.1, so every request below
+		// shares that same TCP peer; trusting that peer is what makes the
+		// resolver read X-Forwarded-For and separate them by the address
+		// it names instead.
+		if status := loginAs(t, server.URL, "203.0.113.1"); status != http.StatusNoContent {
+			t.Fatalf("first client login status = %d, want %d", status, http.StatusNoContent)
+		}
+		if status := loginAs(t, server.URL, "203.0.113.2"); status != http.StatusNoContent {
+			t.Errorf("second client login status = %d, want %d: a trusted proxy must give each forwarded address its own budget", status, http.StatusNoContent)
+		}
+
+		// Reusing the first client's own address exhausts its budget
+		// again, proving the separation above came from the resolved
+		// client address the trusted proxy's header named, not from some
+		// other cause.
+		if status := loginAs(t, server.URL, "203.0.113.1"); status != http.StatusTooManyRequests {
+			t.Errorf("repeated first client login status = %d, want %d: the trusted proxy's header must still be honoured on this request", status, http.StatusTooManyRequests)
+		}
+	})
+}
+
+// sessionCookie returns the session cookie resp carries, or false when it
+// carries none: a helper so the two tests below do not each repeat the
+// name matching, since the cookie's own name changes with AllowPlainHTTP.
+func sessionCookie(resp *http.Response) (*http.Cookie, bool) {
+	for _, c := range resp.Cookies() {
+		if strings.HasSuffix(c.Name, "session") {
+			return c, true
+		}
+	}
+	return nil, false
+}
+
+// TestSessionCookieIsSecureByDefault proves AllowPlainHTTP's default is
+// the secure one: Secure set and the __Host- prefix kept, which is what
+// config.Config.SessionAllowPlainHTTP's own doc comment promises a
+// deployment that never sets SESSION_ALLOW_PLAIN_HTTP.
+func TestSessionCookieIsSecureByDefault(t *testing.T) {
+	t.Parallel()
+
+	client, baseURL := testClient(t, buildTestHandlers(t, nil))
+
+	resp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/login", `{"email":"owner@example.com"}`, "")
+
+	cookie, ok := sessionCookie(resp)
+	if !ok {
+		t.Fatal("login set no session cookie")
+	}
+	if !cookie.Secure {
+		t.Errorf("cookie %q Secure = %v, want true by default", cookie.Name, cookie.Secure)
+	}
+	if !strings.HasPrefix(cookie.Name, "__Host-") {
+		t.Errorf("cookie name = %q, want the __Host- prefix by default", cookie.Name)
+	}
+	if got := resp.Header.Get("Strict-Transport-Security"); got == "" {
+		t.Error("Strict-Transport-Security header is empty, want it set by default")
+	}
+}
+
+// TestSessionCookieDropsSecureWhenPlainHTTPIsAllowed proves the opt-in
+// side of the same decision: AllowPlainHTTP true drops Secure, the
+// __Host- prefix it is a precondition of, and HSTS, so a local plain
+// HTTP run still gets a working session cookie instead of one a browser
+// refuses to store at all.
+func TestSessionCookieDropsSecureWhenPlainHTTPIsAllowed(t *testing.T) {
+	t.Parallel()
+
+	handlers, err := httpapi.NewHandler(httpapi.Deps{
+		Logger:          logging.New(io.Discard, slog.LevelError),
+		HealthRegistry:  health.New(),
+		MetricsRegistry: metrics.NewRegistry(),
+		DistFS:          testDistFS(),
+		RateLimitBurst:  generousRateLimit,
+		RateLimitPer:    time.Minute,
+		AllowPlainHTTP:  true,
+	})
+	if err != nil {
+		t.Fatalf("httpapi.NewHandler() error = %v", err)
+	}
+
+	client, baseURL := testClient(t, handlers)
+
+	resp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/login", `{"email":"owner@example.com"}`, "")
+
+	cookie, ok := sessionCookie(resp)
+	if !ok {
+		t.Fatal("login set no session cookie")
+	}
+	if cookie.Secure {
+		t.Errorf("cookie %q Secure = %v, want false when plain HTTP is allowed", cookie.Name, cookie.Secure)
+	}
+	if strings.HasPrefix(cookie.Name, "__Host-") {
+		t.Errorf("cookie name = %q, want the __Host- prefix dropped when plain HTTP is allowed", cookie.Name)
+	}
+	if got := resp.Header.Get("Strict-Transport-Security"); got != "" {
+		t.Errorf("Strict-Transport-Security header = %q, want it omitted when plain HTTP is allowed", got)
 	}
 }
 

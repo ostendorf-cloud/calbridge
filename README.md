@@ -12,13 +12,17 @@ while a private calendar keeps the real appointment. See
 `docs/concepts/calbridge.md` for the full design: problem, goals, non goals,
 architecture and the delivery order.
 
-`cmd/calbridge` serves liveness, readiness and metrics today, and
-`charts/calbridge` installs it; see `AGENTS.md` for what each package does
-and what is still ahead. `db/migrations` and `internal/storage` hold the
-database foundation: users, identities, connections, calendars, edges,
-calendar grants and the event mapping, with row level security enforced
-by a database role that is `NOSUPERUSER NOBYPASSRLS`. No Vue application
-and no provider connector have been written yet.
+`cmd/calbridge` serves liveness, readiness and metrics on an administrative
+listener, and on the public one a login shell and an authenticated shell that
+prove the session and CSRF contract; the Vue SPA in `web/` is embedded into the
+binary at build time. The login accepts any email with no account behind it
+yet; issue #5 replaces it with real local accounts and provider sign-in.
+`db/migrations` and `internal/storage` hold the database foundation: users,
+identities, connections, calendars, edges, calendar grants and the event
+mapping, with row level security enforced by a database role that is
+`NOSUPERUSER NOBYPASSRLS`. `charts/calbridge` installs all of it; see
+`AGENTS.md` for what each package does and what is still ahead. No provider
+connector has been written yet.
 
 ## Install
 
@@ -47,13 +51,16 @@ task check
 
 Runs every check this repository has: Go format, vet and lint, a check that
 the committed sqlc output still matches `db/migrations`, the Go test suite,
-markdown lint, YAML lint, a GitHub Actions workflow lint, a secret scan, the
-Go build, the container image build, Helm chart lint and schema validation,
-and the Helm chart's own `helm-unittest` suite. `task test:integration` runs
-the row level security isolation test against a live Postgres and is
-deliberately not part of `check`, which runs with no network and no port
-binding; the CI `integration` job runs it against a real Postgres service
-container. `task --list` shows the individual targets.
+the `web/` package's ESLint, Prettier, TypeScript and Vitest checks, the
+`web/` SPA build, a check that `go.mod` and `web/package.json` pin the same
+govue tag, markdown lint, YAML lint, a GitHub Actions workflow lint, a secret
+scan, the Go build, the container image build, Helm chart lint and schema
+validation, and the Helm chart's own `helm-unittest` suite.
+
+`task test:integration` runs the row level security isolation test against a
+live Postgres and is deliberately not part of `check`, which runs with no
+network and no port binding; the CI `integration` job runs it against a real
+Postgres service container. `task --list` shows the individual targets.
 
 Releases will be driven by
 [release-me](https://github.com/ostendorf-cloud/release-me) once a first
