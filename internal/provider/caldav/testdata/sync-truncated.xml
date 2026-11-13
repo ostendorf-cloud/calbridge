@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<multistatus xmlns="DAV:">
+  <response>
+    <href>/20241234/calendars/home/</href>
+    <status>HTTP/1.1 507 Insufficient Storage</status>
+    <error>
+      <number-of-matches-within-limits/>
+    </error>
+  </response>
+  <response>
+    <href>/20241234/calendars/home/probe-20260301.ics</href>
+    <propstat>
+      <prop>
+        <getetag>"C=12@U=20241234/1"</getetag>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+  <sync-token>HwoQEgwAAAAAAAAAAAAAABgCGgQJ3OPzGgQJ3OP1</sync-token>
+</multistatus>
