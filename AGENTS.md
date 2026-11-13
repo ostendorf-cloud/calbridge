@@ -99,6 +99,15 @@ on; every other path already exists.
   issue's work; so is any login UI beyond the shell, which belongs to
   issue #5.
 
+## Deviations
+
+- The `Dockerfile`'s web stage installs corepack with `npm install -g`, the one
+  place in this repository where a tool does not come from `mise`. Node stopped
+  distributing corepack with v25, so the pinned node image carries none, and
+  there is no `mise` inside that stage to resolve one. The pnpm version it then
+  activates is still the exact version `mise.toml` resolves to, so the image and
+  a local run use the same pnpm.
+
 ## Verify before committing
 
 ```sh
