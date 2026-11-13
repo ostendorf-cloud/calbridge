@@ -122,8 +122,11 @@ type CalendarGrantRepository interface {
 // ListByEdge returns every copy one edge made, which is what a full
 // reconcile compares the source against and what a teardown deletes.
 // DeleteByEdge removes those rows in one statement and reports how many
-// it removed, so the edge row itself can be deleted in the same
-// transaction.
+// it removed, so a teardown forgets an edge's copies without reading
+// them back one at a time. It runs in a transaction of its own, before
+// the edge row is deleted in another: the events themselves are removed
+// at the provider in between, and a database transaction is not held
+// open across a network call.
 type EventMappingRepository interface {
 	Create(ctx context.Context, mapping EventMapping) (EventMapping, error)
 	FindByID(ctx context.Context, id uuid.UUID) (EventMapping, error)

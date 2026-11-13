@@ -106,9 +106,40 @@ func TestRule_occurrences(t *testing.T) {
 			want:  []string{"20260304T090000", "20260306T090000", "20260308T090000"},
 		},
 		{
-			name:  "a weekly rule up to a date",
-			lines: []string{"RRULE:FREQ=WEEKLY;UNTIL=20260325T090000Z"},
+			// RFC 5545 writes UNTIL in UTC for a series that names a zone,
+			// and 09:00 in Berlin is 08:00 UTC in March before the clocks
+			// change. Reading the Z and dropping it compares a Berlin
+			// reading against a UTC one and loses the last occurrence.
+			name:  "a weekly rule up to a moment in UTC",
+			lines: []string{"RRULE:FREQ=WEEKLY;UNTIL=20260325T080000Z"},
 			want:  []string{"20260304T090000", "20260311T090000", "20260318T090000", "20260325T090000"},
+		},
+		{
+			// 1 April is already summer time in Berlin, so the same wall
+			// clock reading is an hour earlier in UTC than in March. The
+			// conversion has to use the offset in force at the occurrence.
+			name:  "a weekly rule up to a moment after the clocks change",
+			lines: []string{"RRULE:FREQ=WEEKLY;UNTIL=20260401T070000Z"},
+			want: []string{
+				"20260304T090000", "20260311T090000", "20260318T090000",
+				"20260325T090000", "20260401T090000",
+			},
+		},
+		{
+			name:  "a weekly rule up to a wall clock reading",
+			lines: []string{"RRULE:FREQ=WEEKLY;UNTIL=20260325T090000"},
+			want:  []string{"20260304T090000", "20260311T090000", "20260318T090000", "20260325T090000"},
+		},
+		{
+			name:  "an excluded date written in UTC",
+			lines: []string{"RRULE:FREQ=WEEKLY;COUNT=3", "EXDATE:20260311T080000Z"},
+			want:  []string{"20260304T090000", "20260318T090000"},
+		},
+		{
+			name:  "a floating series up to a wall clock reading",
+			lines: []string{"RRULE:FREQ=DAILY;UNTIL=20260306T090000"},
+			start: provider.Floating(time.Date(2026, time.March, 4, 9, 0, 0, 0, time.UTC)),
+			want:  []string{"20260304T090000", "20260305T090000", "20260306T090000"},
 		},
 		{
 			name:  "a weekly rule on two days",
@@ -184,6 +215,27 @@ func TestRule_occurrences(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRule_occurrences_refusesASeriesItCannotReachTheWindowOf(t *testing.T) {
+	t.Parallel()
+
+	// A daily series starting three centuries before the window needs
+	// more candidates than the generator produces. Returning the
+	// occurrences found so far would copy a truncated series and report
+	// nothing wrong.
+	parsed, err := parseRule([]string{"RRULE:FREQ=DAILY"})
+	if err != nil {
+		t.Fatalf("parse rule: %v", err)
+	}
+
+	start := provider.Zoned(time.Date(1700, time.March, 4, 9, 0, 0, 0, time.UTC), "Europe/Berlin")
+	from := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	to := from.AddDate(0, 1, 0)
+
+	if _, err := parsed.occurrences(start, from, to); !errors.Is(err, ErrUnsupportedRecurrence) {
+		t.Fatalf("got %v, want %v", err, ErrUnsupportedRecurrence)
 	}
 }
 

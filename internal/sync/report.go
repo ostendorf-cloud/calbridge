@@ -68,6 +68,15 @@ const (
 	// ReasonSourceGone means the source event no longer exists, so its
 	// copy was removed.
 	ReasonSourceGone
+	// ReasonOutOfWindow means an expanded occurrence left the rolling
+	// window. The series is still there, which is what separates this
+	// from ReasonSourceGone when an operator reads the report.
+	ReasonOutOfWindow
+	// ReasonStrategyChanged means the edge now carries a repeating event
+	// the other way, as one master with its rule instead of one event per
+	// occurrence or the reverse, so the copies under the old key were
+	// removed.
+	ReasonStrategyChanged
 	// ReasonOrphan means the target held an event carrying this edge's
 	// marker that no mapping row claims, so the edge removed it.
 	ReasonOrphan
@@ -100,6 +109,10 @@ func (r Reason) String() string {
 		return "restored"
 	case ReasonSourceGone:
 		return "source gone"
+	case ReasonOutOfWindow:
+		return "out of window"
+	case ReasonStrategyChanged:
+		return "strategy changed"
 	case ReasonOrphan:
 		return "orphan"
 	case ReasonEdgeRemoved:

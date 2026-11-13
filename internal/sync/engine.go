@@ -216,7 +216,44 @@ func (e *Engine) Apply(ctx context.Context, b Binding, change provider.Change) (
 		return e.applyDelete(ctx, b, change.EventID)
 	}
 
-	return e.upsert(ctx, b, change.Event, nil, nil)
+	current := e.pass()
+	if change.Event.Recurrence.IsMaster() {
+		// A repeating event is the one case a single change has to know
+		// what this edge already wrote: which key space the copies sit in
+		// depends on a strategy that may have changed since.
+		mappings, err := e.listMappings(ctx, b)
+		if err != nil {
+			return Report{}, err
+		}
+		current.mappings = mappings
+	}
+
+	return e.upsert(ctx, b, change.Event, current)
+}
+
+// pass is what one call read before it started writing: the two
+// calendars, the edge's mapping rows, and the rolling window measured
+// once for the whole call.
+//
+// source and target are nil for a single change, which sees one event
+// rather than two calendars. The decisions they inform, an instance
+// overriding its own occurrence and a copy somebody edited by hand, are
+// repaired on the next full pass instead.
+type pass struct {
+	source   map[string]provider.Event
+	target   map[string]provider.Event
+	mappings []storage.EventMapping
+	from     time.Time
+	to       time.Time
+}
+
+// pass starts a call, fixing the rolling window for its whole duration so
+// two events of one pass are never measured against two different
+// moments.
+func (e *Engine) pass() *pass {
+	from, to := e.window.bounds(e.now())
+
+	return &pass{from: from, to: to}
 }
 
 // Reconcile is the full pass. It reads both calendars from the zero sync
@@ -230,13 +267,21 @@ func (e *Engine) Reconcile(ctx context.Context, b Binding) (Report, error) {
 		return Report{}, err
 	}
 
-	sourceState, err := snapshot(ctx, b.Source)
-	if err != nil {
+	current := e.pass()
+
+	var err error
+	if current.source, err = snapshot(ctx, b.Source); err != nil {
 		return Report{}, fmt.Errorf("edge %s: read source calendar: %w", b.Edge.ID, err)
 	}
-	targetState, err := snapshot(ctx, b.Target)
-	if err != nil {
+	if current.target, err = snapshot(ctx, b.Target); err != nil {
 		return Report{}, fmt.Errorf("edge %s: read target calendar: %w", b.Edge.ID, err)
+	}
+
+	// The mapping rows are read once for the whole pass. Every row written
+	// during it is one this pass produced, so a row added after this read
+	// is never one the pass has to clean up.
+	if current.mappings, err = e.listMappings(ctx, b); err != nil {
+		return Report{}, err
 	}
 
 	var (
@@ -244,15 +289,15 @@ func (e *Engine) Reconcile(ctx context.Context, b Binding) (Report, error) {
 		errs   []error
 	)
 
-	for _, id := range sortedKeys(sourceState) {
-		copied, err := e.upsert(ctx, b, sourceState[id], sourceState, targetState)
+	for _, id := range sortedKeys(current.source) {
+		copied, err := e.upsert(ctx, b, current.source[id], current)
 		report.merge(copied)
 		if err != nil {
 			errs = append(errs, err)
 		}
 	}
 
-	removed, accounted, err := e.removeUnsourced(ctx, b, sourceState)
+	removed, accounted, err := e.removeUnsourced(ctx, b, current.source)
 	report.merge(removed)
 	if err != nil {
 		errs = append(errs, err)
@@ -267,7 +312,7 @@ func (e *Engine) Reconcile(ctx context.Context, b Binding) (Report, error) {
 		}
 	}
 
-	orphans, err := e.removeOrphans(ctx, b, targetState, accounted)
+	orphans, err := e.removeOrphans(ctx, b, current.target, accounted)
 	report.merge(orphans)
 	if err != nil {
 		errs = append(errs, err)
@@ -339,52 +384,66 @@ func (e *Engine) removeOrphans(ctx context.Context, b Binding, targetState map[s
 
 // upsert copies one source event, expanding it first where it repeats and
 // the target cannot hold the rule.
-//
-// sourceState and targetState are the two calendars as a full pass read
-// them, and are nil for a single change: the decisions they inform, an
-// instance overriding its own occurrence and a copy somebody edited by
-// hand, are repaired on the next full pass instead.
-func (e *Engine) upsert(ctx context.Context, b Binding, src provider.Event, sourceState, targetState map[string]provider.Event) (Report, error) {
+func (e *Engine) upsert(ctx context.Context, b Binding, src provider.Event, p *pass) (Report, error) {
 	if IsOwnWrite(src) {
 		return reportOf(Operation{SourceEventID: src.ID, Action: ActionNone, Reason: ReasonOwnWrite}), nil
 	}
 
 	if src.Recurrence.IsInstance() {
-		_, masterPresent := sourceState[src.Recurrence.MasterID]
-		if sourceState == nil || masterPresent {
+		_, masterPresent := p.source[src.Recurrence.MasterID]
+		if p.source == nil || masterPresent {
 			return reportOf(Operation{SourceEventID: src.ID, Action: ActionNone, Reason: ReasonCoveredByMaster}), nil
 		}
 	}
 
 	if src.Recurrence.IsMaster() && !b.nativeRecurrence() {
-		return e.expand(ctx, b, src, sourceState, targetState)
+		return e.expand(ctx, b, src, p)
 	}
 
-	op, err := e.write(ctx, b, src.ID, src, targetState)
+	op, err := e.write(ctx, b, src.ID, src, p)
 	if err != nil {
 		return Report{}, err
 	}
+	report := reportOf(op)
 
-	return reportOf(op), nil
+	if src.Recurrence.IsMaster() {
+		// The edge carries the rule itself now. An earlier pass may have
+		// expanded this same master into one copy per occurrence, and
+		// those copies are keyed where nothing writes any more, so they
+		// are removed here rather than left standing at whatever detail
+		// level they were written at. Every such row belongs to the
+		// strategy that is not in use, so the window bounds decide nothing
+		// here and are passed as the pass read them.
+		stale, err := e.removeStaleCopies(ctx, b, src.ID, map[string]bool{src.ID: true}, p.mappings, p.from, p.to)
+		report.merge(stale)
+		if err != nil {
+			return report, err
+		}
+	}
+
+	return report, nil
 }
 
 // expand copies a repeating event as one event per occurrence inside the
 // rolling window, which is what a target that stores no rule, or a mask
 // that drops the rule, leaves as the only way to carry the series.
-func (e *Engine) expand(ctx context.Context, b Binding, master provider.Event, sourceState, targetState map[string]provider.Event) (Report, error) {
+func (e *Engine) expand(ctx context.Context, b Binding, master provider.Event, p *pass) (Report, error) {
 	parsed, err := parseRule(master.Recurrence.Rule)
 	if err != nil {
 		return Report{}, fmt.Errorf("edge %s: event %q: %w", b.Edge.ID, master.ID, err)
 	}
 
-	from, to := e.window.bounds(e.now())
+	from, to, err := windowIn(p.from, p.to, master.Start)
+	if err != nil {
+		return Report{}, fmt.Errorf("edge %s: event %q: %w", b.Edge.ID, master.ID, err)
+	}
 	starts, err := parsed.occurrences(master.Start, from, to)
 	if err != nil {
 		return Report{}, fmt.Errorf("edge %s: event %q: %w", b.Edge.ID, master.ID, err)
 	}
 
 	duration := master.End.Wall.Sub(master.Start.Wall)
-	exceptions := instancesOf(master.ID, sourceState)
+	exceptions := instancesOf(master.ID, p.source)
 
 	var (
 		report   Report
@@ -404,7 +463,7 @@ func (e *Engine) expand(ctx context.Context, b Binding, master provider.Event, s
 			occurrence.End = provider.EventTime{Kind: master.End.Kind, Wall: start.Wall.Add(duration), Zone: master.End.Zone}
 		}
 
-		op, err := e.write(ctx, b, id, occurrence, targetState)
+		op, err := e.write(ctx, b, id, occurrence, p)
 		if err != nil {
 			errs = append(errs, err)
 
@@ -413,7 +472,7 @@ func (e *Engine) expand(ctx context.Context, b Binding, master provider.Event, s
 		report.add(op)
 	}
 
-	dropped, err := e.removeDroppedOccurrences(ctx, b, master.ID, produced)
+	dropped, err := e.removeStaleCopies(ctx, b, master.ID, produced, p.mappings, from, to)
 	report.merge(dropped)
 	if err != nil {
 		errs = append(errs, err)
@@ -422,14 +481,24 @@ func (e *Engine) expand(ctx context.Context, b Binding, master provider.Event, s
 	return report, errors.Join(errs...)
 }
 
-// removeDroppedOccurrences deletes the copies of occurrences the rule no
-// longer produces, which is what an EXDATE added to the series, or an
-// occurrence leaving the rolling window, looks like.
-func (e *Engine) removeDroppedOccurrences(ctx context.Context, b Binding, masterID string, produced map[string]bool) (Report, error) {
-	mappings, err := e.listMappings(ctx, b)
-	if err != nil {
-		return Report{}, err
-	}
+// removeStaleCopies deletes the copies of one repeating event that the
+// strategy in use no longer writes to: the rows under the other
+// strategy's key after the edge switched between copying the rule and
+// expanding it, the occurrences the rule stopped producing, and the ones
+// that left the rolling window.
+//
+// Without this, switching strategy would leave the old copy standing for
+// good. Nothing writes to its key again, and the row keeps it alive
+// because the source event it names is still there, so lowering an edge's
+// detail level would leave the old, wider copy in the target.
+//
+// produced is every key the current strategy wrote this pass: the
+// master's own id where the rule is copied, and one id per occurrence
+// where it is expanded. from and to are the rolling window as wall clock
+// readings in the series' own zone, which only the expansion path has
+// and only it reads.
+func (e *Engine) removeStaleCopies(ctx context.Context, b Binding, masterID string, produced map[string]bool, mappings []storage.EventMapping, from, to time.Time) (Report, error) {
+	expanded := !produced[masterID]
 
 	var (
 		report Report
@@ -437,11 +506,14 @@ func (e *Engine) removeDroppedOccurrences(ctx context.Context, b Binding, master
 	)
 
 	for _, mapping := range mappings {
-		if !isOccurrenceOf(mapping.SourceEventID, masterID) || produced[mapping.SourceEventID] {
+		if produced[mapping.SourceEventID] {
+			continue
+		}
+		if mapping.SourceEventID != masterID && !isOccurrenceOf(mapping.SourceEventID, masterID) {
 			continue
 		}
 
-		op, err := e.removeCopy(ctx, b, mapping, ReasonSourceGone)
+		op, err := e.removeCopy(ctx, b, mapping, staleReason(mapping.SourceEventID, masterID, expanded, from, to))
 		if err != nil {
 			errs = append(errs, err)
 
@@ -453,10 +525,31 @@ func (e *Engine) removeDroppedOccurrences(ctx context.Context, b Binding, master
 	return report, errors.Join(errs...)
 }
 
+// staleReason says why a copy of one repeating event is no longer
+// written to. A key belonging to the strategy that is not in use is a
+// strategy change; an occurrence outside the rolling window left it; the
+// rest are occurrences the rule itself stopped producing, which is what
+// an added EXDATE or a lowered COUNT looks like.
+func staleReason(sourceEventID, masterID string, expanded bool, from, to time.Time) Reason {
+	start, isOccurrence := occurrenceStart(sourceEventID, masterID)
+	if isOccurrence != expanded {
+		return ReasonStrategyChanged
+	}
+	if !isOccurrence {
+		return ReasonSourceGone
+	}
+
+	if start.Before(from) || start.After(to) {
+		return ReasonOutOfWindow
+	}
+
+	return ReasonSourceGone
+}
+
 // write is the one place an event reaches the target. It projects the
 // source event through the mask, and writes only where the content hash
 // says the target does not already hold exactly that.
-func (e *Engine) write(ctx context.Context, b Binding, sourceEventID string, src provider.Event, targetState map[string]provider.Event) (Operation, error) {
+func (e *Engine) write(ctx context.Context, b Binding, sourceEventID string, src provider.Event, p *pass) (Operation, error) {
 	want, err := b.Mask.project(src, b.Target, b.marker(sourceEventID))
 	if err != nil {
 		return Operation{}, fmt.Errorf("edge %s: project %q: %w", b.Edge.ID, sourceEventID, err)
@@ -473,8 +566,8 @@ func (e *Engine) write(ctx context.Context, b Binding, sourceEventID string, src
 
 	reason := ReasonSourceChanged
 	if mapping.ContentHash == hash {
-		if held, ok := targetState[mapping.TargetEventID]; ok || targetState == nil {
-			if targetState == nil || contentHash(held, b.Mask) == hash {
+		if held, ok := p.target[mapping.TargetEventID]; ok || p.target == nil {
+			if p.target == nil || contentHash(held, b.Mask) == hash {
 				return Operation{
 					SourceEventID: sourceEventID,
 					TargetEventID: mapping.TargetEventID,

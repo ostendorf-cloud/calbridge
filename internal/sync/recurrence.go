@@ -59,6 +59,20 @@ const (
 	freqYearly
 )
 
+// stamp is a date or date-time read out of a recurrence line, together
+// with whether it was written as an absolute moment. RFC 5545 spells an
+// UNTIL or an EXDATE of a zoned series in UTC, with a trailing Z, while
+// the occurrences themselves are wall clock readings in the series' own
+// zone. The two are only comparable once one has been converted into the
+// other, and dropping the Z silently compares a Berlin reading against a
+// UTC one.
+type stamp struct {
+	at time.Time
+	// utc reports that the value carried a trailing Z, so at is an
+	// absolute moment rather than a wall clock reading.
+	utc bool
+}
+
 // rule is the part of RFC 5545's recurrence grammar this package
 // expands. Everything outside it is refused by parseRule, because an
 // approximated series is worse in a calendar than a reported failure.
@@ -66,9 +80,9 @@ type rule struct {
 	freq     frequency
 	interval int
 	count    int
-	until    time.Time
+	until    stamp
 	byDay    []time.Weekday
-	exDates  map[string]struct{}
+	exDates  []stamp
 }
 
 // weekdays maps RFC 5545's two letter day names.
@@ -86,7 +100,7 @@ var weekdays = map[string]time.Weekday{
 // one RRULE and any number of EXDATE lines, and refuses everything else,
 // so a series the expander would get wrong is never written at all.
 func parseRule(lines []string) (rule, error) {
-	parsed := rule{interval: 1, exDates: map[string]struct{}{}}
+	parsed := rule{interval: 1}
 	seenRule := false
 
 	for _, line := range lines {
@@ -225,60 +239,164 @@ func (r *rule) readByDay(value string) error {
 // names from the series.
 func (r *rule) readExDates(value string) error {
 	for _, raw := range strings.Split(value, ",") {
-		stamp, err := parseStamp(strings.TrimSpace(raw))
+		excluded, err := parseStamp(strings.TrimSpace(raw))
 		if err != nil {
 			return err
 		}
-		r.exDates[stampKey(stamp)] = struct{}{}
+		r.exDates = append(r.exDates, excluded)
 	}
 
 	return nil
 }
 
-// parseStamp reads an RFC 5545 date or date-time as a civil time. A
-// trailing Z marks UTC in the source, and the civil reading is what the
-// expander compares, so it is read and dropped.
-func parseStamp(value string) (time.Time, error) {
-	for _, layout := range []string{"20060102T150405Z", "20060102T150405", "20060102"} {
-		stamp, err := time.ParseInLocation(layout, value, time.UTC)
+// parseStamp reads an RFC 5545 date or date-time, keeping whether it was
+// written as an absolute moment. A value with a trailing Z is parsed in
+// UTC and reported as absolute; one without is a wall clock reading in
+// the series' own zone. Which it is decides what it may be compared
+// against, so the Z is never dropped.
+func parseStamp(value string) (stamp, error) {
+	layouts := []struct {
+		layout string
+		utc    bool
+	}{
+		{"20060102T150405Z", true},
+		{"20060102T150405", false},
+		{"20060102", false},
+	}
+
+	for _, candidate := range layouts {
+		at, err := time.ParseInLocation(candidate.layout, value, time.UTC)
 		if err == nil {
-			return stamp, nil
+			return stamp{at: at, utc: candidate.utc}, nil
 		}
 	}
 
-	return time.Time{}, fmt.Errorf("date %q: %w", value, ErrUnsupportedRecurrence)
+	return stamp{}, fmt.Errorf("date %q: %w", value, ErrUnsupportedRecurrence)
 }
 
-// stampKey renders a civil time as the key EXDATE matching uses. The
-// date alone is deliberately not enough: an EXDATE naming a date-time
-// excludes that occurrence and not the whole day.
-func stampKey(t time.Time) string { return t.Format("20060102T150405") }
+// wallReading converts an absolute moment into the wall clock reading the
+// series' own zone shows at it. A series that is not zoned, an all-day or
+// a floating one, has no zone to read it in, so the value stands as it is.
+func wallReading(at time.Time, start provider.EventTime) (time.Time, error) {
+	if start.Kind != provider.TimeKindZoned {
+		return at, nil
+	}
+
+	loc, err := time.LoadLocation(start.Zone)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("load zone %q: %w", start.Zone, err)
+	}
+	local := at.UTC().In(loc)
+
+	return time.Date(local.Year(), local.Month(), local.Day(), local.Hour(), local.Minute(), local.Second(), 0, time.UTC), nil
+}
+
+// windowIn converts the rolling window, two absolute moments, into the
+// wall clock readings the series' own zone shows at them. The
+// occurrences a rule produces are wall readings, so a window left as an
+// instant would cut the series at the event's own offset from UTC.
+func windowIn(from, to time.Time, start provider.EventTime) (wallFrom, wallTo time.Time, err error) {
+	wallFrom, err = wallReading(from, start)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	wallTo, err = wallReading(to, start)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+
+	return wallFrom, wallTo, nil
+}
+
+// limits are a rule's own bounds, resolved into the wall clock readings
+// the series is expanded in, so every comparison during the expansion is
+// between two readings of the same clock.
+type limits struct {
+	until   time.Time
+	exDates map[string]struct{}
+}
+
+// limitsFor resolves UNTIL and every EXDATE into the series' own
+// reading. A value written as an absolute moment is converted; one
+// written as a wall reading already is one.
+func (r rule) limitsFor(start provider.EventTime) (limits, error) {
+	resolved := limits{exDates: make(map[string]struct{}, len(r.exDates))}
+
+	if !r.until.at.IsZero() {
+		until, err := r.until.reading(start)
+		if err != nil {
+			return limits{}, fmt.Errorf("UNTIL: %w", err)
+		}
+		resolved.until = until
+	}
+
+	for _, excluded := range r.exDates {
+		at, err := excluded.reading(start)
+		if err != nil {
+			return limits{}, fmt.Errorf("EXDATE: %w", err)
+		}
+		resolved.exDates[stampKey(at)] = struct{}{}
+	}
+
+	return resolved, nil
+}
+
+// reading returns the stamp as a wall clock reading in the series' zone.
+func (s stamp) reading(start provider.EventTime) (time.Time, error) {
+	if !s.utc {
+		return s.at, nil
+	}
+
+	return wallReading(s.at, start)
+}
+
+// stampKey renders a wall clock reading as the key EXDATE matching uses.
+// The date alone is deliberately not enough: an EXDATE naming a
+// date-time excludes that occurrence and not the whole day.
+func stampKey(t time.Time) string { return t.Format(occurrenceLayout) }
 
 // occurrences expands the rule from start, and returns the occurrences
 // falling inside [from, to]. Each carries the kind and zone start
 // carries, because a rule repeats a wall clock reading, not an instant.
+//
+// from and to are wall clock readings in the series' own zone, which is
+// what windowIn turns the rolling window into. UNTIL and EXDATE are
+// resolved into the same reading here, so no comparison below crosses
+// two clocks.
 func (r rule) occurrences(start provider.EventTime, from, to time.Time) ([]provider.EventTime, error) {
+	bounds, err := r.limitsFor(start)
+	if err != nil {
+		return nil, err
+	}
+
 	out := []provider.EventTime{}
 	generated := 0
+	reachedEnd := false
 
 	for i := range maxCandidates {
 		candidate, ok := r.candidate(start.Wall, i)
 		if !ok {
 			continue
 		}
-		if !r.until.IsZero() && candidate.After(r.until) {
+		if !bounds.until.IsZero() && candidate.After(bounds.until) {
+			reachedEnd = true
+
 			break
 		}
 
 		generated++
 		if r.count > 0 && generated > r.count {
+			reachedEnd = true
+
 			break
 		}
 		if candidate.After(to) {
+			reachedEnd = true
+
 			break
 		}
 
-		if _, excluded := r.exDates[stampKey(candidate)]; excluded || candidate.Before(from) {
+		if _, excluded := bounds.exDates[stampKey(candidate)]; excluded || candidate.Before(from) {
 			continue
 		}
 
@@ -286,6 +404,14 @@ func (r rule) occurrences(start provider.EventTime, from, to time.Time) ([]provi
 		if len(out) > maxOccurrences {
 			return nil, fmt.Errorf("more than %d occurrences in the window: %w", maxOccurrences, ErrRecurrenceTooLarge)
 		}
+	}
+
+	// Running out of candidates means the generator never reached the end
+	// of the window, which is a rule starting far enough in the past that
+	// this expander cannot carry it. Returning what was found would copy
+	// a truncated series and call it complete.
+	if !reachedEnd {
+		return nil, fmt.Errorf("the rule needs more than %d candidates to reach the window: %w", maxCandidates, ErrUnsupportedRecurrence)
 	}
 
 	return out, nil
