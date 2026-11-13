@@ -1,0 +1,68 @@
+suite: httproute enabled
+templates:
+  - templates/httproute.yaml
+  - templates/ingress.yaml
+set:
+  httproute:
+    enabled: true
+    parentRefs:
+      - name: eg
+        namespace: gateway-system
+        sectionName: https
+    hostnames:
+      - calbridge.example.org
+tests:
+  - it: renders exactly one HTTPRoute
+    template: templates/httproute.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isAPIVersion:
+          of: gateway.networking.k8s.io/v1
+      - isKind:
+          of: HTTPRoute
+
+  - it: renders no Ingress
+    template: templates/ingress.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: attaches to the configured Gateway and hostname
+    template: templates/httproute.yaml
+    asserts:
+      - equal:
+          path: spec.parentRefs[0].name
+          value: eg
+      - equal:
+          path: spec.parentRefs[0].namespace
+          value: gateway-system
+      - equal:
+          path: spec.parentRefs[0].sectionName
+          value: https
+      - equal:
+          path: spec.hostnames[0]
+          value: calbridge.example.org
+
+  - it: points the backend at the chart's own Service and port
+    template: templates/httproute.yaml
+    asserts:
+      - equal:
+          path: spec.rules[0].backendRefs[0].name
+          value: RELEASE-NAME-calbridge
+      - equal:
+          path: spec.rules[0].backendRefs[0].port
+          value: 8080
+
+  - it: fails the render when httproute is enabled with no Gateway named
+    template: templates/httproute.yaml
+    set:
+      httproute:
+        enabled: true
+        parentRefs:
+          - name: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: >-
+            httproute.enabled is true but httproute.parentRefs names no Gateway: set at
+            least one parentRefs entry's name.

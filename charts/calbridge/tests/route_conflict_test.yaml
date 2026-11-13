@@ -1,0 +1,44 @@
+suite: ingress and httproute both enabled
+templates:
+  - templates/deployment.yaml
+tests:
+  - it: fails the render when both ingress and httproute are enabled
+    set:
+      ingress:
+        enabled: true
+      httproute:
+        enabled: true
+        parentRefs:
+          - name: eg
+    asserts:
+      - failedTemplate:
+          errorMessage: >-
+            ingress.enabled and httproute.enabled cannot both be true: enable at most one
+            route to the Service.
+
+  - it: renders fine when only ingress is enabled
+    set:
+      ingress:
+        enabled: true
+      httproute:
+        enabled: false
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: renders fine when only httproute is enabled
+    set:
+      ingress:
+        enabled: false
+      httproute:
+        enabled: true
+        parentRefs:
+          - name: eg
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: renders fine when neither route is enabled
+    asserts:
+      - hasDocuments:
+          count: 1
