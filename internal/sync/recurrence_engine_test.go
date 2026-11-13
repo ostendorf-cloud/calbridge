@@ -201,6 +201,151 @@ func TestEngine_Recurrence_leavesNothingBehindWhenTheDetailLevelIsRaised(t *test
 	wantActions(t, h.reconcile(), "none/unchanged")
 }
 
+func TestEngine_Recurrence_removesTheOccurrencesWhenTheEventStopsRepeating(t *testing.T) {
+	t.Parallel()
+
+	// An event that loses its rule is not a repeating event any more, so
+	// nothing that handles one runs for it. Its expanded copies sit under
+	// keys the edge stopped writing to, and the event they name is still
+	// in the calendar, so only the question "does this edge still write
+	// here" removes them.
+	h := newHarness(t, setup{window: shortWindow})
+	master := h.put(weekly("RRULE:FREQ=WEEKLY;COUNT=3"))
+	h.reconcile()
+
+	if got := len(h.copies()); got != 3 {
+		t.Fatalf("copies while the event repeats: got %d, want 3", got)
+	}
+
+	master.Recurrence = provider.Recurrence{}
+	h.put(master)
+
+	report := h.reconcile()
+	if got := report.CountReason(sync.ReasonStrategyChanged); got != 3 {
+		t.Fatalf("occurrence copies removed: got %d, want 3 (all: %v)", got, actions(report))
+	}
+
+	copies := h.copies()
+	if len(copies) != 1 {
+		t.Fatalf("copies after the rule was dropped: got %d, want 1", len(copies))
+	}
+	if copies[0].Marker.Source != master.ID {
+		t.Fatalf("the surviving copy is mapped to %q, want the event's own id %q", copies[0].Marker.Source, master.ID)
+	}
+	if got := len(h.store.mappingsOf(h.binding.Edge.ID)); got != 1 {
+		t.Fatalf("mapping rows: got %d, want 1", got)
+	}
+
+	wantActions(t, h.reconcile(), "none/unchanged")
+}
+
+func TestEngine_Recurrence_leavesNothingAtTheOldDetailLevel(t *testing.T) {
+	t.Parallel()
+
+	// Three routes put a repeating event's copies under a key the edge
+	// stops writing to: the mask dropping recurrence, the target losing
+	// the capability to hold a rule, and the event itself losing its
+	// rule. Each is followed by lowering the detail level, which is where
+	// a copy left behind becomes a copy showing more than the user asked
+	// for.
+	tests := []struct {
+		name         string
+		nativeTarget bool
+		wantFirst    int
+		change       func(h *harness, master provider.Event)
+		wantChanged  int
+		wantLowered  int
+	}{
+		{
+			// Nothing happens before the lowering here: dropping the
+			// recurrence field is itself what switches the strategy.
+			name:         "the mask stops copying the rule",
+			nativeTarget: true,
+			wantFirst:    1,
+			change:       func(*harness, provider.Event) {},
+			wantChanged:  1,
+			wantLowered:  3,
+		},
+		{
+			name:         "the target stops holding rules",
+			nativeTarget: true,
+			wantFirst:    1,
+			change: func(h *harness, _ provider.Event) {
+				h.target.setCapabilities(provider.Capabilities{CalendarCreation: true, Attendees: true})
+			},
+			wantChanged: 3,
+			wantLowered: 3,
+		},
+		{
+			name:         "the event stops repeating",
+			nativeTarget: false,
+			wantFirst:    3,
+			change: func(h *harness, master provider.Event) {
+				master.Recurrence = provider.Recurrence{}
+				h.put(master)
+			},
+			wantChanged: 1,
+			wantLowered: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			caps := provider.Capabilities{CalendarCreation: true, Attendees: true, NativeRecurrence: tt.nativeTarget}
+			h := newHarness(t, setup{targetCaps: caps, level: storage.DetailLevelFull, window: shortWindow})
+
+			master := h.put(weekly("RRULE:FREQ=WEEKLY;COUNT=3"))
+			h.reconcile()
+			assertCopies(t, h, tt.wantFirst)
+
+			tt.change(h, master)
+			h.reconcile()
+			assertCopies(t, h, tt.wantChanged)
+
+			h.setDetailLevel(storage.DetailLevelBusyBlock)
+			h.reconcile()
+
+			copies := assertCopies(t, h, tt.wantLowered)
+			for _, copied := range copies {
+				if copied.Summary != "" || copied.Description != "" || copied.Location != "" {
+					t.Fatalf("a copy still carries detail a busy block drops: %+v", copied)
+				}
+				if len(copied.Attendees) != 0 {
+					t.Fatalf("a copy still carries attendees: %+v", copied)
+				}
+			}
+
+			// The repair settles: the pass after it writes nothing.
+			for _, op := range h.reconcile().Operations {
+				if op.Action != sync.ActionNone || op.Reason != sync.ReasonUnchanged {
+					t.Fatalf("the pass after the repair is not settled: %s", op)
+				}
+			}
+		})
+	}
+}
+
+// assertCopies fails unless the target holds exactly want copies of this
+// edge and the mapping table holds exactly one row per copy. A leak in
+// this engine shows as a copy nothing accounts for, so the count is
+// checked on both sides before anything is read out of them.
+func assertCopies(t *testing.T, h *harness, want int) []provider.Event {
+	t.Helper()
+
+	copies := h.copies()
+	if len(copies) != want {
+		t.Fatalf("copies in the target: got %d, want %d", len(copies), want)
+	}
+
+	if got := len(h.store.mappingsOf(h.binding.Edge.ID)); got != want {
+		t.Fatalf("mapping rows: got %d, want %d", got, want)
+	}
+
+	return copies
+}
+
 func TestEngine_Recurrence_reportsAnOccurrenceThatLeftTheWindow(t *testing.T) {
 	t.Parallel()
 

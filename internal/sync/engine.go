@@ -321,7 +321,7 @@ func (e *Engine) Reconcile(ctx context.Context, b Binding) (Report, error) {
 	return report, errors.Join(errs...)
 }
 
-// removeUnsourced deletes the copies whose source event is gone, and
+// removeUnsourced deletes the copies this edge no longer writes to, and
 // returns every target event a mapping row accounted for, the ones it
 // just deleted included: the target was read before those deletions, so
 // the orphan sweep would otherwise see them again.
@@ -340,11 +340,11 @@ func (e *Engine) removeUnsourced(ctx context.Context, b Binding, sourceState map
 	for _, mapping := range mappings {
 		accounted[mapping.TargetEventID] = true
 
-		if sourced(mapping, sourceState) {
+		if sourced(b, mapping, sourceState) {
 			continue
 		}
 
-		op, err := e.removeCopy(ctx, b, mapping, ReasonSourceGone)
+		op, err := e.removeCopy(ctx, b, mapping, unsourcedReason(mapping, sourceState))
 		if err != nil {
 			errs = append(errs, err)
 
@@ -487,10 +487,12 @@ func (e *Engine) expand(ctx context.Context, b Binding, master provider.Event, p
 // expanding it, the occurrences the rule stopped producing, and the ones
 // that left the rolling window.
 //
-// Without this, switching strategy would leave the old copy standing for
-// good. Nothing writes to its key again, and the row keeps it alive
-// because the source event it names is still there, so lowering an edge's
-// detail level would leave the old, wider copy in the target.
+// A full pass would reach the strategy change through sourced as well,
+// which is the one place that decides a row's fate. This runs for two
+// things sourced cannot: it names the strategy change and the window
+// exit in the report rather than reporting a missing source, and it is
+// the only cleanup on the single change path, which has no calendar to
+// sweep against.
 //
 // produced is every key the current strategy wrote this pass: the
 // master's own id where the rule is copied, and one id per occurrence
@@ -776,21 +778,72 @@ func (e *Engine) listMappings(ctx context.Context, b Binding) ([]storage.EventMa
 	return mappings, nil
 }
 
-// sourced reports whether a mapping row still has a source event behind
-// it. An expanded occurrence is sourced as long as its master is: the
-// expansion itself removes the occurrences the rule stopped producing.
-func sourced(mapping storage.EventMapping, sourceState map[string]provider.Event) bool {
-	if _, ok := sourceState[mapping.SourceEventID]; ok {
-		return true
+// sourced reports whether this edge still writes to a mapping row's key.
+// It is the one place that question is answered, and it answers it from
+// the same facts upsert decides on, so a key nothing writes to any more
+// is removed however it got that way.
+//
+// Which key a copy sits under depends on the strategy, not only on the
+// source event existing. A repeating event the edge expands is copied
+// under one key per occurrence and not under its own id; an event that
+// stops repeating is copied under its own id and no longer under any
+// occurrence key. Asking here rather than on the paths that handle a
+// repeating event is what covers the routes where the event stops being
+// one, which those paths never run for.
+func sourced(b Binding, mapping storage.EventMapping, sourceState map[string]provider.Event) bool {
+	if src, ok := sourceState[mapping.SourceEventID]; ok {
+		return writesUnderOwnID(b, src, sourceState)
 	}
 
 	masterID, _, found := strings.Cut(mapping.SourceEventID, occurrenceSeparator)
 	if !found {
 		return false
 	}
-	_, ok := sourceState[masterID]
 
-	return ok
+	master, ok := sourceState[masterID]
+	if !ok {
+		return false
+	}
+
+	return master.Recurrence.IsMaster() && !b.nativeRecurrence()
+}
+
+// writesUnderOwnID reports whether this edge copies a source event under
+// the event's own id. It mirrors upsert's own decisions: a repeating
+// event the edge expands is copied under one key per occurrence instead,
+// and an occurrence the edge covers through its master is not copied on
+// its own at all.
+func writesUnderOwnID(b Binding, src provider.Event, sourceState map[string]provider.Event) bool {
+	if src.Recurrence.IsMaster() {
+		return b.nativeRecurrence()
+	}
+	if src.Recurrence.IsInstance() {
+		_, masterPresent := sourceState[src.Recurrence.MasterID]
+
+		return !masterPresent
+	}
+
+	return true
+}
+
+// unsourcedReason says why nothing writes to a key any more: the source
+// event is gone, or it is still in the calendar and this edge stopped
+// writing under that key, which is what a repeating event losing its
+// rule, or an edge changing strategy, looks like.
+func unsourcedReason(mapping storage.EventMapping, sourceState map[string]provider.Event) Reason {
+	if _, ok := sourceState[mapping.SourceEventID]; ok {
+		return ReasonStrategyChanged
+	}
+
+	masterID, _, found := strings.Cut(mapping.SourceEventID, occurrenceSeparator)
+	if !found {
+		return ReasonSourceGone
+	}
+	if _, ok := sourceState[masterID]; ok {
+		return ReasonStrategyChanged
+	}
+
+	return ReasonSourceGone
 }
 
 // instancesOf indexes the source calendar's own instances of one master
