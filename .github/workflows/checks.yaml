@@ -44,6 +44,6 @@ jobs:
       - run: task lint:secrets
 
   renovate-config:
-    uses: ostendorf-cloud/workflows/.github/workflows/reusable-renovate-config.yaml@v0.2.0
+    uses: ostendorf-cloud/workflows/.github/workflows/reusable-renovate-config.yaml@v0.2.1
     with:
       runs-on-runner: blacksmith-2vcpu-ubuntu-2404
