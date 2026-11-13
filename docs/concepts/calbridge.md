@@ -1,0 +1,156 @@
+# calbridge
+
+Selective calendar mirroring across providers, one detail level per edge.
+
+## Problem
+
+- Six calendars live in three accounts: four in iCloud (Privat, Veranstaltungstechnik, Notes,
+  Study), one Google calendar belonging to a second person, one Outlook M365 work calendar.
+- No calendar shows all of them, so a conflict between a work meeting and a private appointment is
+  only visible by checking two clients.
+- Work colleagues must see that a time slot is taken, and must not see what the private appointment
+  is.
+- The second person should see the details of Privat, Veranstaltungstechnik and Study, and only that
+  a work event exists.
+- The private calendar should carry the exact work events and the second person's events.
+- No provider offers a per-recipient detail level: Google and iCloud share a whole calendar at one
+  permission level, Outlook cannot subscribe to iCloud at all.
+- The current workaround is typing duplicate placeholder events by hand, which drifts out of date
+  within a day and silently hides conflicts.
+
+## Goals
+
+- A sync edge copies events from one source calendar into one target calendar in one direction, at a
+  detail level the edge fixes.
+- Detail levels are presets (full copy, title and time, busy block) with a per-field override for
+  cases a preset misses.
+- An edge writes either into a calendar calbridge creates and owns, or into an existing calendar the
+  user selects.
+- Google Calendar, Microsoft 365 and iCloud are readable and writable.
+- A fourth provider is added by writing one package against the connector interface, or by adding a
+  CalDAV profile, without changing the sync engine, the database schema or the UI.
+- A user grants another user access to one of their calendars at a maximum detail level; the grantee
+  builds edges that the grant bounds.
+- A change reaches its targets within a minute where the provider pushes a notification, and within
+  the reconcile interval otherwise.
+- Deleting an edge removes every event it wrote, and leaves nothing behind in the target account.
+- The six calendars above run on it, with the three detail levels the problem section names.
+
+## Non goals
+
+- Not a calendar client: no browsing, creating or editing of real events in calbridge.
+- No scheduling features: no free/busy negotiation, no booking links, no meeting polls.
+- No bidirectional edge: direction is a property of the edge, and two opposing edges are a loop the
+  engine must detect rather than a supported mode.
+- No providers beyond the three named: the CalDAV connector is generic, but iCloud is the only
+  profile shipped and tested in the first version, and Exchange on-premises is out entirely.
+- No public landing page, no self-signup, no billing.
+- No mobile application; the web UI is responsive and that is all.
+
+## Approach
+
+- Go backend and Vue SPA on govue, laid out like solobill: `cmd/calbridge`, `internal/`, `web/`,
+  `charts/calbridge`, plus a `docker-compose.yaml` for local work.
+- Postgres with dbmate migrations and sqlc, row level security per tenant, enforced by a database
+  role that is `NOSUPERUSER NOBYPASSRLS`.
+- Login through govue's `oidc` against Keycloak, plus local accounts with password and TOTP issued
+  by invite.
+- `internal/provider` defines one connector interface: list calendars, read changes since a token,
+  create, update and delete an event the connector itself owns.
+- A connector registers itself into a registry under a provider id, so adding one is a new package
+  and one import, never an edit to a switch statement somewhere in the engine.
+- Every connector declares its capabilities (push notifications, native recurrence rules, calendar
+  creation, attendees, free/busy); the engine reads that declaration and picks its strategy, so a
+  provider's gaps are known at registration rather than discovered at runtime.
+- Connectors speak one normalised event type and never leak a provider's own model; everything
+  provider-shaped, including id formats, timezone handling and quirks, stays inside its package.
+- Three implementations: Google Calendar API, Microsoft Graph, and a generic CalDAV connector driven
+  by provider profiles, of which iCloud is the first.
+- A CalDAV profile carries the endpoint, the discovery and authentication style and the server's
+  known quirks, so Nextcloud, Fastmail or Radicale are a profile entry rather than new code.
+- Credentials are per connection and typed by the connector: OAuth refresh tokens for Google and
+  Microsoft, an Apple ID with an app-specific password for iCloud, all encrypted at rest with a key
+  the process reads from the environment.
+- `internal/sync` turns a source change into target operations by applying the edge's field mask,
+  and is the only package that knows what a detail level means.
+- The mapping table holds edge id, source event id, target event id, start, end and a content hash;
+  any copied title or body is encrypted at rest, so the database alone does not read as a calendar.
+- Every written event carries a marker naming calbridge and the edge, and a connector never reports
+  an event it wrote as a source change, which is what breaks mirror loops.
+- Recurrence copies the source rule when source and target agree on it, and expands to concrete
+  instances inside a rolling window when they do not.
+- Change detection combines Google `events.watch` channels and Graph change-notification
+  subscriptions on one public webhook endpoint, CalDAV `sync-collection` tokens for iCloud, and a
+  scheduled full reconcile for all three, because channels expire and notifications are lossy.
+- The UI is a Vue Flow canvas: calendars are nodes grouped by account, an edge is drawn by dragging
+  one onto another, and the detail level is edited on the edge.
+- The public face lives on `calbridge.de`: the application itself and, on the same domain, the
+  homepage and privacy policy that Google's brand and domain validation checks.
+- A grant is its own record (owner, grantee, calendar, maximum detail level) and is checked on every
+  edge write, so revoking it stops the sync without the grantee's cooperation.
+
+## Alternatives
+
+- Managed sync providers such as Nylas or Cronofy: fastest to integrate, but every event passes a
+  third party, which is the problem this tool exists to avoid, and pricing is per connected account.
+- Subscribed ICS feeds: no credentials, but read only, delayed by minutes to hours, and Outlook
+  refreshes subscriptions on a schedule nobody controls.
+- Native provider sharing: whole calendars at one permission level, no per-recipient detail, and
+  Outlook cannot consume an iCloud calendar.
+- vdirsyncer or a CalDAV script: works between CalDAV servers, has no OAuth providers, no field
+  masks, no sharing and no UI.
+- A generated virtual calendar served per subscriber instead of written events: no duplicated data
+  at all, but it cannot write into a work calendar and inherits the ICS refresh problem above.
+- Copying the recurrence rule in all cases: far fewer API calls, but Google, Graph and CalDAV
+  disagree on exceptions, detached instances and timezone handling, so the fallback to expanded
+  instances is kept.
+
+## Risks
+
+- Google expires refresh tokens after seven days for any OAuth app whose consent screen is in
+  testing; the calendar scopes are sensitive, so the app must pass Google's verification before the
+  sync survives a week.
+- That verification needs a public homepage on an owned and verified domain, a privacy policy on the
+  same domain linked from the consent screen, and a demo video, and it takes up to ten days, so a
+  private tool still needs a public face and a domain before its Google connector is durable.
+- The work M365 tenant has approved the app registration and `Calendars.ReadWrite` consent, so that
+  path is clear; the approval covers this one tenant and says nothing about any other organisation a
+  future user belongs to.
+- Apple has no OAuth and no public calendar API; an app-specific password is entered by hand, grants
+  access to the whole iCloud account, and breaks silently when the user revokes it.
+- iCloud `sync-collection` pages its results and can truncate a response, so the CalDAV connector
+  has to handle partial answers and invalidated tokens rather than assume one round trip.
+
+## Open questions
+
+- Which Google Cloud project hosts the OAuth client? Next step: create it when the Google connector
+  is built, since verification is submitted against a working consent screen and not before.
+- Where does the encryption key come from in the cluster: an environment variable from a sealed
+  secret, or OpenBao? Next step: decide with the existing deployment pattern, promote to an ADR.
+- What happens when a mirrored event is edited by hand in the target calendar: overwrite on next
+  reconcile, or detach and stop managing it?
+- How are all-day events and floating times normalised between the three providers, given each
+  represents them differently?
+- What reconcile interval do the providers' rate limits actually permit for six calendars, and how
+  does that scale per connected account?
+- Does a grant travel with the calendar when the grantee builds a second edge from the mirrored
+  copy, or does the mirror end the chain?
+
+## Decisions to record as ADRs
+
+- Apple is reached by CalDAV with an app-specific password, because no OAuth path exists.
+- Event content is stored as a minimal mapping with an encrypted details cache, not as a full event
+  cache.
+- Mirrored events are written to a managed calendar by default, with an existing calendar as an
+  explicit per-edge opt-in.
+- Recurrence copies rules where possible and expands to instances otherwise.
+- The sync graph is drawn with Vue Flow rather than a hand-rolled canvas.
+- Connectors register themselves and declare capabilities, and CalDAV is generic with per-server
+  profiles, so a provider is added without touching the engine.
+
+## Delivery order
+
+1. Repository scaffold, database, login, and an empty UI shell, following solobill.
+2. The connector interface and the iCloud CalDAV connector, with a reconcile loop and polling only.
+3. The Google and Microsoft connectors, then push notifications and the webhook endpoint.
+4. The Vue Flow canvas, detail-level editing and cross-user grants.
