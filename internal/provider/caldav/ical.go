@@ -329,7 +329,7 @@ func (w *icalWriter) line(name string, params []string, value string, escape boo
 	if w.err != nil {
 		return
 	}
-	if err := checkStructural(name); err != nil {
+	if err := checkName(name); err != nil {
 		w.err = fmt.Errorf("property name %q: %w", name, err)
 
 		return
@@ -372,6 +372,31 @@ func (w *icalWriter) line(name string, params []string, value string, escape boo
 
 // String returns the stream built so far.
 func (w *icalWriter) String() string { return w.out.String() }
+
+// checkName refuses a property name that is not one. RFC 5545 section
+// 3.1 builds a name out of letters, digits and the hyphen, so anything
+// else, a colon or a semicolon above all, would end the name and make
+// the rest of it something the line format reads as its own.
+//
+// No caller reaches this with a name from data today: the only name the
+// writer takes from outside is a recurrence property's, which splitName
+// cannot let hold a separator and isRecurrenceProp narrows to four
+// constants. The check is here so that stays true of the writer rather
+// than of its callers.
+func checkName(name string) error {
+	if name == "" {
+		return fmt.Errorf("is empty: %w", provider.ErrInvalidEvent)
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+		default:
+			return fmt.Errorf("holds %#U, which a property name may not: %w", r, provider.ErrInvalidEvent)
+		}
+	}
+
+	return nil
+}
 
 // checkStructural refuses a part of a content line that carries a
 // character the line format cannot hold: a carriage return or a line

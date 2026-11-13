@@ -180,6 +180,53 @@ func TestEncodeResource_AnInjectedUidWouldHaveBecomeARealProperty(t *testing.T) 
 	}
 }
 
+func TestICalWriter_RefusesANameThatIsNotAName(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		given string
+	}{
+		{name: "a name holding a colon", given: "ATTENDEE:mailto:victim@example.com;X"},
+		{name: "a name holding a semicolon", given: "SUMMARY;X-EVIL=1"},
+		{name: "a name holding a space", given: "X CALBRIDGE EDGE"},
+		{name: "an empty name", given: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var w icalWriter
+			w.raw(tc.given, nil, "v")
+
+			if !errors.Is(w.err, provider.ErrInvalidEvent) {
+				t.Fatalf("got %v, want the writer to refuse the name", w.err)
+			}
+			if w.String() != "" {
+				t.Errorf("the refused line reached the stream: %q", w.String())
+			}
+		})
+	}
+}
+
+func TestICalWriter_AcceptsTheNamesTheConnectorWrites(t *testing.T) {
+	t.Parallel()
+
+	// The check must not refuse what this package actually writes,
+	// X- properties and hyphenated names among them.
+	for _, name := range []string{
+		"BEGIN", "UID", "DTSTAMP", "DTSTART", "DTEND", "LAST-MODIFIED",
+		"RRULE", "EXDATE", "ATTENDEE", "TZOFFSETFROM", markerEdgeProp, markerSourceProp,
+	} {
+		var w icalWriter
+		w.raw(name, nil, "v")
+		if w.err != nil {
+			t.Errorf("the writer refused %q: %v", name, w.err)
+		}
+	}
+}
+
 func TestICalWriter_RefusesAControlCharacterInAParameter(t *testing.T) {
 	t.Parallel()
 
@@ -254,6 +301,147 @@ func TestEncodeResource_DescribesAZoneNamedOnlyByARecurrenceLine(t *testing.T) {
 	}
 	if !strings.Contains(object, "TZID:Europe/Berlin") {
 		t.Errorf("the zone the EXDATE names has no VTIMEZONE:\n%s", object)
+	}
+}
+
+func TestDecodeResource_ReadsAZoneTheDatabaseDoesNotKnowAsFloating(t *testing.T) {
+	t.Parallel()
+
+	// A Windows style zone name is what an Exchange export writes, and a
+	// CalDAV collection stores whatever TZID it was handed. The object
+	// describes the zone in its own VTIMEZONE, and this package still
+	// may not report the name as a zone: internal/provider's second
+	// normalisation rule makes a zoned time name an IANA zone, and a
+	// name nothing can resolve would come back on a write as a TZID with
+	// no VTIMEZONE behind it.
+	object := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Microsoft Corporation//Outlook 16.0//EN\r\n" +
+		"BEGIN:VTIMEZONE\r\nTZID:W. Europe Standard Time\r\n" +
+		"BEGIN:STANDARD\r\nDTSTART:16011028T030000\r\nTZOFFSETFROM:+0200\r\nTZOFFSETTO:+0100\r\n" +
+		"RRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n" +
+		"BEGIN:VEVENT\r\nUID:exchange-4711\r\n" +
+		"DTSTART;TZID=W. Europe Standard Time:20260302T090000\r\n" +
+		"DTEND;TZID=W. Europe Standard Time:20260302T100000\r\n" +
+		"SUMMARY:Projektrunde\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+
+	events, err := decodeResource("exchange-4711.ics", object)
+	if err != nil {
+		t.Fatalf("decode resource: %v", err)
+	}
+
+	want := provider.Floating(time.Date(2026, time.March, 2, 9, 0, 0, 0, time.UTC))
+	if !events[0].Start.Equal(want) {
+		t.Errorf("start is %s, want %s", events[0].Start, want)
+	}
+	if events[0].Start.Zone != "" {
+		t.Errorf("the unresolvable name %q left this package as a zone", events[0].Start.Zone)
+	}
+}
+
+func TestEncodeResource_RefusesAZoneItCannotDescribe(t *testing.T) {
+	t.Parallel()
+
+	// The object must never name a TZID it does not define. Every zone
+	// the event carries goes through zonesOf, which refuses one the zone
+	// database cannot describe rather than dropping it and letting
+	// writeEventTime name it anyway.
+	stamp := time.Date(2026, time.March, 1, 12, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name  string
+		build func(provider.Event) provider.Event
+	}{
+		{
+			name: "a windows zone name on the start",
+			build: func(e provider.Event) provider.Event {
+				e.Start = provider.Zoned(e.Start.Wall, "W. Europe Standard Time")
+				e.End = provider.Zoned(e.End.Wall, "W. Europe Standard Time")
+
+				return e
+			},
+		},
+		{
+			name: "a windows zone name on the end alone",
+			build: func(e provider.Event) provider.Event {
+				e.End = provider.Zoned(e.End.Wall, "W. Europe Standard Time")
+
+				return e
+			},
+		},
+		{
+			name: "a zone name that would split into a second parameter",
+			build: func(e provider.Event) provider.Event {
+				e.Start = provider.Zoned(e.Start.Wall, "Europe/Berlin;X-EVIL=1")
+				e.End = provider.Zoned(e.End.Wall, "Europe/Berlin;X-EVIL=1")
+
+				return e
+			},
+		},
+		{
+			name: "a zone named only by an excluded occurrence",
+			build: func(e provider.Event) provider.Event {
+				e.Recurrence.Rule = []string{
+					"RRULE:FREQ=WEEKLY;COUNT=4",
+					"EXDATE;TZID=W. Europe Standard Time:20260406T090000",
+				}
+
+				return e
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			object, err := encodeResource(tc.build(writableEvent()), stamp, provider.Capabilities{})
+			if !errors.Is(err, provider.ErrInvalidEvent) {
+				t.Fatalf("got %v, want the zone check to refuse it", err)
+			}
+			if object != "" {
+				t.Errorf("an object was written anyway:\n%s", object)
+			}
+		})
+	}
+}
+
+func TestEncodeResource_DefinesEveryZoneItNames(t *testing.T) {
+	t.Parallel()
+
+	// The guarantee stated as a property rather than as a case: whatever
+	// a written object names as a TZID, it also carries a VTIMEZONE for.
+	event := writableEvent()
+	event.Recurrence.Rule = []string{
+		"RRULE:FREQ=WEEKLY;COUNT=4",
+		"EXDATE;TZID=America/New_York:20260406T090000",
+	}
+
+	object, err := encodeResource(event, time.Date(2026, time.March, 1, 12, 0, 0, 0, time.UTC), provider.Capabilities{})
+	if err != nil {
+		t.Fatalf("encode resource: %v", err)
+	}
+
+	root, err := parseICalendar(object)
+	if err != nil {
+		t.Fatalf("parse what was written: %v", err)
+	}
+	defined := map[string]bool{}
+	for _, block := range root.children("VTIMEZONE") {
+		defined[block.value("TZID")] = true
+	}
+
+	named := 0
+	for _, line := range append(root.children("VEVENT")[0].Props, icalLine{}) {
+		tzid := line.param("TZID")
+		if tzid == "" {
+			continue
+		}
+		named++
+		if !defined[tzid] {
+			t.Errorf("the object names TZID %q and defines no VTIMEZONE for it:\n%s", tzid, object)
+		}
+	}
+	if named < 3 {
+		t.Errorf("the case named %d zones, want the two endpoints and the excluded occurrence", named)
 	}
 }
 
