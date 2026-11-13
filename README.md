@@ -15,10 +15,12 @@ architecture and the delivery order.
 `cmd/calbridge` serves liveness, readiness and metrics on an administrative
 listener, and on the public one a login shell and an authenticated shell that
 prove the session and CSRF contract; the Vue SPA in `web/` is embedded into the
-binary at build time. `db/migrations` and `internal/storage` hold the database
-foundation: users, identities, connections, calendars, edges, calendar grants
-and the event mapping, with row level security enforced by a database role that
-is `NOSUPERUSER NOBYPASSRLS`. `charts/calbridge` installs all of it; see
+binary at build time. The login accepts any email with no account behind it
+yet; issue #5 replaces it with real local accounts and provider sign-in.
+`db/migrations` and `internal/storage` hold the database foundation: users,
+identities, connections, calendars, edges, calendar grants and the event
+mapping, with row level security enforced by a database role that is
+`NOSUPERUSER NOBYPASSRLS`. `charts/calbridge` installs all of it; see
 `AGENTS.md` for what each package does and what is still ahead. No provider
 connector has been written yet.
 

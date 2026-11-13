@@ -21,8 +21,8 @@ on; every other path already exists.
 - `internal/config` loads calbridge's configuration from the environment
   once, at startup, through govue's `envconf`. The database connection and
   the encryption key follow `envconf`'s `SecretOrFile`/`RequiredSecretOrFile`
-  `_FILE`-suffix convention; every other setting is server and logging
-  configuration.
+  `_FILE`-suffix convention; the rest is server, logging, session and login
+  rate limit configuration.
 - `internal/httpapi` builds the HTTP handler: liveness, readiness and
   metrics on the admin listener, and on the public one a session and
   CSRF contract shell (`POST /api/v1/auth/login`, `GET /api/v1/me`,
