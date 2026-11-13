@@ -66,3 +66,14 @@ the actual cause, is strictly better than reproducing that error.
 {{ fail (printf "podLabels must not set %s: it collides with calbridge's own immutable selector label." $key) }}
 {{- end -}}
 {{- end -}}
+
+{{/*
+A provider's client secret, like DATABASE_PASSWORD and ENCRYPTION_KEY, is
+only ever read from the Secret existingSecret.name points at, never from a
+default value. There is deliberately no guard here for a clientId set
+while that name is empty: values.schema.json already requires
+existingSecret.name with minLength 1 on every install, providers or not,
+and schema validation runs before this file, so such a guard could never
+be reached. See charts/calbridge/tests/provider_signin_test.yaml for what
+does get checked.
+*/}}

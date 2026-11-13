@@ -1,0 +1,119 @@
+suite: provider sign-in environment
+templates:
+  - templates/deployment.yaml
+set:
+  existingSecret:
+    name: calbridge-secrets
+  config:
+    databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
+    databaseUser: calbridge_app
+  migrationJob:
+    databaseUser: calbridge_migrator
+tests:
+  - it: renders AUTH_BASE_URL even with no provider configured
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AUTH_BASE_URL
+            value: ""
+
+  - it: renders no provider client id, issuer or client secret env entries by default
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AUTH_GOOGLE_CLIENT_ID
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AUTH_GOOGLE_ISSUER
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AUTH_GOOGLE_CLIENT_SECRET
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AUTH_MICROSOFT_CLIENT_ID
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AUTH_MICROSOFT_ISSUER
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AUTH_MICROSOFT_CLIENT_SECRET
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AUTH_APPLE_CLIENT_ID
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AUTH_APPLE_ISSUER
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AUTH_APPLE_CLIENT_SECRET
+
+  - it: renders the plain client id and the default secret key once Google is configured
+    set:
+      config:
+        auth:
+          google:
+            clientId: google-client-id
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AUTH_GOOGLE_CLIENT_ID
+            value: google-client-id
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AUTH_GOOGLE_CLIENT_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: calbridge-secrets
+                key: AUTH_GOOGLE_CLIENT_SECRET
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AUTH_MICROSOFT_CLIENT_ID
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AUTH_APPLE_CLIENT_ID
+
+  - it: passes a configured issuer through for the configured provider
+    set:
+      config:
+        auth:
+          microsoft:
+            clientId: microsoft-client-id
+            issuer: "https://login.microsoftonline.com/tenant-id/v2.0"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AUTH_MICROSOFT_ISSUER
+            value: "https://login.microsoftonline.com/tenant-id/v2.0"
+
+  - it: honours a custom secret key name for a configured provider
+    set:
+      config:
+        auth:
+          apple:
+            clientId: apple-client-id
+      existingSecret:
+        appleClientSecretKey: CUSTOM_APPLE_SECRET
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AUTH_APPLE_CLIENT_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: calbridge-secrets
+                key: CUSTOM_APPLE_SECRET

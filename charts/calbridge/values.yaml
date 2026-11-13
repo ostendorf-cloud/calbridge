@@ -170,6 +170,53 @@ config:
   trustedProxyCIDRs: ""
 
   # --------------------------------------------------------------------
+  # Provider sign-in
+  # --------------------------------------------------------------------
+  # AUTH_BASE_URL: the public base URL of this deployment, for example
+  # "https://calbridge.example.com". internal/auth builds every provider's
+  # redirect URL from it as
+  # "<AUTH_BASE_URL>/api/v1/auth/providers/<provider>/callback", and this
+  # must match the redirect URL registered for the application at that
+  # provider's own console. Empty by default, which is correct for a
+  # deployment offering local accounts only; internal/config refuses to
+  # start once a provider below is configured without it, rather than
+  # building a redirect URL the provider would reject at the callback.
+  # See README.md's "Provider sign-in" section.
+  authBaseUrl: ""
+
+  # Google, Microsoft and Apple sign-in, each independent and off by
+  # default: a provider is offered only once its clientId below is set, at
+  # which point its client secret becomes required too (see
+  # existingSecret's own *ClientSecretKey comments below). Apple sign-in
+  # grants identity and nothing else: no calendar is connected by it. An
+  # iCloud calendar is connected separately over CalDAV with an Apple ID
+  # and an app-specific password, because Apple has no calendar API
+  # equivalent to Google Calendar or Microsoft Graph.
+  auth:
+    google:
+      # AUTH_GOOGLE_CLIENT_ID. Empty by default; empty means Google
+      # sign-in is simply not offered.
+      clientId: ""
+      # AUTH_GOOGLE_ISSUER. Empty by default, which makes internal/auth
+      # use its own documented default Google issuer.
+      issuer: ""
+    microsoft:
+      # AUTH_MICROSOFT_CLIENT_ID. Empty by default; empty means
+      # Microsoft sign-in is simply not offered.
+      clientId: ""
+      # AUTH_MICROSOFT_ISSUER. Empty by default, which makes
+      # internal/auth use its own documented default, multi-tenant
+      # Microsoft issuer. Set this only for a tenant-specific issuer.
+      issuer: ""
+    apple:
+      # AUTH_APPLE_CLIENT_ID. Empty by default; empty means Apple
+      # sign-in is simply not offered.
+      clientId: ""
+      # AUTH_APPLE_ISSUER. Empty by default, which makes internal/auth
+      # use its own documented default Apple issuer.
+      issuer: ""
+
+  # --------------------------------------------------------------------
   # Database
   # --------------------------------------------------------------------
   # databaseUrl is deliberately plain, not secret: internal/config.Config's
@@ -240,6 +287,14 @@ existingSecret:
   # Set this when the two roles' passwords live under different keys
   # instead; see README.md's "Migrations run as a separate role" section.
   migrationDatabasePasswordKey: ""
+  # Client secret keys for provider sign-in, read only once the matching
+  # config.auth.<provider>.clientId above is set (see
+  # templates/deployment.yaml and templates/validations.yaml). Each
+  # defaults to its own env var's name as the key, like
+  # databasePasswordKey and encryptionKeyKey above.
+  googleClientSecretKey: "AUTH_GOOGLE_CLIENT_SECRET"
+  microsoftClientSecretKey: "AUTH_MICROSOFT_CLIENT_SECRET"
+  appleClientSecretKey: "AUTH_APPLE_CLIENT_SECRET"
 
 # A pre-install,pre-upgrade Helm hook Job that runs "dbmate up" against the
 # same connection config.databaseUrl/databaseUser/existingSecret.name above

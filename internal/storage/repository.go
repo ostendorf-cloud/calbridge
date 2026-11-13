@@ -32,30 +32,51 @@ type UserScope interface {
 // never by opening a row level security policy to every row (see
 // db/migrations). FindByID and Update must run inside a context
 // UserScope.WithUser produced, like every other repository; see
-// ErrNoUserScope. Create takes a plain context instead, because its
-// caller has no user id to scope by yet: it generates the new user's id
-// and scopes its own transaction to it, so signup is covered by the same
-// policy as every other command rather than exempt from it. Any ID set
-// on the passed User is ignored; the returned User carries the id the
-// row was actually created with.
+// ErrNoUserScope. Create and DeleteAccount take a plain context instead,
+// because neither caller has a scope to work inside: Create generates the
+// new user's id and scopes its own transaction to it, so signup is
+// covered by the same policy as every other command rather than exempt
+// from it, and DeleteAccount scopes its own transaction to the user it
+// removes. Any ID set on the passed User is ignored; the returned User
+// carries the id the row was actually created with.
+//
+// DeleteAccount removes the user and everything it owns: its identities,
+// its connections, its calendars, its edges, the grants on either side
+// of it, and every row its edges wrote into the event mapping. There is
+// no ON DELETE CASCADE anywhere in this schema, so the order those rows
+// go in is part of the contract; see internal/storage/postgres's
+// queries/account_deletion.sql.
 type UserRepository interface {
 	Create(ctx context.Context, user User) (User, error)
 	FindByID(ctx context.Context, id uuid.UUID) (User, error)
 	FindByEmail(ctx context.Context, email string) (User, error)
 	Update(ctx context.Context, user User) (User, error)
+	DeleteAccount(ctx context.Context, id uuid.UUID) error
 }
 
 // IdentityRepository persists and queries provider identities used to
-// sign in. Every method must run inside a context UserScope.WithUser
-// produced; see ErrNoUserScope. There is deliberately no method that
-// resolves a (provider, subject) pair to a user across users: that
-// lookup, needed before any user scope exists, is internal/auth's
-// problem to solve in a later step, and is not this package's to solve
-// by exempting this table from row level security the way User is
-// exempted; see db/migrations's own reasoning on the identities table.
+// sign in. Every method except FindByProviderSubject must run inside a
+// context UserScope.WithUser produced; see ErrNoUserScope.
+//
+// FindByProviderSubject is the one exception, and it is the same
+// exception UserRepository.FindByEmail already is: resolving a provider
+// sign-in to a user is the step that has to run before any user scope
+// exists. It reaches the row through a SECURITY DEFINER function that
+// reads identities and nothing else, never by opening a row level
+// security policy to every row.
+//
+// It matches on the identity provider's stable subject claim and on
+// nothing else. In particular there is no method here, and there may
+// never be one, that resolves a sign-in through a ConnectionRepository
+// row: a provider account another user connected as a calendar must
+// never be matched to a sign-in identity, or controlling a mailbox whose
+// calendar someone connected becomes a path into that person's calbridge
+// account. The collision creates a separate account instead; see
+// db/migrations's own reasoning on the identities table.
 type IdentityRepository interface {
 	Create(ctx context.Context, identity Identity) (Identity, error)
 	FindByID(ctx context.Context, id uuid.UUID) (Identity, error)
+	FindByProviderSubject(ctx context.Context, provider IdentityProvider, subject string) (Identity, error)
 	List(ctx context.Context) ([]Identity, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 }

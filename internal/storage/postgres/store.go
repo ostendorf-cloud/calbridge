@@ -108,10 +108,11 @@ func (s *Store) Users() storage.UserRepository {
 	return &userRepository{pool: s.pool, scope: s}
 }
 
-// Identities returns the identity repository. Every method on it
-// requires a context WithUser produced; see storage.IdentityRepository.
+// Identities returns the identity repository. Every method on it except
+// FindByProviderSubject requires a context WithUser produced; see
+// storage.IdentityRepository.
 func (s *Store) Identities() storage.IdentityRepository {
-	return &identityRepository{}
+	return &identityRepository{pool: s.pool}
 }
 
 // Connections returns the connection repository. Every method on it

@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Command calbridge wires the service: configuration, structured
-// logging, the HTTP handler, and graceful shutdown. See internal/config
-// and internal/httpapi for what each piece actually does; this file only
-// assembles them in order.
+// logging, the database pool, the sign-in providers, the HTTP handler,
+// and graceful shutdown. See internal/config, internal/storage/postgres,
+// internal/auth and internal/httpapi for what each piece actually does;
+// this file only assembles them in order.
 package main
 
 import (
@@ -20,8 +21,11 @@ import (
 	"github.com/ostendorf-cloud/govue/logging"
 	"github.com/ostendorf-cloud/govue/metrics"
 
+	"github.com/ostendorf-cloud/calbridge/internal/auth"
 	"github.com/ostendorf-cloud/calbridge/internal/config"
 	"github.com/ostendorf-cloud/calbridge/internal/httpapi"
+	"github.com/ostendorf-cloud/calbridge/internal/storage"
+	"github.com/ostendorf-cloud/calbridge/internal/storage/postgres"
 )
 
 func main() {
@@ -54,6 +58,28 @@ func run() error {
 		return fmt.Errorf("calbridge: %w", err)
 	}
 
+	// The pool is opened before anything listens, so a database that
+	// cannot be reached at all is a startup failure rather than a stream
+	// of failed logins. ctx bounds this attempt only; the pool outlives
+	// it.
+	pool, err := postgres.NewPoolWithCredentials(ctx, cfg.DatabaseURL, cfg.DatabaseUser, cfg.DatabasePassword)
+	if err != nil {
+		// Not wrapped with the connection's own details: an error from
+		// here must never carry the password that was tried.
+		return fmt.Errorf("calbridge: open the database: %w", err)
+	}
+	defer pool.Close()
+
+	store, err := postgres.NewStore(pool, cfg.EncryptionKey)
+	if err != nil {
+		return fmt.Errorf("calbridge: build the store: %w", err)
+	}
+
+	providers, err := signInProviders(cfg)
+	if err != nil {
+		return err
+	}
+
 	handlers, err := httpapi.NewHandler(httpapi.Deps{
 		Logger:            logger,
 		HealthRegistry:    healthRegistry,
@@ -63,6 +89,8 @@ func run() error {
 		RateLimitBurst:    cfg.RateLimitBurst,
 		RateLimitPer:      cfg.RateLimitPer,
 		TrustedProxyCIDRs: cfg.TrustedProxyCIDRs,
+		Store:             store,
+		AuthProviders:     providers,
 	})
 	if err != nil {
 		return fmt.Errorf("calbridge: build http handler: %w", err)
@@ -86,4 +114,32 @@ func run() error {
 		Addr:    cfg.AdminListenAddr,
 		Handler: handlers.Admin,
 	})
+}
+
+// signInProviders builds one auth.Provider per configured sign-in
+// provider. Each redirect URL is assembled here, from the public base
+// URL and the route internal/httpapi actually mounts the callback at, so
+// the URL registered at the provider and the route that answers it
+// cannot drift apart; see httpapi.ProviderCallbackPath.
+//
+// A deployment that configured none gets none, which is the ordinary
+// shape of a deployment offering local accounts only.
+func signInProviders(cfg config.Config) ([]*auth.Provider, error) {
+	providers := make([]*auth.Provider, 0, len(cfg.AuthProviders))
+
+	for _, configured := range cfg.AuthProviders {
+		provider, err := auth.NewProvider(storage.IdentityProvider(configured.ID), auth.ProviderConfig{
+			Issuer:       configured.Issuer,
+			ClientID:     configured.ClientID,
+			ClientSecret: configured.ClientSecret,
+			RedirectURL:  cfg.AuthBaseURL + httpapi.ProviderCallbackPath(configured.ID),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("calbridge: %w", err)
+		}
+
+		providers = append(providers, provider)
+	}
+
+	return providers, nil
 }

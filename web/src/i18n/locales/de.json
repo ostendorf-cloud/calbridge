@@ -5,12 +5,41 @@
   },
   "login": {
     "title": "Anmelden",
-    "lead": "Dieser Anmeldebereich ist ein Platzhalter für die künftige Kontoanmeldung und prüft nur die Sitzung und den CSRF-Schutz.",
-    "email": "E-Mail",
-    "submit": "Anmelden",
-    "submitting": "Wird angemeldet",
-    "validation": {
-      "email": "Bitte geben Sie eine E-Mail-Adresse an."
+    "lead": "Melden Sie sich mit Ihrem calbridge-Konto an, legen Sie ein neues an, oder fahren Sie mit einem verbundenen Anbieter fort.",
+    "signIn": {
+      "email": "E-Mail",
+      "password": "Passwort",
+      "totpCode": "Authentifizierungscode",
+      "submit": "Anmelden",
+      "submitting": "Wird angemeldet",
+      "switchToSignup": "Noch kein Konto? Registrieren",
+      "validation": {
+        "email": "Bitte geben Sie eine E-Mail-Adresse an.",
+        "password": "Bitte geben Sie ein Passwort an.",
+        "totpCode": "Bitte geben Sie den Code aus Ihrer Authentifizierungs-App ein."
+      }
+    },
+    "signUp": {
+      "title": "Konto erstellen",
+      "email": "E-Mail",
+      "password": "Passwort",
+      "submit": "Registrieren",
+      "submitting": "Wird registriert",
+      "switchToSignin": "Sie haben bereits ein Konto? Anmelden",
+      "validation": {
+        "email": "Bitte geben Sie eine E-Mail-Adresse an.",
+        "password": "Bitte geben Sie ein Passwort an."
+      },
+      "successLead": "Scannen Sie dies in Ihre Authentifizierungs-App ein, oder tragen Sie den Einrichtungsschlüssel händisch ein, bevor Sie sich anmelden.",
+      "secretLabel": "Einrichtungsschlüssel",
+      "uriLabel": "Einrichtungslink",
+      "continue": "Weiter zur Anmeldung"
+    },
+    "providers": {
+      "title": "Oder weiter mit",
+      "signInWith": "Weiter mit {name}",
+      "identityOnly": "Bestätigt nur Ihre Identität. Es wird kein Kalender verbunden.",
+      "loadError": "Die Liste der Anbieter konnte nicht geladen werden."
     }
   },
   "home": {
