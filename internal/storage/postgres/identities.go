@@ -7,15 +7,21 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ostendorf-cloud/calbridge/internal/storage"
 	"github.com/ostendorf-cloud/calbridge/internal/storage/postgres/sqlcgen"
 )
 
 // identityRepository satisfies storage.IdentityRepository. Every method
-// requires a context storage.UserScope.WithUser produced; see
-// txFromContext.
-type identityRepository struct{}
+// except FindByProviderSubject requires a context
+// storage.UserScope.WithUser produced; see txFromContext.
+// FindByProviderSubject runs against the pool instead, the same
+// exception userRepository.FindByEmail is and for the same reason; see
+// storage.IdentityRepository.
+type identityRepository struct {
+	pool *pgxpool.Pool
+}
 
 // Create implements storage.IdentityRepository.
 func (r *identityRepository) Create(ctx context.Context, identity storage.Identity) (storage.Identity, error) {
@@ -44,6 +50,25 @@ func (r *identityRepository) FindByID(ctx context.Context, id uuid.UUID) (storag
 	}
 
 	row, err := sqlcgen.New(tx).GetIdentityByID(ctx, id)
+	if err != nil {
+		return storage.Identity{}, mapReadError(err)
+	}
+
+	return identityFromRow(row), nil
+}
+
+// FindByProviderSubject implements storage.IdentityRepository. It is not
+// user-scoped: see that interface's own doc comment, and db/migrations
+// for the SECURITY DEFINER function behind it.
+func (r *identityRepository) FindByProviderSubject(
+	ctx context.Context,
+	provider storage.IdentityProvider,
+	subject string,
+) (storage.Identity, error) {
+	row, err := sqlcgen.New(r.pool).GetIdentityByProviderSubject(ctx, sqlcgen.GetIdentityByProviderSubjectParams{
+		Provider: string(provider),
+		Subject:  subject,
+	})
 	if err != nil {
 		return storage.Identity{}, mapReadError(err)
 	}

@@ -14,26 +14,26 @@ for the issues still ahead, so later work lands in the place already agreed
 on; every other path already exists.
 
 - `cmd/calbridge` wires the service: `internal/config` loads and validates
-  the environment, `main.go` builds `internal/httpapi`'s handler and runs it
-  through govue's `httpserver` with graceful shutdown. A later issue adds
-  the provider registry and the sync engine, and opens the database
-  connection `internal/config` now reads, to this wiring.
+  the environment, `main.go` opens the database pool, builds the sign-in
+  providers `internal/config` describes, builds `internal/httpapi`'s
+  handler and runs it through govue's `httpserver` with graceful
+  shutdown. A later issue adds the provider registry and the sync engine
+  to this wiring.
 - `internal/config` loads calbridge's configuration from the environment
-  once, at startup, through govue's `envconf`. The database connection and
-  the encryption key follow `envconf`'s `SecretOrFile`/`RequiredSecretOrFile`
-  `_FILE`-suffix convention; the rest is server, logging, session and login
-  rate limit configuration.
+  once, at startup, through govue's `envconf`. The database connection,
+  the encryption key and each sign-in provider's client secret follow
+  `envconf`'s `SecretOrFile`/`RequiredSecretOrFile` `_FILE`-suffix
+  convention; the rest is server, logging, session, login rate limit and
+  provider sign-in configuration.
 - `internal/httpapi` builds the HTTP handler: liveness, readiness and
-  metrics on the admin listener, and on the public one a session and
-  CSRF contract shell (`POST /api/v1/auth/login`, `GET /api/v1/me`,
-  `POST /api/v1/auth/logout`) plus the SPA fallback that serves the
-  embedded Vue build. The login handler starts a session for whatever
-  email it is given, with no account to check it against yet; issue #5
-  replaces it with real local accounts and provider sign-in, built on
-  `internal/auth`, without changing the session or CSRF wiring around
-  it. A later issue adds the calendar, edge and grant API and the
-  webhook endpoint Google and Microsoft Graph push change notifications
-  to.
+  metrics on the admin listener, and on the public one signup, login,
+  logout, `GET` and `DELETE /api/v1/me`, the sign-in provider list and a
+  pair of routes per configured provider, plus the SPA fallback that
+  serves the embedded Vue build. Every account decision belongs to
+  `internal/auth`; this package decodes a request, calls that package and
+  turns the answer into JSON or a session cookie. A later issue adds the
+  calendar, edge and grant API and the webhook endpoint Google and
+  Microsoft Graph push change notifications to.
 - `charts/calbridge/` is the Helm chart for the real deployment, with no
   Postgres subchart, the shape `charts/solobill` uses. It exposes the
   service through either an `Ingress` or a Gateway API `HTTPRoute`, chosen
@@ -86,13 +86,25 @@ on; every other path already exists.
   level security, not this package, is what actually enforces that scope.
   `crypto.go` encrypts and decrypts `connections.credentials` and
   `event_mapping.encrypted_details` at the database boundary, so a caller
-  above this package never holds or passes ciphertext.
-- `internal/auth` will hold login: local accounts with password and TOTP,
-  plus sign in with Google, Microsoft and Apple through govue's `oidc`
-  package. calbridge owns identity and depends on no external identity
-  provider. A provider identity used to sign in is never linked to a
-  provider account another user connected as a calendar; that collision
-  creates a separate account.
+  above this package never holds or passes ciphertext. The two lookups
+  that have to run before any user id is known, a local account by email
+  and a sign-in identity by `(provider, subject)`, go through their own
+  `SECURITY DEFINER` function instead of through a widened policy.
+- `internal/storage/storagetest` is an in-memory implementation of the
+  same repository interfaces, for a test of a package above the storage
+  layer. It imitates the scoping row level security enforces, so a
+  repository method called outside a `WithUser` transaction fails there
+  too.
+- `internal/auth` holds login: local accounts with a password hashed
+  with Argon2id and a TOTP second factor, plus sign in with Google,
+  Microsoft and Apple through govue's `oidc` package, asking for identity
+  scopes only. calbridge owns identity and depends on no external
+  identity provider. Both paths produce one `Identity`, so nothing above
+  branches on login method. A provider identity used to sign in is never
+  matched against a provider account another user connected as a
+  calendar; that collision creates a separate account, and the rule is
+  structural: the `Store` interface this package defines exposes no
+  connection repository, so no code here can reach one.
 - `cmd/calbridge-mcp` will be the MCP server, its own binary and its own
   deployment, letting an agent read the sync topology and create or change
   edges and grants. It may not create, change or delete a provider
@@ -101,11 +113,12 @@ on; every other path already exists.
 - `web/` holds the Vue SPA on govue: a login shell and an authenticated
   shell that prove the session and CSRF contract end to end, with
   German and English i18n and a theme generated from `web/src/theme/seed.json`
-  through govue's own generator. The Vue Flow canvas where calendars
-  are nodes grouped by account, an edge is drawn by dragging one onto
-  another, and the detail level is edited on the edge, is a later
-  issue's work; so is any login UI beyond the shell, which belongs to
-  issue #5.
+  through govue's own generator. `LoginView` carries sign-in with both
+  factors, sign-up with its TOTP enrolment, and a button per configured
+  sign-in provider, with Apple marked as granting identity only. The Vue
+  Flow canvas where calendars are nodes grouped by account, an edge is
+  drawn by dragging one onto another, and the detail level is edited on
+  the edge, is a later issue's work.
 
 ## Deviations
 

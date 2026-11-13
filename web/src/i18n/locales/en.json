@@ -5,12 +5,41 @@
   },
   "login": {
     "title": "Log in",
-    "lead": "This sign-in is a placeholder for the real account login to come, and only proves the session and CSRF protection.",
-    "email": "Email",
-    "submit": "Log in",
-    "submitting": "Logging in",
-    "validation": {
-      "email": "Please enter an email address."
+    "lead": "Sign in with your calbridge account, create a new one, or continue with a connected provider.",
+    "signIn": {
+      "email": "Email",
+      "password": "Password",
+      "totpCode": "Authentication code",
+      "submit": "Log in",
+      "submitting": "Logging in",
+      "switchToSignup": "Need an account? Sign up",
+      "validation": {
+        "email": "Please enter an email address.",
+        "password": "Please enter a password.",
+        "totpCode": "Please enter the code from your authenticator app."
+      }
+    },
+    "signUp": {
+      "title": "Create an account",
+      "email": "Email",
+      "password": "Password",
+      "submit": "Sign up",
+      "submitting": "Signing up",
+      "switchToSignin": "Already have an account? Log in",
+      "validation": {
+        "email": "Please enter an email address.",
+        "password": "Please enter a password."
+      },
+      "successLead": "Scan this into your authenticator app, or enter the setup key by hand, before you sign in.",
+      "secretLabel": "Setup key",
+      "uriLabel": "Setup link",
+      "continue": "Continue to log in"
+    },
+    "providers": {
+      "title": "Or continue with",
+      "signInWith": "Continue with {name}",
+      "identityOnly": "Confirms who you are only. No calendar is connected.",
+      "loadError": "Could not load the list of providers."
     }
   },
   "home": {

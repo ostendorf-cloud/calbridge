@@ -1096,6 +1096,314 @@ WHERE tc.table_schema = 'public'
 		t.Fatalf("found %d foreign key(s) between identities and connections, want 0: "+
 			"a provider identity used to sign in must never be resolvable through a connection, or the reverse", count)
 	}
+
+	// The second half of the same rule, now that there is a lookup to
+	// check: identities_find_by_provider_subject is the one query that
+	// resolves a sign-in before any user scope exists, and it is
+	// SECURITY DEFINER, so whatever it reads it reads with no row level
+	// security in the way at all. It must therefore read identities and
+	// nothing else; a join to connections added here would be invisible
+	// to every other test in this file.
+	var body string
+
+	if err := adminPool.QueryRow(ctx, `
+SELECT prosrc
+FROM pg_proc
+WHERE proname = 'identities_find_by_provider_subject'`).Scan(&body); err != nil {
+		t.Fatalf("read identities_find_by_provider_subject's body: %v", err)
+	}
+
+	for _, forbidden := range []string{"connections", "calendars", "edges", "calendar_grants", "event_mapping"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("identities_find_by_provider_subject names %q; it runs SECURITY DEFINER and may read "+
+				"identities and nothing else", forbidden)
+		}
+	}
+}
+
+// TestASignInLookupNeverFindsAnotherUsersCalendarConnection is the same
+// security boundary internal/auth's own test holds down, asserted here
+// against the real schema: the pre-login lookup is given a provider
+// account that exists only as somebody's calendar connection, and it
+// must find nothing. internal/auth then creates a separate account,
+// which is the outcome this makes possible.
+func TestASignInLookupNeverFindsAnotherUsersCalendarConnection(t *testing.T) {
+	adminURL := requireDatabaseURL(t)
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	store := restrictedStore(ctx, t, adminPool, adminURL)
+
+	subject := "google-account-" + uuid.NewString()
+
+	owner, err := store.Users().Create(ctx, storage.User{
+		Email:  "owner-" + uuid.NewString() + "@example.com",
+		Status: storage.UserStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("create the owner: %v", err)
+	}
+
+	if err := store.WithUser(ctx, owner.ID, func(ctx context.Context) error {
+		_, err := store.Connections().Create(ctx, storage.Connection{
+			UserID:      owner.ID,
+			Provider:    storage.ConnectionProviderGoogle,
+			DisplayName: subject,
+			Credentials: []byte("the connected calendar's refresh token"),
+		})
+
+		return err
+	}); err != nil {
+		t.Fatalf("create the calendar connection: %v", err)
+	}
+
+	_, err = store.Identities().FindByProviderSubject(ctx, storage.IdentityProviderGoogle, subject)
+	if !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("FindByProviderSubject() error = %v, want storage.ErrNotFound: a calendar connection must "+
+			"never resolve a sign-in", err)
+	}
+}
+
+// TestIdentityLookupResolvesASignInBeforeAnyUserScopeExists covers the
+// lookup's own job: an identity written under one user is found by
+// (provider, subject) with no scope set at all, which is the state every
+// sign-in starts from, and a subject nobody registered is not found.
+func TestIdentityLookupResolvesASignInBeforeAnyUserScopeExists(t *testing.T) {
+	adminURL := requireDatabaseURL(t)
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	store := restrictedStore(ctx, t, adminPool, adminURL)
+
+	user, err := store.Users().Create(ctx, storage.User{
+		Email:  "signin-" + uuid.NewString() + "@example.com",
+		Status: storage.UserStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("create the user: %v", err)
+	}
+
+	subject := "apple-subject-" + uuid.NewString()
+
+	var created storage.Identity
+
+	if err := store.WithUser(ctx, user.ID, func(ctx context.Context) error {
+		var err error
+		created, err = store.Identities().Create(ctx, storage.Identity{
+			UserID:   user.ID,
+			Provider: storage.IdentityProviderApple,
+			Subject:  subject,
+		})
+
+		return err
+	}); err != nil {
+		t.Fatalf("create the identity: %v", err)
+	}
+
+	found, err := store.Identities().FindByProviderSubject(ctx, storage.IdentityProviderApple, subject)
+	if err != nil {
+		t.Fatalf("FindByProviderSubject() error = %v, want the identity back with no user scope set", err)
+	}
+
+	if found.ID != created.ID || found.UserID != user.ID {
+		t.Fatalf("FindByProviderSubject() = %+v, want identity %s of user %s", found, created.ID, user.ID)
+	}
+
+	// The same subject at another provider is a different person.
+	if _, err := store.Identities().FindByProviderSubject(ctx, storage.IdentityProviderGoogle, subject); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("FindByProviderSubject() at another provider error = %v, want storage.ErrNotFound", err)
+	}
+}
+
+// TestDeleteAccountRemovesEverythingTheUserOwns runs the deletion
+// against the real schema, where the order the rows go in is what the
+// foreign keys actually enforce, and checks through a connection that
+// bypasses row level security that nothing is left behind.
+func TestDeleteAccountRemovesEverythingTheUserOwns(t *testing.T) {
+	adminURL := requireDatabaseURL(t)
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	store := restrictedStore(ctx, t, adminPool, adminURL)
+
+	user, err := store.Users().Create(ctx, storage.User{
+		Email:  "leaving-" + uuid.NewString() + "@example.com",
+		Status: storage.UserStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("create the user: %v", err)
+	}
+
+	staying, err := store.Users().Create(ctx, storage.User{
+		Email:  "staying-" + uuid.NewString() + "@example.com",
+		Status: storage.UserStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("create the second user: %v", err)
+	}
+
+	// Everything this account owns, one row per user-owned table, built
+	// in the order the foreign keys require.
+	if err := store.WithUser(ctx, user.ID, func(ctx context.Context) error {
+		if _, err := store.Identities().Create(ctx, storage.Identity{
+			UserID:   user.ID,
+			Provider: storage.IdentityProviderGoogle,
+			Subject:  "google-subject-" + uuid.NewString(),
+		}); err != nil {
+			return err
+		}
+
+		connection, err := store.Connections().Create(ctx, storage.Connection{
+			UserID:      user.ID,
+			Provider:    storage.ConnectionProviderGoogle,
+			DisplayName: "a connected account",
+			Credentials: []byte("a refresh token"),
+		})
+		if err != nil {
+			return err
+		}
+
+		source, err := store.Calendars().Create(ctx, storage.Calendar{
+			UserID:       user.ID,
+			ConnectionID: connection.ID,
+			ExternalID:   "source-" + uuid.NewString(),
+			Name:         "Source",
+		})
+		if err != nil {
+			return err
+		}
+
+		target, err := store.Calendars().Create(ctx, storage.Calendar{
+			UserID:       user.ID,
+			ConnectionID: connection.ID,
+			ExternalID:   "target-" + uuid.NewString(),
+			Name:         "Target",
+			Managed:      true,
+		})
+		if err != nil {
+			return err
+		}
+
+		edge, err := store.Edges().Create(ctx, storage.Edge{
+			UserID:           user.ID,
+			SourceCalendarID: source.ID,
+			TargetCalendarID: target.ID,
+			DetailLevel:      storage.DetailLevelBusyBlock,
+		})
+		if err != nil {
+			return err
+		}
+
+		if _, err := store.CalendarGrants().Create(ctx, storage.CalendarGrant{
+			OwnerUserID:    user.ID,
+			GranteeUserID:  staying.ID,
+			CalendarID:     source.ID,
+			MaxDetailLevel: storage.DetailLevelBusyBlock,
+		}); err != nil {
+			return err
+		}
+
+		_, err = store.EventMappings().Create(ctx, storage.EventMapping{
+			UserID:        user.ID,
+			EdgeID:        edge.ID,
+			SourceEventID: "source-event",
+			TargetEventID: "target-event",
+			StartsAt:      time.Now().UTC().Truncate(time.Second),
+			EndsAt:        time.Now().UTC().Add(time.Hour).Truncate(time.Second),
+			ContentHash:   "a-content-hash",
+			Details:       []byte("a copied title"),
+		})
+
+		return err
+	}); err != nil {
+		t.Fatalf("seed the account's rows: %v", err)
+	}
+
+	if err := store.Users().DeleteAccount(ctx, user.ID); err != nil {
+		t.Fatalf("DeleteAccount() error = %v", err)
+	}
+
+	tables := []string{"identities", "connections", "calendars", "edges", "event_mapping"}
+	for _, table := range tables {
+		var left int
+
+		// Through the admin pool, which bypasses row level security: an
+		// empty result read as the deleted user would prove nothing.
+		if err := adminPool.QueryRow(ctx,
+			`SELECT count(*) FROM `+table+` WHERE user_id = $1`, user.ID).Scan(&left); err != nil {
+			t.Fatalf("count the remaining %s rows: %v", table, err)
+		}
+
+		if left != 0 {
+			t.Errorf("%s left %d row(s) behind, want 0", table, left)
+		}
+	}
+
+	var grantsLeft int
+	if err := adminPool.QueryRow(ctx,
+		`SELECT count(*) FROM calendar_grants WHERE owner_user_id = $1 OR grantee_user_id = $1`,
+		user.ID).Scan(&grantsLeft); err != nil {
+		t.Fatalf("count the remaining grants: %v", err)
+	}
+
+	if grantsLeft != 0 {
+		t.Errorf("calendar_grants left %d row(s) behind, want 0", grantsLeft)
+	}
+
+	var usersLeft int
+	if err := adminPool.QueryRow(ctx, `SELECT count(*) FROM users WHERE id = $1`, user.ID).Scan(&usersLeft); err != nil {
+		t.Fatalf("count the remaining user rows: %v", err)
+	}
+
+	if usersLeft != 0 {
+		t.Errorf("users left %d row(s) behind, want 0", usersLeft)
+	}
+
+	requireUsersExist(ctx, t, adminPool, staying.ID)
+
+	// Deleting again reports that there is nothing left to delete, rather
+	// than reporting success for a row it did not touch.
+	if err := store.Users().DeleteAccount(ctx, user.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("second DeleteAccount() error = %v, want storage.ErrNotFound", err)
+	}
+}
+
+// restrictedStore builds a Store on a pool connected as testAppRole, the
+// NOSUPERUSER NOBYPASSRLS role every assertion in this file has to run
+// through for row level security to mean anything.
+func restrictedStore(ctx context.Context, t *testing.T, adminPool *pgxpool.Pool, adminURL string) *postgres.Store {
+	t.Helper()
+
+	restrictedPool, err := postgres.NewPool(ctx, setUpTestAppRole(ctx, t, adminPool, adminURL))
+	if err != nil {
+		t.Fatalf("open restricted pool as %s: %v", testAppRole, err)
+	}
+	t.Cleanup(restrictedPool.Close)
+
+	store, err := postgres.NewStore(restrictedPool, testEncryptionKey)
+	if err != nil {
+		t.Fatalf("build store: %v", err)
+	}
+
+	return store
 }
 
 // setUpTestAppRole creates testAppRole on the database adminURL points
@@ -1120,14 +1428,17 @@ $$;`
 		t.Fatalf("create %s role: %v", testAppRole, err)
 	}
 
-	// Mirrors docker/postgres/init-app-role.sh's own grant to the compose
-	// role: nothing in this codebase deletes a user, so users gets no
-	// DELETE, and every other table gets exactly the privileges its own
-	// repository in internal/storage/postgres actually uses.
+	// Mirrors docker-compose.yaml's "grant-app-role" service: every table
+	// gets exactly the privileges its own repository in
+	// internal/storage/postgres actually uses. users gets DELETE because
+	// userRepository.DeleteAccount removes the row itself, and the two
+	// SECURITY DEFINER lookup functions get EXECUTE because the two
+	// pre-login lookups go through them.
 	grant := `
 GRANT USAGE ON SCHEMA public TO ` + testAppRole + `;
-GRANT SELECT, INSERT, UPDATE ON users TO ` + testAppRole + `;
+GRANT SELECT, INSERT, UPDATE, DELETE ON users TO ` + testAppRole + `;
 GRANT EXECUTE ON FUNCTION users_find_by_email(text) TO ` + testAppRole + `;
+GRANT EXECUTE ON FUNCTION identities_find_by_provider_subject(text, text) TO ` + testAppRole + `;
 GRANT SELECT, INSERT, DELETE ON identities, calendars, calendar_grants TO ` + testAppRole + `;
 GRANT SELECT, INSERT, UPDATE, DELETE ON connections, edges, event_mapping TO ` + testAppRole + `;`
 
