@@ -96,6 +96,8 @@ func (a *app) handleSignUp(w http.ResponseWriter, r *http.Request) error {
 // somebody else's; see internal/auth's own reasoning on ErrEmailTaken.
 func signUpError(err error) error {
 	switch {
+	case errors.Is(err, auth.ErrHashingBusy):
+		return hashingBusyError()
 	case errors.Is(err, auth.ErrEmailInvalid):
 		return api.Invalid("enter a valid email address")
 	case errors.Is(err, auth.ErrPasswordTooShort):
@@ -107,6 +109,34 @@ func signUpError(err error) error {
 	default:
 		return fmt.Errorf("httpapi: sign up: %w", err)
 	}
+}
+
+// loginError turns internal/auth's login refusals into answers. Every
+// wrong credential answers identically, whichever part of the attempt
+// was wrong: internal/auth collapses them into one error for exactly
+// that reason, and this must not undo it by telling them apart again.
+func loginError(err error) error {
+	switch {
+	case errors.Is(err, auth.ErrHashingBusy):
+		// Deliberately not an authentication failure: the password was
+		// never checked. Telling somebody with the right password that
+		// it is wrong would be a lie, and would turn a load problem
+		// into a support request about a broken account.
+		return hashingBusyError()
+	case errors.Is(err, auth.ErrInvalidCredentials):
+		return api.Unauthenticated("the email, password or code is wrong")
+	default:
+		return fmt.Errorf("httpapi: log in: %w", err)
+	}
+}
+
+// hashingBusyError is what a request shed by internal/auth's limit on
+// concurrent password hashing is answered with: a 503, the honest answer
+// to a server already running as many Argon2id derivations as its memory
+// allows. See auth.MaxConcurrentPasswordHashes for why that limit
+// exists and what happens without it.
+func hashingBusyError() error {
+	return api.Unavailable("too many sign-in attempts are being processed, please try again in a moment")
 }
 
 // handleLogin verifies both factors and starts a session.
@@ -122,11 +152,7 @@ func (a *app) handleLogin(w http.ResponseWriter, r *http.Request) error {
 
 	identity, err := a.local.Login(r.Context(), req.Email, req.Password, req.TOTPCode)
 	if err != nil {
-		if errors.Is(err, auth.ErrInvalidCredentials) {
-			return api.Unauthenticated("the email, password or code is wrong")
-		}
-
-		return fmt.Errorf("httpapi: log in: %w", err)
+		return loginError(err)
 	}
 
 	if _, err := a.sessions.Start(r.Context(), w, identity.Session()); err != nil {

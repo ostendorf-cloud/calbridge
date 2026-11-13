@@ -40,6 +40,15 @@ type UserScope interface {
 // removes. Any ID set on the passed User is ignored; the returned User
 // carries the id the row was actually created with.
 //
+// AdvanceTOTPCounter writes the RFC 6238 counter a login's code matched,
+// and only that column, so a login never writes back a password hash, a
+// TOTP secret or a status read before the password verify. It advances
+// the counter only when the stored one is lower or absent, and returns
+// ErrNotFound when no row changed, which is how a replayed code is
+// refused: the comparison and the write are one statement, so two logins
+// racing with the same code cannot both pass it. A caller treats
+// ErrNotFound as a refused login, never as a missing account.
+//
 // DeleteAccount removes the user and everything it owns: its identities,
 // its connections, its calendars, its edges, the grants on either side
 // of it, and every row its edges wrote into the event mapping. There is
@@ -51,6 +60,7 @@ type UserRepository interface {
 	FindByID(ctx context.Context, id uuid.UUID) (User, error)
 	FindByEmail(ctx context.Context, email string) (User, error)
 	Update(ctx context.Context, user User) (User, error)
+	AdvanceTOTPCounter(ctx context.Context, id uuid.UUID, counter int64) error
 	DeleteAccount(ctx context.Context, id uuid.UUID) error
 }
 

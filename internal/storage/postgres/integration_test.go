@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1106,17 +1107,62 @@ WHERE tc.table_schema = 'public'
 	// to every other test in this file.
 	var body string
 
+	// Qualified by schema: without pronamespace a same-named function in
+	// another schema makes this return two rows, which fails the Scan
+	// rather than the assertion, and would read as an infrastructure
+	// problem instead of the rule being broken.
 	if err := adminPool.QueryRow(ctx, `
 SELECT prosrc
 FROM pg_proc
-WHERE proname = 'identities_find_by_provider_subject'`).Scan(&body); err != nil {
+WHERE proname = 'identities_find_by_provider_subject'
+  AND pronamespace = 'public'::regnamespace`).Scan(&body); err != nil {
 		t.Fatalf("read identities_find_by_provider_subject's body: %v", err)
 	}
 
+	// A substring check, which catches the obvious way this rule gets
+	// broken, a join added to the body, and not an indirect one through
+	// a view or another function. The behavioural half of the same rule
+	// is TestASignInLookupNeverFindsAnotherUsersCalendarConnection
+	// below, which does not care how the lookup is written.
 	for _, forbidden := range []string{"connections", "calendars", "edges", "calendar_grants", "event_mapping"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("identities_find_by_provider_subject names %q; it runs SECURITY DEFINER and may read "+
 				"identities and nothing else", forbidden)
+		}
+	}
+}
+
+// TestTheSecurityDefinerLookupsAreNotExecutableByPublic covers what
+// db/migrations' two REVOKE statements are for. PostgreSQL grants
+// EXECUTE on a new function to PUBLIC by default, so without them every
+// role in the database could call a function that bypasses row level
+// security, and the explicit grant to the application role would decide
+// nothing.
+func TestTheSecurityDefinerLookupsAreNotExecutableByPublic(t *testing.T) {
+	adminURL := requireDatabaseURL(t)
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	for _, signature := range []string{
+		"users_find_by_email(text)",
+		"identities_find_by_provider_subject(text, text)",
+	} {
+		var executableByPublic bool
+
+		if err := adminPool.QueryRow(ctx,
+			`SELECT has_function_privilege('public', $1, 'EXECUTE')`, signature).Scan(&executableByPublic); err != nil {
+			t.Fatalf("read PUBLIC's privileges on %s: %v", signature, err)
+		}
+
+		if executableByPublic {
+			t.Errorf("%s is executable by PUBLIC; a SECURITY DEFINER function that bypasses row level "+
+				"security must be callable only by the roles explicitly granted it", signature)
 		}
 	}
 }
@@ -1224,6 +1270,121 @@ func TestIdentityLookupResolvesASignInBeforeAnyUserScopeExists(t *testing.T) {
 	// The same subject at another provider is a different person.
 	if _, err := store.Identities().FindByProviderSubject(ctx, storage.IdentityProviderGoogle, subject); !errors.Is(err, storage.ErrNotFound) {
 		t.Fatalf("FindByProviderSubject() at another provider error = %v, want storage.ErrNotFound", err)
+	}
+}
+
+// TestAdvanceTOTPCounterLetsExactlyOneConcurrentLoginThrough is the
+// replay guard against the real database, where the race it exists for
+// actually happens: two logins with the same captured code, each on its
+// own connection, each having read the same counter.
+//
+// The refusal comes from the statement's own WHERE clause, so the
+// database decides, and nothing in Go has to hold a lock across a
+// roughly 0.3 second password verify to make it true.
+func TestAdvanceTOTPCounterLetsExactlyOneConcurrentLoginThrough(t *testing.T) {
+	adminURL := requireDatabaseURL(t)
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	store := restrictedStore(ctx, t, adminPool, adminURL)
+
+	user, err := store.Users().Create(ctx, storage.User{
+		Email:  "racing-" + uuid.NewString() + "@example.com",
+		Status: storage.UserStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("create the user: %v", err)
+	}
+
+	const (
+		attempts = 8
+		counter  = int64(58_000_000)
+	)
+
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		granted int
+		start   = make(chan struct{})
+	)
+
+	for range attempts {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			<-start
+
+			err := store.WithUser(ctx, user.ID, func(ctx context.Context) error {
+				return store.Users().AdvanceTOTPCounter(ctx, user.ID, counter)
+			})
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			switch {
+			case err == nil:
+				granted++
+			case errors.Is(err, storage.ErrNotFound):
+			default:
+				t.Errorf("AdvanceTOTPCounter() error = %v, want nil or storage.ErrNotFound", err)
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+
+	if granted != 1 {
+		t.Fatalf("%d of %d concurrent advances to the same counter succeeded, want exactly 1: "+
+			"the same TOTP code must be usable once", granted, attempts)
+	}
+
+	// An older counter is refused too, which is the other half of RFC
+	// 6238 section 5.2: a code from a previous step is still a code that
+	// has been superseded.
+	if err := store.WithUser(ctx, user.ID, func(ctx context.Context) error {
+		return store.Users().AdvanceTOTPCounter(ctx, user.ID, counter-1)
+	}); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("AdvanceTOTPCounter() with an older counter error = %v, want storage.ErrNotFound", err)
+	}
+
+	// A newer one is accepted: the account is not locked out of its own
+	// next code.
+	if err := store.WithUser(ctx, user.ID, func(ctx context.Context) error {
+		return store.Users().AdvanceTOTPCounter(ctx, user.ID, counter+1)
+	}); err != nil {
+		t.Fatalf("AdvanceTOTPCounter() with the next counter error = %v, want it to succeed", err)
+	}
+
+	// Nothing but the counter moved: a login must not write back a
+	// password hash, a TOTP secret or a status it read before the
+	// verify.
+	var (
+		passwordHash *string
+		totpSecret   *string
+		status       string
+	)
+
+	if err := adminPool.QueryRow(ctx,
+		`SELECT password_hash, totp_secret, status FROM users WHERE id = $1`,
+		user.ID).Scan(&passwordHash, &totpSecret, &status); err != nil {
+		t.Fatalf("read the user back: %v", err)
+	}
+
+	if passwordHash != nil || totpSecret != nil {
+		t.Error("advancing the counter wrote a password hash or a totp secret, want neither touched")
+	}
+
+	if status != string(storage.UserStatusActive) {
+		t.Errorf("status = %q, want it untouched at %q", status, storage.UserStatusActive)
 	}
 }
 

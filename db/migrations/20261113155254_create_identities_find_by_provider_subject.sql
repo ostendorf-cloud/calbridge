@@ -35,7 +35,11 @@
 -- EXECUTE is granted to the application role wherever that role's other
 -- grants are made (docker-compose.yaml's "grant-app-role" service; a
 -- cluster operator's own grant for charts/calbridge), never here: the
--- role does not necessarily exist yet when migrations run.
+-- role does not necessarily exist yet when migrations run. The REVOKE
+-- below is what makes that grant mean anything: PostgreSQL grants
+-- EXECUTE on a new function to PUBLIC by default, so without it every
+-- role in this database could call a function that bypasses row level
+-- security, and naming one role afterwards would add nothing.
 CREATE FUNCTION identities_find_by_provider_subject(p_provider text, p_subject text)
 RETURNS SETOF identities
 LANGUAGE sql
@@ -47,6 +51,10 @@ AS $$
     WHERE provider = p_provider AND subject = p_subject;
 $$;
 
+REVOKE EXECUTE ON FUNCTION identities_find_by_provider_subject(text, text) FROM PUBLIC;
+
 -- migrate:down
 
+-- The REVOKE above needs no undo of its own: dropping the function takes
+-- every privilege on it along.
 DROP FUNCTION identities_find_by_provider_subject(text, text);

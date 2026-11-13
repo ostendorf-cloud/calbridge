@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/ostendorf-cloud/calbridge/internal/storage"
 )
 
@@ -61,7 +63,11 @@ var (
 // argon2id and HMAC cost a real wrong-password attempt does.
 var (
 	dummyPasswordHash = sync.OnceValue(func() string {
-		hash, err := HashPassword("not-a-real-account-timing-equalizer-only")
+		// context.Background, not a request's: this runs once, at the
+		// first login the process serves, and a request that happens to
+		// be cancelled while it runs must not leave the package without
+		// the one value every later failed login is compared against.
+		hash, err := HashPassword(context.Background(), "not-a-real-account-timing-equalizer-only")
 		if err != nil {
 			// HashPassword fails only if crypto/rand itself fails, which
 			// means nothing on this machine can be trusted to run safely
@@ -131,6 +137,16 @@ func (l *Local) SignUp(ctx context.Context, email, password string) (Identity, E
 		return Identity{}, Enrolment{}, ErrEmailInvalid
 	}
 
+	// PlaceholderEmailDomain is this application's own namespace, not an
+	// address anybody owns, and mail.ParseAddress has no reason to think
+	// otherwise. A local signup allowed to pick one could claim the slot
+	// a particular provider account will land in before that person ever
+	// signs in, which would lock them out of the provider they are
+	// entitled to use; see signInEmail.
+	if isPlaceholderEmail(email) {
+		return Identity{}, Enrolment{}, ErrEmailInvalid
+	}
+
 	switch {
 	case len(password) < MinPasswordLength:
 		return Identity{}, Enrolment{}, ErrPasswordTooShort
@@ -138,7 +154,7 @@ func (l *Local) SignUp(ctx context.Context, email, password string) (Identity, E
 		return Identity{}, Enrolment{}, ErrPasswordTooLong
 	}
 
-	hash, err := HashPassword(password)
+	hash, err := HashPassword(ctx, password)
 	if err != nil {
 		return Identity{}, Enrolment{}, err
 	}
@@ -146,6 +162,16 @@ func (l *Local) SignUp(ctx context.Context, email, password string) (Identity, E
 	secret, err := GenerateTOTPSecret()
 	if err != nil {
 		return Identity{}, Enrolment{}, err
+	}
+
+	// Built before the account is created, not after: everything that
+	// can fail should fail while there is still no row to leave behind.
+	// email passed mail.ParseAddress above, so a refusal here means this
+	// package and that parser disagree about what an address can hold,
+	// which is a bug rather than anything the person typed.
+	uri, err := TOTPProvisioningURI(secret, email)
+	if err != nil {
+		return Identity{}, Enrolment{}, fmt.Errorf("auth: build the totp provisioning uri: %w", err)
 	}
 
 	user, err := l.store.Users().Create(ctx, storage.User{
@@ -164,7 +190,7 @@ func (l *Local) SignUp(ctx context.Context, email, password string) (Identity, E
 
 	return identityFromUser(user), Enrolment{
 		Secret: secret,
-		URI:    TOTPProvisioningURI(secret, email),
+		URI:    uri,
 	}, nil
 }
 
@@ -197,7 +223,15 @@ func (l *Local) Login(ctx context.Context, email, password, totpCode string) (Id
 
 	// Both checks run unconditionally, and neither short-circuits the
 	// other: see the method doc.
-	passwordOK, _ := VerifyPassword(passwordHash, password)
+	passwordOK, verifyErr := VerifyPassword(ctx, passwordHash, password)
+	if errors.Is(verifyErr, ErrHashingBusy) {
+		// Not a failed login: this server had no derivation slot free.
+		// Answering ErrInvalidCredentials here would tell somebody with
+		// the right password that it is wrong, and would let a burst of
+		// traffic look like a wave of bad passwords in the log.
+		return Identity{}, verifyErr
+	}
+
 	totpCounter, totpOK := VerifyTOTPCode(totpSecret, totpCode, l.now())
 
 	// A code that otherwise matches is still refused if it is not newer
@@ -205,10 +239,17 @@ func (l *Local) Login(ctx context.Context, email, password, totpCode string) (Id
 	// 5.2 requires a verifier to reject a second use of an already
 	// validated one-time password, so the exact same code, observed over
 	// someone's shoulder or captured in transit, cannot be replayed for
-	// the rest of its up-to-90-second skew window. This is gated on
-	// found, which the function already branches on above, so it adds no
-	// timing signal beyond the one that already separates a real account
-	// from a nonexistent one.
+	// the rest of its up-to-90-second skew window.
+	//
+	// This comparison, against the value read before the roughly 0.3
+	// second password verify, is the cheap half. It is not what actually
+	// holds the rule: two logins racing with the same captured code both
+	// read the same counter and both pass here. The advance below is
+	// where a replay is really refused, in one statement, against the
+	// value the row holds at that moment. This half stays because it
+	// rejects the common case without a write, and because it is gated
+	// on found, which the function already branches on, so it adds no
+	// timing signal of its own.
 	if found && totpOK && user.TOTPLastCounter != nil && totpCounter <= uint64(*user.TOTPLastCounter) {
 		totpOK = false
 	}
@@ -217,23 +258,55 @@ func (l *Local) Login(ctx context.Context, email, password, totpCode string) (Id
 		return Identity{}, ErrInvalidCredentials
 	}
 
-	matchedCounter := int64(totpCounter)
-	user.TOTPLastCounter = &matchedCounter
-
-	if err := l.store.WithUser(ctx, user.ID, func(ctx context.Context) error {
-		updated, err := l.store.Users().Update(ctx, user)
-		if err != nil {
-			return err
-		}
-
-		user = updated
-
-		return nil
-	}); err != nil {
-		return Identity{}, fmt.Errorf("auth: persist totp counter: %w", err)
+	if err := l.consumeTOTPCode(ctx, user.ID, int64(totpCounter)); err != nil {
+		return Identity{}, err
 	}
 
 	return identityFromUser(user), nil
+}
+
+// consumeTOTPCode advances the account's last accepted RFC 6238 counter
+// to counter, and refuses the login when it cannot.
+//
+// The write is conditional on the counter's own previous value (see
+// storage.UserRepository.AdvanceTOTPCounter), which is what makes this
+// the real replay check: of two logins racing with the same code, the
+// database lets exactly one advance the counter, and the other is told
+// no rows changed and answers like any other wrong code. Checking in Go
+// and then writing could not do that, because the two steps run on two
+// different connections with another request's write free to land
+// between them.
+func (l *Local) consumeTOTPCode(ctx context.Context, userID uuid.UUID, counter int64) error {
+	err := l.store.WithUser(ctx, userID, func(ctx context.Context) error {
+		return l.store.Users().AdvanceTOTPCounter(ctx, userID, counter)
+	})
+
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, storage.ErrNotFound):
+		// Either this code was already consumed, by a request that got
+		// there first, or the account went away between the lookup and
+		// here. Both are refusals, and both look to the caller exactly
+		// like a wrong code.
+		return ErrInvalidCredentials
+	default:
+		return fmt.Errorf("auth: consume totp code: %w", err)
+	}
+}
+
+// isPlaceholderEmail reports whether email sits in the namespace
+// signInEmail hands out. The comparison is on the domain alone and is
+// case insensitive, matching how users.email is made unique (see
+// db/migrations), so neither a different local part nor a different case
+// gets around it.
+func isPlaceholderEmail(email string) bool {
+	at := strings.LastIndex(email, "@")
+	if at < 0 {
+		return false
+	}
+
+	return strings.EqualFold(email[at+1:], PlaceholderEmailDomain)
 }
 
 // findLoginCandidate looks email up and reports whether the row behind

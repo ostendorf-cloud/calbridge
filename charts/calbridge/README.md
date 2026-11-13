@@ -155,6 +155,14 @@ account, and no calendar is connected. An iCloud calendar is connected separatel
 with an Apple ID and an app-specific password, because Apple has no calendar API equivalent to
 Google Calendar or Microsoft Graph.
 
+Apple's client secret is not a fixed string like the other two. It is an ES256 JWT the operator
+mints from a key downloaded once from the Apple Developer portal, and Apple refuses one whose
+`exp` is more than six months out. Nothing in this chart or in calbridge can renew it, and
+nothing warns before it lapses: Apple sign-in simply starts failing. Treat the Secret key it
+lives under as something with an expiry date, re-mint it on a schedule, and roll the Secret
+before the old one runs out. Google and Microsoft client secrets have their own expiry policies
+set per application at those providers, which is worth checking when the credential is created.
+
 ## Why `config.databaseUrl` is plain here
 
 `config.databaseUrl` is a plain value, not read from `existingSecret`, because

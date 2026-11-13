@@ -178,7 +178,10 @@ func TestTOTPProvisioningURIIsWhatAnAuthenticatorAppExpects(t *testing.T) {
 		account = "person@example.com"
 	)
 
-	raw := auth.TOTPProvisioningURI(secret, account)
+	raw, err := auth.TOTPProvisioningURI(secret, account)
+	if err != nil {
+		t.Fatalf("TOTPProvisioningURI() error = %v", err)
+	}
 
 	parsed, err := url.Parse(raw)
 	if err != nil {
@@ -207,5 +210,31 @@ func TestTOTPProvisioningURIIsWhatAnAuthenticatorAppExpects(t *testing.T) {
 		if got := query.Get(key); got != want {
 			t.Fatalf("%s = %q, want %q", key, got, want)
 		}
+	}
+}
+
+// TestTOTPProvisioningURIRefusesAnAccountNameItCannotLabel: the function
+// is exported and carries its own constraint rather than relying on
+// every caller having checked first.
+func TestTOTPProvisioningURIRefusesAnAccountNameItCannotLabel(t *testing.T) {
+	t.Parallel()
+
+	const secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+
+	tests := map[string]string{
+		"empty":                   "",
+		"a newline":               "person@example.com\nSomebody Else",
+		"a null byte":             "person@example.com\x00",
+		"longer than any address": strings.Repeat("a", 255) + "@example.com",
+	}
+
+	for name, accountName := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			if _, err := auth.TOTPProvisioningURI(secret, accountName); err == nil {
+				t.Fatalf("TOTPProvisioningURI(%q) error = nil, want a refusal", accountName)
+			}
+		})
 	}
 }

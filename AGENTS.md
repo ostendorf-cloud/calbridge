@@ -89,7 +89,9 @@ on; every other path already exists.
   above this package never holds or passes ciphertext. The two lookups
   that have to run before any user id is known, a local account by email
   and a sign-in identity by `(provider, subject)`, go through their own
-  `SECURITY DEFINER` function instead of through a widened policy.
+  `SECURITY DEFINER` function instead of through a widened policy; both
+  are revoked from `PUBLIC` in `db/migrations`, so the explicit grant to
+  the application role is what decides who may call them.
 - `internal/storage/storagetest` is an in-memory implementation of the
   same repository interfaces, for a test of a package above the storage
   layer. It imitates the scoping row level security enforces, so a
@@ -104,7 +106,10 @@ on; every other path already exists.
   matched against a provider account another user connected as a
   calendar; that collision creates a separate account, and the rule is
   structural: the `Store` interface this package defines exposes no
-  connection repository, so no code here can reach one.
+  connection repository, so no code here can reach one. How many
+  Argon2id derivations may run at once is capped here too, against the
+  chart's own memory limit; `internal/depsync` fails if the two stop
+  agreeing.
 - `cmd/calbridge-mcp` will be the MCP server, its own binary and its own
   deployment, letting an agent read the sync topology and create or change
   edges and grants. It may not create, change or delete a provider

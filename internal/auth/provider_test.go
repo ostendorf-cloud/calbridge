@@ -5,12 +5,13 @@ package auth_test
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"slices"
 	"strings"
 	"testing"
 
-	govueoidc "github.com/ostendorf-cloud/govue/oidc"
+	"github.com/ostendorf-cloud/govue/oidc"
 
 	"github.com/ostendorf-cloud/calbridge/internal/auth"
 	"github.com/ostendorf-cloud/calbridge/internal/storage"
@@ -67,10 +68,8 @@ func TestASignInIsNeverMatchedAgainstAnotherUsersCalendarConnection(t *testing.T
 
 	before := store.ConnectionReads
 
-	identity, err := auth.SignIn(ctx, store, storage.IdentityProviderGoogle, govueoidc.Identity{
-		Subject: calendarSubject,
-		Email:   "stranger@example.com",
-	})
+	identity, err := auth.SignIn(ctx, store, storage.IdentityProviderGoogle,
+		signedInAs(t, calendarSubject, "stranger@example.com", true))
 	if err != nil {
 		t.Fatalf("SignIn() error = %v, want the sign-in to succeed as its own account", err)
 	}
@@ -99,7 +98,7 @@ func TestSignInCreatesTheAccountOnFirstUseAndReusesItAfterwards(t *testing.T) {
 	ctx := context.Background()
 	store := storagetest.NewStore()
 
-	verified := govueoidc.Identity{Subject: "microsoft-subject-1", Email: "person@example.com"}
+	verified := signedInAs(t, "microsoft-subject-1", "person@example.com", true)
 
 	first, err := auth.SignIn(ctx, store, storage.IdentityProviderMicrosoft, verified)
 	if err != nil {
@@ -143,13 +142,13 @@ func TestSignInWithTheSameSubjectAtTwoProvidersCreatesTwoAccounts(t *testing.T) 
 	store := storagetest.NewStore()
 
 	google, err := auth.SignIn(ctx, store, storage.IdentityProviderGoogle,
-		govueoidc.Identity{Subject: "shared-subject", Email: "one@example.com"})
+		signedInAs(t, "shared-subject", "one@example.com", true))
 	if err != nil {
 		t.Fatalf("google SignIn() error = %v", err)
 	}
 
 	microsoft, err := auth.SignIn(ctx, store, storage.IdentityProviderMicrosoft,
-		govueoidc.Identity{Subject: "shared-subject", Email: "two@example.com"})
+		signedInAs(t, "shared-subject", "two@example.com", true))
 	if err != nil {
 		t.Fatalf("microsoft SignIn() error = %v", err)
 	}
@@ -171,7 +170,7 @@ func TestSignInRefusesAnEmailThatBelongsToAnotherAccount(t *testing.T) {
 	existing := createUser(ctx, t, store, "taken@example.com")
 
 	_, err := auth.SignIn(ctx, store, storage.IdentityProviderGoogle,
-		govueoidc.Identity{Subject: "a-subject-nobody-has-seen", Email: "taken@example.com"})
+		signedInAs(t, "a-subject-nobody-has-seen", "taken@example.com", true))
 
 	if !errors.Is(err, auth.ErrEmailBelongsToAnotherAccount) {
 		t.Fatalf("SignIn() error = %v, want ErrEmailBelongsToAnotherAccount", err)
@@ -195,16 +194,16 @@ func TestSignInRefusesADisabledAccount(t *testing.T) {
 	ctx := context.Background()
 	store := storagetest.NewStore()
 
-	identity, err := auth.SignIn(ctx, store, storage.IdentityProviderGoogle,
-		govueoidc.Identity{Subject: "subject-to-disable", Email: "disabled@example.com"})
+	verified := signedInAs(t, "subject-to-disable", "disabled@example.com", true)
+
+	identity, err := auth.SignIn(ctx, store, storage.IdentityProviderGoogle, verified)
 	if err != nil {
 		t.Fatalf("SignIn() error = %v", err)
 	}
 
 	disableAccount(t, store, identity.UserID)
 
-	_, err = auth.SignIn(ctx, store, storage.IdentityProviderGoogle,
-		govueoidc.Identity{Subject: "subject-to-disable", Email: "disabled@example.com"})
+	_, err = auth.SignIn(ctx, store, storage.IdentityProviderGoogle, verified)
 
 	if !errors.Is(err, auth.ErrAccountDisabled) {
 		t.Fatalf("SignIn() error = %v, want ErrAccountDisabled", err)
@@ -225,7 +224,7 @@ func TestAppleSignInGetsAReservedPlaceholderAddress(t *testing.T) {
 	store := storagetest.NewStore()
 
 	identity, err := auth.SignIn(ctx, store, storage.IdentityProviderApple,
-		govueoidc.Identity{Subject: "apple-subject-000123"})
+		signedInWithoutAnEmailClaim(t, "apple-subject-000123"))
 	if err != nil {
 		t.Fatalf("SignIn() error = %v", err)
 	}
@@ -239,13 +238,184 @@ func TestAppleSignInGetsAReservedPlaceholderAddress(t *testing.T) {
 	}
 
 	again, err := auth.SignIn(ctx, store, storage.IdentityProviderApple,
-		govueoidc.Identity{Subject: "apple-subject-000123"})
+		signedInWithoutAnEmailClaim(t, "apple-subject-000123"))
 	if err != nil {
 		t.Fatalf("second SignIn() error = %v", err)
 	}
 
 	if again.UserID != identity.UserID {
 		t.Fatal("the second Apple sign-in created a second account, want the first one back")
+	}
+}
+
+// TestSignInBelievesAnEmailClaimOnlyWhenTheProviderMarksItVerified.
+// Microsoft is configured against the multi-tenant "common" issuer,
+// where the administrator of any tenant decides what their users' email
+// claim says, so an address the provider has not vouched for must not
+// become the address this account is known by. The sign-in still
+// succeeds; it just lands on a placeholder.
+func TestSignInBelievesAnEmailClaimOnlyWhenTheProviderMarksItVerified(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		verified  bool
+		wantEmail string
+	}{
+		"verified":   {true, "person@example.com"},
+		"unverified": {false, ""},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			store := storagetest.NewStore()
+
+			identity, err := auth.SignIn(context.Background(), store, storage.IdentityProviderMicrosoft,
+				signedInAs(t, "microsoft-"+name, "person@example.com", test.verified))
+			if err != nil {
+				t.Fatalf("SignIn() error = %v", err)
+			}
+
+			if test.wantEmail != "" {
+				if identity.Email != test.wantEmail {
+					t.Fatalf("Email = %q, want the verified claim %q", identity.Email, test.wantEmail)
+				}
+
+				return
+			}
+
+			if identity.Email == "person@example.com" {
+				t.Fatal("an unverified email claim became the account's address; a tenant administrator " +
+					"must not be able to name somebody else's address here")
+			}
+
+			if !strings.HasSuffix(identity.Email, "@"+auth.PlaceholderEmailDomain) {
+				t.Fatalf("Email = %q, want a placeholder under %s", identity.Email, auth.PlaceholderEmailDomain)
+			}
+		})
+	}
+}
+
+// TestSignInTreatsAnUnreadableIDTokenAsUnverified: every way of failing
+// to read the claim answers the same, because none of them is evidence
+// that the address belongs to whoever is signing in.
+func TestSignInTreatsAnUnreadableIDTokenAsUnverified(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"no token at all":       "",
+		"not three segments":    "header.payload",
+		"payload is not base64": "header.not base64!.signature",
+		"payload is not json":   "header." + base64.RawURLEncoding.EncodeToString([]byte("not json")) + ".signature",
+		"claim is another type": "header." + base64.RawURLEncoding.EncodeToString([]byte(`{"email_verified":42}`)) + ".signature",
+		"claim says the string": "header." + base64.RawURLEncoding.EncodeToString([]byte(`{"email_verified":"false"}`)) + ".signature",
+		"claim is absent":       "header." + base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"x"}`)) + ".signature",
+	}
+
+	for name, idToken := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			store := storagetest.NewStore()
+
+			identity, err := auth.SignIn(context.Background(), store, storage.IdentityProviderGoogle,
+				oidc.Identity{Subject: "subject-" + name, Email: "person@example.com", IDToken: idToken})
+			if err != nil {
+				t.Fatalf("SignIn() error = %v", err)
+			}
+
+			if !strings.HasSuffix(identity.Email, "@"+auth.PlaceholderEmailDomain) {
+				t.Fatalf("Email = %q, want a placeholder: an unreadable claim is not a verified address",
+					identity.Email)
+			}
+		})
+	}
+}
+
+// TestSignInAcceptsTheStringSpellingOfEmailVerified: the OpenID Connect
+// core specification allows the claim to arrive as a string carrying a
+// boolean, and some providers send it that way.
+func TestSignInAcceptsTheStringSpellingOfEmailVerified(t *testing.T) {
+	t.Parallel()
+
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"email_verified":"true"}`))
+
+	identity, err := auth.SignIn(context.Background(), storagetest.NewStore(), storage.IdentityProviderGoogle,
+		oidc.Identity{Subject: "string-claim", Email: "person@example.com", IDToken: "header." + payload + ".signature"})
+	if err != nil {
+		t.Fatalf("SignIn() error = %v", err)
+	}
+
+	if identity.Email != "person@example.com" {
+		t.Fatalf("Email = %q, want the claim this provider marked verified as a string", identity.Email)
+	}
+}
+
+// TestAFailedIdentityWriteLeavesNoAccountBehind: the two writes a
+// first-time sign-in makes cannot share a transaction, so the second
+// failing has to undo the first. Without that, an account exists that
+// nobody can sign in to and that holds an address nobody can reuse,
+// which for an Apple account, whose address is derived from its subject,
+// means its rightful owner is refused on every later attempt.
+//
+// The failure is produced the way it happens in production, by two
+// sign-ins racing for one subject: both look and find nothing, both
+// create an account, and the second loses the identity's own uniqueness
+// check. HideIdentities makes that order deterministic.
+//
+// Google rather than Apple, because the two sign-ins need different
+// email claims to both get as far as the identity write: with Apple the
+// address is the subject's own hash, so the second would collide one
+// step earlier, on the address, and never create the account this is
+// about.
+func TestAFailedIdentityWriteLeavesNoAccountBehind(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := storagetest.NewStore()
+
+	const subject = "google-contested-subject"
+
+	// The winner, which keeps its account.
+	winner, err := auth.SignIn(ctx, store, storage.IdentityProviderGoogle,
+		signedInAs(t, subject, "owner@example.com", true))
+	if err != nil {
+		t.Fatalf("first SignIn() error = %v", err)
+	}
+
+	// The loser: its lookup finds nothing, so it creates an account
+	// under its own address and then collides on the identity.
+	store.HideIdentities(true)
+
+	_, err = auth.SignIn(ctx, store, storage.IdentityProviderGoogle,
+		signedInAs(t, subject, "loser@example.com", true))
+	if !errors.Is(err, auth.ErrEmailBelongsToAnotherAccount) {
+		t.Fatalf("second SignIn() error = %v, want ErrEmailBelongsToAnotherAccount", err)
+	}
+
+	store.HideIdentities(false)
+
+	if got := store.CountUsers(); got != 1 {
+		t.Fatalf("users = %d, want 1: the account the refused sign-in created must have been removed, "+
+			"or it holds an address nobody can sign in with and nobody can reuse", got)
+	}
+
+	// The address the refused sign-in took is free again.
+	local := auth.NewLocal(store, nil)
+	if _, _, err := local.SignUp(ctx, "loser@example.com", "a-long-enough-test-passphrase"); err != nil {
+		t.Fatalf("SignUp() with the refused sign-in's address error = %v, want it to be free", err)
+	}
+
+	// The owner still signs in, to the account they already had.
+	again, err := auth.SignIn(ctx, store, storage.IdentityProviderGoogle,
+		signedInAs(t, subject, "owner@example.com", true))
+	if err != nil {
+		t.Fatalf("SignIn() after the refused one error = %v", err)
+	}
+
+	if again.UserID != winner.UserID {
+		t.Fatal("the owner's sign-in resolved to a different account")
 	}
 }
 
@@ -257,7 +427,7 @@ func TestSignInRefusesAVerifiedIdentityWithNoSubject(t *testing.T) {
 	store := storagetest.NewStore()
 
 	_, err := auth.SignIn(context.Background(), store, storage.IdentityProviderGoogle,
-		govueoidc.Identity{Email: "no-subject@example.com"})
+		signedInAs(t, "", "no-subject@example.com", true))
 	if err == nil {
 		t.Fatal("SignIn() error = nil, want a refusal for an identity carrying no subject")
 	}

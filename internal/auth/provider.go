@@ -6,7 +6,9 @@ package auth
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -222,7 +224,7 @@ func SignIn(ctx context.Context, store Store, provider storage.IdentityProvider,
 	case err == nil:
 		return signInExisting(ctx, store, identity.UserID)
 	case errors.Is(err, storage.ErrNotFound):
-		return signUpWithProvider(ctx, store, provider, subject, signInEmail(provider, subject, verified.Email))
+		return signUpWithProvider(ctx, store, provider, subject, signInEmail(provider, subject, verified))
 	default:
 		return Identity{}, fmt.Errorf("auth: resolve %s sign-in: %w", provider, err)
 	}
@@ -258,14 +260,19 @@ func signInExisting(ctx context.Context, store Store, userID uuid.UUID) (Identit
 //
 // The two writes do not share a transaction: Users().Create opens and
 // scopes its own, because the user id it needs to scope by is the one it
-// is creating. So a crash between them leaves an account with no
-// identity, which is an account nobody can sign in to and nobody else
-// can claim, and the next attempt with the same subject sees the email
-// already taken rather than silently adopting that row. That is the safe
-// side of the failure to be on, and the alternative, widening
-// UserRepository so an identity could be written inside signup's own
-// transaction, would put a second table inside the one transaction that
-// exists to be narrow.
+// is creating. A failure of the second write therefore has to undo the
+// first here, and does: without that, the account left behind holds the
+// address for good, and because an Apple account's address is derived
+// from its subject (see signInEmail), that same person's every later
+// Apple sign-in would resolve to the same address and be refused
+// forever, with nothing in this application able to release it. A
+// cancelled request is enough to reach that path, since a closed tab
+// during the callback cancels the context, which is why the undo runs on
+// a context of its own.
+//
+// What the undo cannot cover is the process dying between the two
+// writes. That leaves exactly the orphan described above, and clearing
+// one is an operator's job until account recovery exists.
 func signUpWithProvider(
 	ctx context.Context,
 	store Store,
@@ -293,10 +300,11 @@ func signUpWithProvider(
 
 		return err
 	}); err != nil {
+		undoProviderSignUp(ctx, store, user.ID)
+
 		if errors.Is(err, storage.ErrConflict) {
 			// Another request claimed this subject between the lookup
-			// above and this write. The account just created is orphaned;
-			// see this function's own doc comment.
+			// above and this write, and now owns it.
 			return Identity{}, ErrEmailBelongsToAnotherAccount
 		}
 
@@ -306,28 +314,125 @@ func signUpWithProvider(
 	return identityFromUser(user), nil
 }
 
-// signInEmail is the address a first-time provider sign-in creates its
-// account under: the verified email claim where there is one, and a
-// reserved placeholder where there is none.
+// undoProviderSignUp removes the account signUpWithProvider created when
+// the identity that was to be bound to it could not be written, so the
+// address it holds goes back to being free.
 //
-// Apple is the provider with none, because a sign-in that stays on the
-// GET callback cannot ask for the email scope (see identityScopes), and
-// users.email is NOT NULL and non-empty by its own constraint. The
-// placeholder is derived from the subject, so it is stable across that
-// account's logins and unique to it, and it sits under the .invalid top
-// level domain RFC 2606 section 2 reserves precisely so that an address
-// can be guaranteed never to resolve: nothing can ever be sent to it by
-// accident. Only the hash of the subject goes into it, never the subject
-// itself, so an address that does end up displayed does not also publish
-// the provider's identifier for that account.
-func signInEmail(provider storage.IdentityProvider, subject, claimed string) string {
-	if claimed = strings.TrimSpace(claimed); claimed != "" {
+// It runs on a context detached from the request's cancellation, with a
+// deadline of its own: the commonest way to reach this path is a request
+// that was cancelled, and a cleanup inheriting that cancellation would
+// be refused before it started, leaving exactly the row it exists to
+// remove.
+//
+// A failure of the cleanup itself is deliberately not returned. The
+// caller is already answering a failed sign-in, and the orphan is the
+// smaller of the two problems to report; it is logged by nothing here
+// because this package holds no logger, which is a gap worth closing
+// when one is threaded through it.
+func undoProviderSignUp(ctx context.Context, store Store, userID uuid.UUID) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), undoTimeout)
+	defer cancel()
+
+	_ = store.Users().DeleteAccount(ctx, userID)
+}
+
+// undoTimeout bounds undoProviderSignUp's own work. It is short on
+// purpose: the account being removed was created seconds ago and owns
+// nothing else yet, so the delete touches one row, and a database that
+// cannot manage that in this long is not going to manage it at all.
+const undoTimeout = 5 * time.Second
+
+// PlaceholderEmailDomain is the domain signInEmail puts an account under
+// when the provider gave it no address it is willing to believe. It is a
+// subdomain of the .invalid top level domain RFC 2606 section 2 reserves
+// precisely so that a name can be guaranteed never to resolve, so
+// nothing can ever be sent to one of these by accident.
+//
+// It is this application's own namespace, which is why Local.SignUp
+// refuses an address in it: a local signup able to pick one could
+// otherwise claim the slot a particular provider account is going to
+// land in, before that person ever arrives.
+const PlaceholderEmailDomain = "sign-in.calbridge.invalid"
+
+// signInEmail is the address a first-time provider sign-in creates its
+// account under: the provider's email claim when that claim is both
+// present and marked verified, and a placeholder under
+// PlaceholderEmailDomain otherwise.
+//
+// Requiring email_verified, rather than taking the address the token
+// states, is what keeps a provider's claim from reserving somebody
+// else's address here. Microsoft is configured against the multi-tenant
+// "common" issuer, where the administrator of any Entra ID tenant
+// decides what their users' email claim says, and several providers
+// (Apple among them, which is not asked for the scope at all) send no
+// address. The linking rule already stops this from being a takeover,
+// since a first-time sign-in never adopts an existing account, but an
+// unverified claim could still create an account displaying a stranger's
+// address and block that person's own signup, which is reason enough not
+// to believe one.
+//
+// The placeholder is derived from the subject, so it is stable across
+// that account's sign-ins and unique to it. Only a hash of the subject
+// goes into it, never the subject itself, so an address that does end up
+// displayed does not also publish the provider's identifier for that
+// account.
+func signInEmail(provider storage.IdentityProvider, subject string, verified oidc.Identity) string {
+	if claimed := strings.TrimSpace(verified.Email); claimed != "" && emailClaimIsVerified(verified.IDToken) {
 		return claimed
 	}
 
 	sum := sha256.Sum256([]byte(string(provider) + "\x00" + subject))
 
-	return fmt.Sprintf("%s-%s@sign-in.calbridge.invalid", provider, hex.EncodeToString(sum[:8]))
+	return fmt.Sprintf("%s-%s@%s", provider, hex.EncodeToString(sum[:8]), PlaceholderEmailDomain)
+}
+
+// emailClaimIsVerified reports whether an ID token says its email claim
+// has been verified by the provider.
+//
+// The claim is read out of the token's payload here because govue's oidc
+// package has no field for it: oidc.Identity carries the address but not
+// its verification. Decoding the payload a second time is safe and is
+// not a second opinion on the token: this runs only on the token
+// Provider.Exchange already verified the signature, issuer, audience,
+// expiry and nonce of, and nothing here is trusted beyond this one
+// boolean.
+//
+// Every failure answers false. A token that does not parse, a claim that
+// is absent, a claim of some other type: none of them is evidence that
+// an address belongs to whoever is signing in, and the only cost of
+// answering false is a placeholder address.
+//
+// Both spellings are accepted, the boolean the OpenID Connect core
+// specification defines and the string "true" some providers send in its
+// place; the specification itself notes the claim may be a boolean or a
+// string carrying one.
+func emailClaimIsVerified(idToken string) bool {
+	parts := strings.Split(idToken, ".")
+	if len(parts) != 3 {
+		return false
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return false
+	}
+
+	var claims struct {
+		EmailVerified any `json:"email_verified"`
+	}
+
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return false
+	}
+
+	switch value := claims.EmailVerified.(type) {
+	case bool:
+		return value
+	case string:
+		return value == "true"
+	default:
+		return false
+	}
 }
 
 // ProviderHandlerConfig is what NewProviderHandlers needs beyond the

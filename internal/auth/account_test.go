@@ -10,8 +10,6 @@ import (
 
 	"github.com/google/uuid"
 
-	govueoidc "github.com/ostendorf-cloud/govue/oidc"
-
 	"github.com/ostendorf-cloud/calbridge/internal/auth"
 	"github.com/ostendorf-cloud/calbridge/internal/storage"
 	"github.com/ostendorf-cloud/calbridge/internal/storage/storagetest"
@@ -27,7 +25,7 @@ func TestDeleteAccountRemovesTheAccountAndWhatItOwns(t *testing.T) {
 	store := storagetest.NewStore()
 
 	leaving, err := auth.SignIn(ctx, store, storage.IdentityProviderGoogle,
-		govueoidc.Identity{Subject: "leaving-subject", Email: "leaving@example.com"})
+		signedInAs(t, "leaving-subject", "leaving@example.com", true))
 	if err != nil {
 		t.Fatalf("SignIn() error = %v", err)
 	}
@@ -78,8 +76,9 @@ func TestDeleteAccountFreesTheAddressAndTheIdentity(t *testing.T) {
 	ctx := context.Background()
 	store := storagetest.NewStore()
 
-	first, err := auth.SignIn(ctx, store, storage.IdentityProviderGoogle,
-		govueoidc.Identity{Subject: "returning-subject", Email: "returning@example.com"})
+	verified := signedInAs(t, "returning-subject", "returning@example.com", true)
+
+	first, err := auth.SignIn(ctx, store, storage.IdentityProviderGoogle, verified)
 	if err != nil {
 		t.Fatalf("first SignIn() error = %v", err)
 	}
@@ -88,8 +87,7 @@ func TestDeleteAccountFreesTheAddressAndTheIdentity(t *testing.T) {
 		t.Fatalf("DeleteAccount() error = %v", err)
 	}
 
-	second, err := auth.SignIn(ctx, store, storage.IdentityProviderGoogle,
-		govueoidc.Identity{Subject: "returning-subject", Email: "returning@example.com"})
+	second, err := auth.SignIn(ctx, store, storage.IdentityProviderGoogle, verified)
 	if err != nil {
 		t.Fatalf("second SignIn() error = %v", err)
 	}
