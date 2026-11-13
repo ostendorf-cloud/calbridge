@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<multistatus xmlns="DAV:">
+  <response>
+    <href>/20241234/calendars/home/</href>
+    <propstat>
+      <prop>
+        <getetag>"C=12@U=20241234"</getetag>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+  <response>
+    <href>/20241234/calendars/home/probe-20260301.ics</href>
+    <propstat>
+      <prop>
+        <getetag>"C=12@U=20241234/1"</getetag>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+  <response>
+    <href>/20241234/calendars/home/standup.ics</href>
+    <propstat>
+      <prop>
+        <getetag>"C=12@U=20241234/2"</getetag>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+  <response>
+    <href>/20241234/calendars/home/abgesagt.ics</href>
+    <status>HTTP/1.1 404 Not Found</status>
+  </response>
+  <sync-token>HwoQEgwAAAAAAAAAAAAAABgCGgQJ3OPzGgQJ3OP0</sync-token>
+</multistatus>

@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<multistatus xmlns="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <response>
+    <href>/20241234/calendars/</href>
+    <propstat>
+      <prop>
+        <resourcetype>
+          <collection/>
+        </resourcetype>
+        <displayname>calendars</displayname>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+  <response>
+    <href>/20241234/calendars/home/</href>
+    <propstat>
+      <prop>
+        <resourcetype>
+          <collection/>
+          <C:calendar/>
+        </resourcetype>
+        <displayname>Privat</displayname>
+        <current-user-privilege-set>
+          <privilege><read/></privilege>
+          <privilege><write/></privilege>
+        </current-user-privilege-set>
+        <C:calendar-description>Termine der Familie</C:calendar-description>
+        <C:supported-calendar-component-set>
+          <C:comp name="VEVENT"/>
+        </C:supported-calendar-component-set>
+        <C:calendar-timezone>BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Apple Inc.//iOS 18.1//EN
+BEGIN:VTIMEZONE
+TZID:Europe/Berlin
+BEGIN:STANDARD
+DTSTART:19701025T030000
+TZOFFSETFROM:+0200
+TZOFFSETTO:+0100
+TZNAME:CET
+END:STANDARD
+END:VTIMEZONE
+END:VCALENDAR
+</C:calendar-timezone>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+  <response>
+    <href>/20241234/calendars/veranstaltungstechnik/</href>
+    <propstat>
+      <prop>
+        <resourcetype>
+          <collection/>
+          <C:calendar/>
+        </resourcetype>
+        <displayname>Veranstaltungstechnik</displayname>
+        <current-user-privilege-set>
+          <privilege><read/></privilege>
+        </current-user-privilege-set>
+        <C:supported-calendar-component-set>
+          <C:comp name="VEVENT"/>
+        </C:supported-calendar-component-set>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+  <response>
+    <href>/20241234/calendars/calbridge-7f2c/</href>
+    <propstat>
+      <prop>
+        <resourcetype>
+          <collection/>
+          <C:calendar/>
+        </resourcetype>
+        <displayname>Arbeit gespiegelt</displayname>
+        <current-user-privilege-set>
+          <privilege><all/></privilege>
+        </current-user-privilege-set>
+        <C:supported-calendar-component-set>
+          <C:comp name="VEVENT"/>
+        </C:supported-calendar-component-set>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+  <response>
+    <href>/20241234/calendars/tasks/</href>
+    <propstat>
+      <prop>
+        <resourcetype>
+          <collection/>
+          <C:calendar/>
+        </resourcetype>
+        <displayname>Erinnerungen</displayname>
+        <C:supported-calendar-component-set>
+          <C:comp name="VTODO"/>
+        </C:supported-calendar-component-set>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+</multistatus>
