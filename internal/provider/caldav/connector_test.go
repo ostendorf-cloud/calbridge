@@ -167,6 +167,98 @@ func TestConnector_CalendarsRefusesAHomeOutsideTheProfile(t *testing.T) {
 	}
 }
 
+// redirecting returns the answer a server gives when it sends the
+// connector somewhere else.
+func redirecting(status int, location string) answer {
+	header := http.Header{}
+	header.Set("Location", location)
+
+	return answer{status: status, header: header}
+}
+
+func TestConnector_FollowsARedirectInsideTheProfile(t *testing.T) {
+	t.Parallel()
+
+	server := newFakeServer().
+		on("PROPFIND", "/.well-known/caldav",
+			redirecting(http.StatusMovedPermanently, "https://caldav.icloud.com/")).
+		on("PROPFIND", "/", multistatus(recordedBody(t, "principal.xml"))).
+		on("PROPFIND", "/20241234/principal/", multistatus(recordedBody(t, "home.xml"))).
+		on("PROPFIND", "/20241234/calendars/", multistatus(recordedBody(t, "calendars.xml")))
+
+	bootstrap := caldav.ICloud
+	bootstrap.Endpoint = "https://caldav.icloud.com/.well-known/caldav"
+	connector := caldav.New(
+		caldav.WithClient(server),
+		caldav.WithProfiles(map[string]caldav.Profile{bootstrap.Name: bootstrap}),
+	)
+
+	calendars, err := connector.Calendars(t.Context(), testCredential(t))
+	if err != nil {
+		t.Fatalf("list calendars: %v", err)
+	}
+	if len(calendars) != 3 {
+		t.Fatalf("got %d calendars after the redirect", len(calendars))
+	}
+}
+
+func TestConnector_RefusesARedirectOutsideTheProfile(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		status   int
+		location string
+	}{
+		{
+			name:     "to another host",
+			status:   http.StatusMovedPermanently,
+			location: "https://collector.example.net/principal/",
+		},
+		{
+			name:     "to the same host without tls",
+			status:   http.StatusFound,
+			location: "http://caldav.icloud.com/",
+		},
+		{
+			name:     "to another host as a temporary redirect",
+			status:   http.StatusTemporaryRedirect,
+			location: "https://collector.example.net/",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := newFakeServer().on("PROPFIND", "/", redirecting(tc.status, tc.location))
+
+			_, err := newConnector(t, server).Calendars(t.Context(), testCredential(t))
+			if !errors.Is(err, caldav.ErrForbiddenHost) {
+				t.Fatalf("got %v, want the profile's scheme and host check to refuse the hop", err)
+			}
+			for _, c := range server.recorded() {
+				if c.host != "caldav.icloud.com" {
+					t.Fatalf("the credential was sent to %q", c.host)
+				}
+			}
+		})
+	}
+}
+
+func TestConnector_StopsARedirectLoop(t *testing.T) {
+	t.Parallel()
+
+	server := newFakeServer().
+		on("PROPFIND", "/", redirecting(http.StatusFound, "https://caldav.icloud.com/again/")).
+		on("PROPFIND", "/again/", redirecting(http.StatusFound, "https://caldav.icloud.com/"))
+
+	_, err := newConnector(t, server).Calendars(t.Context(), testCredential(t))
+	if !errors.Is(err, caldav.ErrServer) {
+		t.Fatalf("got %v, want the hop limit to end the call", err)
+	}
+}
+
 func TestConnector_CalendarsReportsARefusedCredential(t *testing.T) {
 	t.Parallel()
 
@@ -184,19 +276,24 @@ func TestConnector_CalendarsReportsARefusedCredential(t *testing.T) {
 func TestConnector_ChangesInitialSync(t *testing.T) {
 	t.Parallel()
 
-	server := newFakeServer().
-		on("REPORT", "/20241234/calendars/home/", multistatus(recordedBody(t, "sync-complete.xml")))
-	connector := newConnector(t, server)
+	page, server := changesFor(t, "sync-complete.xml", provider.SyncToken{})
 
-	page, err := connector.Changes(t.Context(), testCredential(t), homeCalendar, provider.SyncToken{})
-	if err != nil {
-		t.Fatalf("read changes: %v", err)
-	}
 	if page.State != provider.PageStateComplete {
 		t.Errorf("state is %s, want complete", page.State)
 	}
 	if page.Token.Value != "HwoQEgwAAAAAAAAAAAAAABgCGgQJ3OPzGgQJ3OP0" {
 		t.Errorf("token is %q, want the one the report carried", page.Token.Value)
+	}
+
+	sync := server.recorded()[0]
+	if got := sync.header.Get("Depth"); got != "0" {
+		t.Errorf("the sync report carried Depth %q, want 0 as RFC 6578 section 3.2 requires", got)
+	}
+	if !strings.Contains(sync.body, `<sync-token xmlns="DAV:"></sync-token>`) {
+		t.Errorf("an initial sync carries an empty sync token:\n%s", sync.body)
+	}
+	if strings.Contains(sync.body, "limit") {
+		t.Errorf("the iCloud profile ignores DAV:limit, so the connector sends none:\n%s", sync.body)
 	}
 }
 
@@ -386,6 +483,116 @@ func TestConnector_ChangesKeepsAnUnrelatedRefusalApart(t *testing.T) {
 	}
 }
 
+func TestConnector_ChangesKeepsAnUnparseableRefusalApart(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{name: "an empty body", body: ""},
+		{name: "an error page from something in between", body: "<html><body>403 Forbidden</body></html>"},
+		{name: "a truncated body", body: `<?xml version="1.0"?><error xmlns="DAV:"><valid-sync`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := newFakeServer().on("REPORT", "/20241234/calendars/home/", answer{
+				status: http.StatusForbidden,
+				body:   tc.body,
+			})
+
+			_, err := newConnector(t, server).
+				Changes(t.Context(), testCredential(t), homeCalendar, provider.SyncToken{Value: "good"})
+			if errors.Is(err, provider.ErrSyncTokenInvalid) {
+				t.Fatal("a refusal that names no precondition must not discard a good position")
+			}
+			if !errors.Is(err, caldav.ErrServer) {
+				t.Fatalf("got %v, want ErrServer", err)
+			}
+		})
+	}
+}
+
+func TestConnector_ChangesRefusesAResourceTheServerDidNotHandOver(t *testing.T) {
+	t.Parallel()
+
+	const emptyData = `<?xml version="1.0" encoding="UTF-8"?>
+<multistatus xmlns="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <response>
+    <href>/20241234/calendars/home/probe-20260301.ics</href>
+    <propstat>
+      <prop><getetag>"C=12@U=20241234/1"</getetag><C:calendar-data></C:calendar-data></prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+</multistatus>`
+
+	server := newFakeServer()
+	calls := 0
+	connector := caldav.New(caldav.WithClient(doerFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method == "REPORT" {
+			calls++
+			if calls == 1 {
+				return server.answerWith(req, multistatus(recordedBody(t, "sync-complete.xml")))
+			}
+
+			return server.answerWith(req, multistatus(emptyData))
+		}
+
+		return server.Do(req)
+	})))
+
+	_, err := connector.Changes(t.Context(), testCredential(t), homeCalendar, provider.SyncToken{})
+	if !errors.Is(err, caldav.ErrServer) {
+		t.Fatalf("got %v, want ErrServer: a change the server named and did not deliver is never seen again", err)
+	}
+}
+
+func TestConnector_DeclaresAndEnforcesTheSameCapabilities(t *testing.T) {
+	t.Parallel()
+
+	// A second profile that writes attendees must not make the connector
+	// write one while it still declares it writes none. The interface
+	// asks one connector for one answer, so the write obeys that answer.
+	permissive := caldav.ICloud
+	permissive.Name = "example"
+	permissive.Endpoint = "https://dav.example.com/"
+	permissive.HostSuffixes = []string{".example.com"}
+	permissive.Capabilities.Attendees = true
+
+	server := newFakeServer().on(http.MethodPut, "/20241234/calendars/home/7f2c.ics",
+		written(http.StatusCreated, `"C=13@U=20241234/4"`))
+	connector := caldav.New(
+		caldav.WithClient(server),
+		caldav.WithProfiles(map[string]caldav.Profile{
+			caldav.ICloud.Name: caldav.ICloud,
+			permissive.Name:    permissive,
+		}),
+		caldav.WithClock(func() time.Time { return fixedNow }),
+		caldav.WithUIDs(func() string { return "7f2c" }),
+	)
+
+	if connector.Capabilities().Attendees {
+		t.Fatal("one profile writing attendees does not make the connector's answer true")
+	}
+
+	event := provider.Event{
+		Summary:   "Abstimmung",
+		Start:     provider.Zoned(time.Date(2026, time.April, 3, 9, 0, 0, 0, time.UTC), "Europe/Berlin"),
+		End:       provider.Zoned(time.Date(2026, time.April, 3, 10, 0, 0, 0, time.UTC), "Europe/Berlin"),
+		Attendees: []provider.Attendee{{Email: "jonas.weber@example.com"}},
+	}
+	if _, err := connector.CreateEvent(t.Context(), testCredential(t), homeCalendar, event); err != nil {
+		t.Fatalf("create event: %v", err)
+	}
+	if strings.Contains(server.last(t, http.MethodPut).body, "ATTENDEE") {
+		t.Error("the connector wrote an attendee it declares it does not write")
+	}
+}
+
 func TestConnector_CreateEvent(t *testing.T) {
 	t.Parallel()
 
@@ -453,6 +660,93 @@ func TestConnector_CreateEventDropsAttendees(t *testing.T) {
 	if strings.Contains(server.last(t, http.MethodPut).body, "ATTENDEE") {
 		t.Error("the written object carries an ATTENDEE, which the declared capability rules out")
 	}
+}
+
+func TestConnector_CreateEventRefusesAnAttendeeSmuggledThroughAnotherField(t *testing.T) {
+	t.Parallel()
+
+	// Dropping the attendee list is not enough on its own: a line break
+	// in any field that reaches the writer would add the property the
+	// list was dropped to avoid. Every field is refused at the writer,
+	// and this walks the whole write path for the ones a source calendar
+	// controls.
+	const injected = "ATTENDEE;ROLE=REQ-PARTICIPANT:mailto:victim@example.com"
+
+	cases := []struct {
+		name  string
+		build func(provider.Event) provider.Event
+	}{
+		{
+			name: "through the uid",
+			build: func(e provider.Event) provider.Event {
+				e.UID = "probe\r\n" + injected
+
+				return e
+			},
+		},
+		{
+			name: "through a recurrence rule",
+			build: func(e provider.Event) provider.Event {
+				e.Recurrence.Rule = []string{"RRULE:FREQ=DAILY;COUNT=2\r\n" + injected}
+
+				return e
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := newFakeServer().on(http.MethodPut, "/20241234/calendars/home/7f2c.ics",
+				written(http.StatusCreated, `"C=13@U=20241234/5"`))
+
+			event := tc.build(provider.Event{
+				Summary: "Abstimmung",
+				Start:   provider.Zoned(time.Date(2026, time.April, 3, 9, 0, 0, 0, time.UTC), "Europe/Berlin"),
+				End:     provider.Zoned(time.Date(2026, time.April, 3, 10, 0, 0, 0, time.UTC), "Europe/Berlin"),
+			})
+
+			_, err := newConnector(t, server).CreateEvent(t.Context(), testCredential(t), homeCalendar, event)
+			if !errors.Is(err, provider.ErrInvalidEvent) {
+				t.Fatalf("got %v, want the writer's line break check to refuse it", err)
+			}
+			if len(server.recorded()) != 0 {
+				t.Fatalf("the object was sent anyway:\n%s", server.last(t, http.MethodPut).body)
+			}
+		})
+	}
+
+	t.Run("through a text field, which is escaped rather than refused", func(t *testing.T) {
+		t.Parallel()
+
+		// A text property escapes a line break into the two characters
+		// RFC 5545 section 3.3.11 gives it, so it never ends the content
+		// line. Refusing it would drop what the source calendar said, so
+		// the write goes through and carries no ATTENDEE.
+		server := newFakeServer().on(http.MethodPut, "/20241234/calendars/home/7f2c.ics",
+			written(http.StatusCreated, `"C=13@U=20241234/6"`))
+
+		event := provider.Event{
+			Summary: "Abstimmung\r\n" + injected,
+			Start:   provider.Zoned(time.Date(2026, time.April, 3, 9, 0, 0, 0, time.UTC), "Europe/Berlin"),
+			End:     provider.Zoned(time.Date(2026, time.April, 3, 10, 0, 0, 0, time.UTC), "Europe/Berlin"),
+			Marker:  provider.Marker{Edge: "edge-17\r\n" + injected},
+		}
+
+		if _, err := newConnector(t, server).
+			CreateEvent(t.Context(), testCredential(t), homeCalendar, event); err != nil {
+			t.Fatalf("create event: %v", err)
+		}
+
+		body := server.last(t, http.MethodPut).body
+		if strings.Contains(body, "\r\nATTENDEE") {
+			t.Errorf("an escaped line break still began a new property:\n%s", body)
+		}
+		if !strings.Contains(body, `\nATTENDEE`) {
+			t.Errorf("the line break was not escaped into the text:\n%s", body)
+		}
+	})
 }
 
 func TestConnector_CreateEventKeepsAFloatingTime(t *testing.T) {
@@ -622,6 +916,68 @@ func TestConnector_CreateCalendar(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("the MKCALENDAR body carries no %q:\n%s", want, body)
 		}
+	}
+}
+
+func TestConnector_CreateCalendarReadsAMultistatusAnswer(t *testing.T) {
+	t.Parallel()
+
+	const allSet = `<?xml version="1.0" encoding="UTF-8"?>
+<multistatus xmlns="DAV:">
+  <response>
+    <href>/20241234/calendars/calbridge-7f2c/</href>
+    <propstat><prop><displayname/></prop><status>HTTP/1.1 200 OK</status></propstat>
+  </response>
+</multistatus>`
+
+	const oneRefused = `<?xml version="1.0" encoding="UTF-8"?>
+<multistatus xmlns="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <response>
+    <href>/20241234/calendars/calbridge-7f2c/</href>
+    <propstat><prop><displayname/></prop><status>HTTP/1.1 200 OK</status></propstat>
+    <propstat>
+      <prop><C:supported-calendar-component-set/></prop>
+      <status>HTTP/1.1 403 Forbidden</status>
+    </propstat>
+  </response>
+</multistatus>`
+
+	cases := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{
+			name: "every property was set, which is a creation too",
+			body: allSet,
+		},
+		{
+			name:    "a property was refused, so RFC 4791 section 5.3.1.1 created nothing",
+			body:    oneRefused,
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := discoverable(t).
+				on("MKCALENDAR", "/20241234/calendars/calbridge-7f2c/", multistatus(tc.body))
+
+			_, err := newConnector(t, server).
+				CreateCalendar(t.Context(), testCredential(t), "Arbeit gespiegelt")
+			if tc.wantErr {
+				if !errors.Is(err, caldav.ErrServer) {
+					t.Fatalf("got %v, want ErrServer", err)
+				}
+
+				return
+			}
+			if err != nil {
+				t.Fatalf("create calendar: %v", err)
+			}
+		})
 	}
 }
 

@@ -229,9 +229,15 @@ var ICloud = Profile{
 		// an RRULE survives the round trip as the RFC 5545 line it is.
 		NativeRecurrence: true,
 		// MKCALENDAR of RFC 4791 section 5.3.1 is only RECOMMENDED, and a
-		// hosted service may leave it out. iCloud answers it, which is why
-		// the measured profile records no departure from the library's
-		// "supported" default for calendar creation.
+		// hosted service may leave it out. This value is not measured:
+		// the cited profile carries no entry for calendar creation, so it
+		// falls to that library's "supported" default, and servers that
+		// refuse MKCALENDAR do carry an entry there. An absence is weaker
+		// evidence than a measurement, and it is the weakest of the five
+		// values here. It is declared true because the cost of being
+		// wrong is bounded: a server that refuses MKCALENDAR answers with
+		// a status createdCalendar does not accept, so the attempt fails
+		// loudly and creates nothing, and this line is what changes.
 		CalendarCreation: true,
 		// A CalDAV collection may implement the scheduling extension of
 		// RFC 6638, which turns an ATTENDEE written into an event into a

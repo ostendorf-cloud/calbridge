@@ -227,9 +227,64 @@ type result struct {
 	body   []byte
 }
 
-// do sends one request with the credential's authorization, and reads
-// the answer. It never puts the credential into an error.
+// maxRedirects bounds how many hops one call follows, so a server that
+// redirects in a loop ends the call rather than the process.
+const maxRedirects = 5
+
+// do sends one request with the credential's authorization, reads the
+// answer, and follows a redirect itself so every hop goes through the
+// same profile check as the first. It never puts the credential into an
+// error.
 func (c *Connector) do(ctx context.Context, p Profile, cred Credential, req request) (result, error) {
+	for hop := 0; ; hop++ {
+		res, err := c.send(ctx, p, cred, req)
+		if err != nil {
+			return result{}, err
+		}
+		next, ok := redirect(res)
+		if !ok {
+			return res, nil
+		}
+		if hop == maxRedirects {
+			return result{}, fmt.Errorf("caldav %s was redirected more than %d times: %w",
+				req.method, maxRedirects, ErrServer)
+		}
+
+		// resolve applies the profile's scheme and host rules to the
+		// target, so a redirect reaches no host the first request could
+		// not have reached, and never leaves https.
+		at, err := resolve(p, req.url, next)
+		if err != nil {
+			return result{}, err
+		}
+		req.url = at
+		if res.status == http.StatusSeeOther {
+			// RFC 9110 section 15.4.4 turns the next request into a GET
+			// carrying nothing of the original body.
+			req.method, req.body, req.contentType = http.MethodGet, nil, ""
+		}
+	}
+}
+
+// redirect returns the Location of a redirect answer, and whether the
+// answer was one at all.
+func redirect(res result) (string, bool) {
+	switch res.status {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+	default:
+		return "", false
+	}
+	location := res.header.Get("Location")
+	if location == "" {
+		return "", false
+	}
+
+	return location, true
+}
+
+// send performs one hop.
+func (c *Connector) send(ctx context.Context, p Profile, cred Credential, req request) (result, error) {
 	if !p.allowsHost(req.url.Host) {
 		return result{}, fmt.Errorf("caldav profile %q refuses host %q: %w", p.Name, req.url.Host, ErrForbiddenHost)
 	}

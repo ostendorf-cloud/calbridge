@@ -16,12 +16,15 @@ import (
 // time zone database, which is the same tz database the zone names come
 // from.
 //
-// A zone whose offsets change on a stable yearly rule, which is every
-// zone with daylight saving in use today, gets the two observances and
-// the yearly RRULE of the RFC's own example. A zone whose changes do not
-// fit such a rule gets its transitions written out, which covers
-// windowYears years from the event's own year. A zone with no change at
-// all gets one standard observance and no rule.
+// A zone whose offsets change on a stable yearly rule gets the two
+// observances and the yearly RRULE of the RFC's own example, and
+// describes the zone without end. A zone with no change at all gets one
+// standard observance, and does the same. A zone whose changes follow no
+// yearly rule, such as Africa/Casablanca, can only be written out
+// transition by transition, and the component then stops describing the
+// zone after the last one it carries. vtimezone returns that horizon so
+// the caller refuses an event reaching past it rather than writing one
+// that is read against the wrong offset.
 
 // windowYears is how far ahead the generator looks for transitions. It
 // only bounds the written out form: a zone on a stable rule gets an
@@ -29,11 +32,22 @@ import (
 const windowYears = 10
 
 // vtimezone returns the VTIMEZONE component for an IANA zone, covering
-// the given year and the years after it.
-func vtimezone(zone string, year int) (string, error) {
+// the given year and the years after it, and the moment past which the
+// component no longer describes the zone.
+//
+// That second value is the zero time where the description holds
+// without end: a zone that never changes, and a zone whose changes all
+// follow a yearly rule, are both written with no horizon. A zone whose
+// changes follow no such rule is written out transition by transition,
+// and past the last one the component asserts the last offset forever,
+// which is wrong rather than merely incomplete. The caller is told where
+// that starts so it can refuse the write instead of storing an event
+// that reads an hour out.
+func vtimezone(zone string, year int) (component string, covered time.Time, err error) {
 	location, err := time.LoadLocation(zone)
 	if err != nil {
-		return "", fmt.Errorf("time zone %q is not in the zone database: %w", zone, provider.ErrInvalidEvent)
+		return "", time.Time{}, fmt.Errorf(
+			"time zone %q is not in the zone database: %w", zone, provider.ErrInvalidEvent)
 	}
 
 	from := time.Date(year-1, time.January, 1, 0, 0, 0, 0, time.UTC)
@@ -47,14 +61,26 @@ func vtimezone(zone string, year int) (string, error) {
 		writeFixedObservance(&w, location, from)
 		w.end("VTIMEZONE")
 
-		return w.String(), nil
+		return w.String(), time.Time{}, w.err
 	}
+
+	horizon := time.Time{}
 	for _, group := range groupTransitions(transitions) {
-		writeObservance(&w, group)
+		ruled := writeObservance(&w, group)
+		if ruled {
+			continue
+		}
+		// The observance is written out rather than ruled, so it stops
+		// describing the zone after its last onset. The earliest such
+		// horizon is the one that binds.
+		last := group.local[len(group.local)-1]
+		if horizon.IsZero() || last.Before(horizon) {
+			horizon = last
+		}
 	}
 	w.end("VTIMEZONE")
 
-	return w.String(), nil
+	return w.String(), horizon, w.err
 }
 
 // transition is one change of offset: when it happens, what the offset
@@ -148,8 +174,10 @@ func groupTransitions(transitions []transition) []observance {
 	return out
 }
 
-// writeObservance writes one STANDARD or DAYLIGHT block.
-func writeObservance(w *icalWriter, o observance) {
+// writeObservance writes one STANDARD or DAYLIGHT block, and reports
+// whether its onsets were described by a yearly rule rather than written
+// out one by one.
+func writeObservance(w *icalWriter, o observance) (ruled bool) {
 	name := "STANDARD"
 	if o.daylight {
 		name = "DAYLIGHT"
@@ -161,7 +189,8 @@ func writeObservance(w *icalWriter, o observance) {
 	if o.name != "" {
 		w.raw("TZNAME", nil, o.name)
 	}
-	if rule, ok := yearlyRule(o.local); ok {
+	rule, ruled := yearlyRule(o.local)
+	if ruled {
 		w.raw("RRULE", nil, rule)
 	} else {
 		for _, at := range o.local[1:] {
@@ -169,6 +198,8 @@ func writeObservance(w *icalWriter, o observance) {
 		}
 	}
 	w.end(name)
+
+	return ruled
 }
 
 // writeFixedObservance writes the single block a zone with no change at

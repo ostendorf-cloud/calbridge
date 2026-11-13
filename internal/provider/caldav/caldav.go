@@ -26,9 +26,21 @@
 //
 // provider.Calendar.ID is the collection's absolute URL, and an event id
 // is the resource's own name inside that collection. Both stay opaque
-// above this package. A URL is only followed when its host matches the
-// profile's HostSuffixes, so a server's own answer cannot aim the
-// account's credential somewhere else.
+// above this package. A URL is only followed when its scheme is https
+// and its host matches the profile's HostSuffixes, so a server's own
+// answer cannot aim the account's credential somewhere else. That holds
+// for an href in a response body and for the Location of a redirect
+// alike: the HTTP client follows no redirect of its own, and every hop
+// goes through the same check as the first request.
+//
+// # Text from a source calendar
+//
+// Every value written into an object goes through icalWriter.line,
+// which refuses a line break rather than writing it. A break in a value
+// would end the content line and begin another, so a UID or a
+// recurrence rule carrying one would add a property this package never
+// wrote, an ATTENDEE among them. See ical.go for why the refusal is the
+// choice rather than stripping the break.
 //
 // # Recurrence
 //
@@ -167,7 +179,19 @@ func WithUIDs(newUID func() string) Option {
 // New returns a connector over the shipped profiles.
 func New(opts ...Option) *Connector {
 	c := &Connector{
-		client:   &http.Client{Timeout: defaultTimeout},
+		client: &http.Client{
+			Timeout: defaultTimeout,
+			// A redirect is never followed by the HTTP client itself. The
+			// client knows no profile, so it cannot tell whether the
+			// target is a host this credential may reach, and net/http
+			// decides whether to carry the Authorization header onward by
+			// comparing hosts alone: a same-host redirect from https to
+			// http keeps the header and puts the app specific password on
+			// the wire in clear. do follows a redirect itself instead, and
+			// puts every hop through the same scheme and host check as the
+			// first request.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 		profiles: Profiles,
 		now:      time.Now,
 		newUID:   newUID,

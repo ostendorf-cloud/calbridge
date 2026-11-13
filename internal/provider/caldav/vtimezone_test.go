@@ -14,9 +14,12 @@ import (
 func TestVTimezone_ZoneWithDaylightSaving(t *testing.T) {
 	t.Parallel()
 
-	block, err := vtimezone("Europe/Berlin", 2026)
+	block, covered, err := vtimezone("Europe/Berlin", 2026)
 	if err != nil {
 		t.Fatalf("build vtimezone: %v", err)
+	}
+	if !covered.IsZero() {
+		t.Errorf("a zone on a yearly rule is described without end, got a horizon at %s", covered)
 	}
 
 	for _, want := range []string{
@@ -39,9 +42,12 @@ func TestVTimezone_ZoneWithDaylightSaving(t *testing.T) {
 func TestVTimezone_ZoneWithoutDaylightSaving(t *testing.T) {
 	t.Parallel()
 
-	block, err := vtimezone("Asia/Tokyo", 2026)
+	block, covered, err := vtimezone("Asia/Tokyo", 2026)
 	if err != nil {
 		t.Fatalf("build vtimezone: %v", err)
+	}
+	if !covered.IsZero() {
+		t.Errorf("a zone that never changes is described without end, got a horizon at %s", covered)
 	}
 
 	if strings.Contains(block, "BEGIN:DAYLIGHT") {
@@ -57,7 +63,7 @@ func TestVTimezone_ZoneWithoutDaylightSaving(t *testing.T) {
 func TestVTimezone_ParsesBackAsOneComponent(t *testing.T) {
 	t.Parallel()
 
-	block, err := vtimezone("America/New_York", 2026)
+	block, _, err := vtimezone("America/New_York", 2026)
 	if err != nil {
 		t.Fatalf("build vtimezone: %v", err)
 	}
@@ -81,9 +87,29 @@ func TestVTimezone_ParsesBackAsOneComponent(t *testing.T) {
 func TestVTimezone_RefusesAZoneTheDatabaseDoesNotKnow(t *testing.T) {
 	t.Parallel()
 
-	_, err := vtimezone("Mars/Olympus", 2026)
+	_, _, err := vtimezone("Mars/Olympus", 2026)
 	if !errors.Is(err, provider.ErrInvalidEvent) {
 		t.Fatalf("got %v, want ErrInvalidEvent", err)
+	}
+}
+
+func TestVTimezone_ReportsAHorizonForAZoneOnNoYearlyRule(t *testing.T) {
+	t.Parallel()
+
+	// Africa/Casablanca moves its clock around Ramadan, so its onsets
+	// fall on no yearly rule and the generator can only write them out.
+	block, covered, err := vtimezone("Africa/Casablanca", 2026)
+	if err != nil {
+		t.Fatalf("build vtimezone: %v", err)
+	}
+	if covered.IsZero() {
+		t.Fatalf("a zone written out transition by transition stops describing itself:\n%s", block)
+	}
+	if strings.Contains(block, "RRULE") {
+		t.Errorf("the generator claimed a yearly rule it could not derive:\n%s", block)
+	}
+	if covered.Year() > 2026+windowYears {
+		t.Errorf("the horizon at %s lies past the window the generator looked at", covered)
 	}
 }
 
