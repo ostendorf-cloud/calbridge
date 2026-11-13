@@ -6,7 +6,6 @@ package caldav
 import (
 	"errors"
 	"net/url"
-	"strings"
 	"testing"
 
 	"github.com/ostendorf-cloud/calbridge/internal/provider"
@@ -116,52 +115,37 @@ func TestQuirks_SteerTheRequestAndTheReading(t *testing.T) {
 	t.Parallel()
 
 	// A quirk earns its place by changing what the connector sends or
-	// accepts. These are the two that do, read off a profile with the
-	// quirk and one without it, so the table entry is what decides and
-	// not a branch on a server name.
+	// accepts. The same answer is read through a profile carrying the
+	// quirk and through one without it, so the table entry is what
+	// decides and not a branch on a server name.
+	//
+	// The other half of the pair, that a server honouring DAV:limit is
+	// sent one, is only reachable once a second profile declares it.
+	// TestConnector_ChangesInitialSync asserts the half that is
+	// reachable today: the iCloud request carries no limit.
 	honours := ICloud
-	honours.Quirks.IgnoresSyncLimit = false
 	honours.Quirks.SyncReportsCollection = false
 
-	t.Run("a server that honours a limit is sent one", func(t *testing.T) {
-		t.Parallel()
+	calendar, err := url.Parse("https://p42-caldav.icloud.com/20241234/calendars/home/")
+	if err != nil {
+		t.Fatalf("parse the calendar url: %v", err)
+	}
+	ms := multistatus{
+		SyncToken: "token-1",
+		Responses: []davResp{{Href: "/20241234/calendars/home/"}},
+	}
 
-		withLimit, err := marshalBody(syncCollection{
-			Level: "1",
-			Limit: &limitProps{NResults: syncPageSize},
-		})
-		if err != nil {
-			t.Fatalf("build the request body: %v", err)
-		}
-		if !strings.Contains(string(withLimit), "nresults") {
-			t.Errorf("the body names no limit:\n%s", withLimit)
-		}
-	})
+	page, err := readSyncPage(ICloud, calendar, ms)
+	if err != nil {
+		t.Fatalf("read the sync page: %v", err)
+	}
+	if len(page.changed) != 0 || len(page.deletes) != 0 {
+		t.Errorf("the collection was read as an event resource: %+v", page)
+	}
 
-	t.Run("a server that lists the collection has that entry dropped", func(t *testing.T) {
-		t.Parallel()
-
-		calendar, err := url.Parse("https://p42-caldav.icloud.com/20241234/calendars/home/")
-		if err != nil {
-			t.Fatalf("parse the calendar url: %v", err)
-		}
-		ms := multistatus{
-			SyncToken: "token-1",
-			Responses: []davResp{{Href: "/20241234/calendars/home/"}},
-		}
-
-		page, err := readSyncPage(ICloud, calendar, ms)
-		if err != nil {
-			t.Fatalf("read the sync page: %v", err)
-		}
-		if len(page.changed) != 0 || len(page.deletes) != 0 {
-			t.Errorf("the collection was read as an event resource: %+v", page)
-		}
-
-		if _, err := readSyncPage(honours, calendar, ms); !errors.Is(err, ErrServer) {
-			t.Fatalf("got %v, want a profile without the quirk to report the entry it did not expect", err)
-		}
-	})
+	if _, err := readSyncPage(honours, calendar, ms); !errors.Is(err, ErrServer) {
+		t.Fatalf("got %v, want a profile without the quirk to report the entry it did not expect", err)
+	}
 }
 
 func TestProfileByName(t *testing.T) {

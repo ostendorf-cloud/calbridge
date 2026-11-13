@@ -70,10 +70,9 @@ func decodeResource(resourceName, text string) ([]provider.Event, error) {
 		return nil, fmt.Errorf("calendar object is a %s, not a VCALENDAR: %w", root.Name, ErrServer)
 	}
 
-	zones := locationsIn(root)
 	var out []provider.Event
 	for _, component := range root.children("VEVENT") {
-		event, err := decodeEvent(resourceName, component, zones)
+		event, err := decodeEvent(resourceName, component)
 		if err != nil {
 			return nil, err
 		}
@@ -86,27 +85,13 @@ func decodeResource(resourceName, text string) ([]provider.Event, error) {
 	return out, nil
 }
 
-// locationsIn reads the TZIDs the object defines a VTIMEZONE for, so a
-// TZID that is not an IANA zone name can still be recognised as one the
-// object itself describes.
-func locationsIn(root *icalComponent) map[string]bool {
-	out := map[string]bool{}
-	for _, vtimezone := range root.children("VTIMEZONE") {
-		if tzid := vtimezone.value("TZID"); tzid != "" {
-			out[normaliseTZID(tzid)] = true
-		}
-	}
-
-	return out
-}
-
 // decodeEvent maps one VEVENT onto the normalised event.
-func decodeEvent(resourceName string, component *icalComponent, zones map[string]bool) (provider.Event, error) {
-	start, err := eventTime(component, "DTSTART", zones)
+func decodeEvent(resourceName string, component *icalComponent) (provider.Event, error) {
+	start, err := eventTime(component, "DTSTART")
 	if err != nil {
 		return provider.Event{}, err
 	}
-	end, err := eventEnd(component, start, zones)
+	end, err := eventEnd(component, start)
 	if err != nil {
 		return provider.Event{}, err
 	}
@@ -133,7 +118,7 @@ func decodeEvent(resourceName string, component *icalComponent, zones map[string
 	}
 
 	if recurrenceID, ok := component.prop("RECURRENCE-ID"); ok {
-		original, err := timeFromLine(recurrenceID, zones)
+		original, err := timeFromLine(recurrenceID)
 		if err != nil {
 			return provider.Event{}, err
 		}
@@ -253,21 +238,21 @@ func sortedKeys(m map[string][]string) []string {
 }
 
 // eventTime reads one date or date-time property off a component.
-func eventTime(component *icalComponent, name string, zones map[string]bool) (provider.EventTime, error) {
+func eventTime(component *icalComponent, name string) (provider.EventTime, error) {
 	line, ok := component.prop(name)
 	if !ok {
 		return provider.EventTime{}, fmt.Errorf("VEVENT carries no %s: %w", name, ErrServer)
 	}
 
-	return timeFromLine(line, zones)
+	return timeFromLine(line)
 }
 
 // eventEnd reads the event's end. RFC 5545 section 3.6.1 fills in the
 // two cases where a VEVENT carries neither DTEND nor DURATION: an
 // all-day event lasts one day, and a timed event ends where it starts.
-func eventEnd(component *icalComponent, start provider.EventTime, zones map[string]bool) (provider.EventTime, error) {
+func eventEnd(component *icalComponent, start provider.EventTime) (provider.EventTime, error) {
 	if line, ok := component.prop("DTEND"); ok {
-		return timeFromLine(line, zones)
+		return timeFromLine(line)
 	}
 	if line, ok := component.prop("DURATION"); ok {
 		d, err := parseDuration(line.Value)
@@ -290,7 +275,7 @@ func eventEnd(component *icalComponent, start provider.EventTime, zones map[stri
 
 // timeFromLine maps one content line onto the three forms RFC 5545
 // section 3.3.5 defines, which are the three the normalised event takes.
-func timeFromLine(line icalLine, zones map[string]bool) (provider.EventTime, error) {
+func timeFromLine(line icalLine) (provider.EventTime, error) {
 	value := strings.TrimSpace(line.Value)
 	if strings.EqualFold(line.param("VALUE"), "DATE") || (len(value) == 8 && !strings.Contains(value, "T")) {
 		day, err := time.Parse("20060102", value)
@@ -318,11 +303,22 @@ func timeFromLine(line icalLine, zones map[string]bool) (provider.EventTime, err
 	if tzid == "" {
 		return provider.EventTime{Kind: provider.TimeKindFloating, Wall: wall}, nil
 	}
-	if _, err := time.LoadLocation(tzid); err != nil && !zones[tzid] {
-		// A TZID the zone database does not know and the object does not
-		// describe cannot be resolved by anything above this package, and
-		// reading it as a zone name would put the event in the wrong
-		// place. A wall time in no zone is the honest reading.
+	if _, err := time.LoadLocation(tzid); err != nil {
+		// internal/provider's second normalisation rule makes a zoned
+		// time name an IANA zone, so a name the zone database does not
+		// know may not leave this package as one, however the object
+		// describes it. A CalDAV collection carries whatever TZID was
+		// written into it, and a Windows style name such as
+		// "W. Europe Standard Time" arrives that way from an Exchange
+		// export. Reporting it as a zone would hand the engine a name
+		// nothing can resolve, and would come back here on a write as a
+		// TZID with no VTIMEZONE behind it.
+		//
+		// A wall time in no zone is the honest reading: the clock
+		// reading is what the object states, and the engine anchors a
+		// floating time in the target calendar's zone rather than
+		// guessing one here. The zone identity is lost, which is visible
+		// in the result, where an unresolvable name is not.
 		return provider.EventTime{Kind: provider.TimeKindFloating, Wall: wall}, nil
 	}
 
@@ -602,7 +598,11 @@ func encodeResource(event provider.Event, stamp time.Time, caps provider.Capabil
 	w.raw("PRODID", nil, productID)
 	w.raw("CALSCALE", nil, "GREGORIAN")
 
-	for _, zone := range zonesOf(event, rule) {
+	zones, err := zonesOf(event, rule)
+	if err != nil {
+		return "", err
+	}
+	for _, zone := range zones {
 		block, covered, err := vtimezone(zone, event.Start.Wall.Year())
 		if err != nil {
 			return "", err
@@ -677,36 +677,62 @@ func attendeeParams(a provider.Attendee) []string {
 	return params
 }
 
-// zonesOf returns the IANA zones the event names, in a stable order and
-// without repeats.
+// zonesOf returns the zones the event names, in a stable order and
+// without repeats, and refuses one the zone database cannot describe.
+//
+// Every TZID the object is about to carry comes through here, so the
+// written object can only ever name a zone a VTIMEZONE is then built
+// for. RFC 5545 section 3.6.5 requires that pairing, and a server is
+// free to read an undefined TZID as UTC, which puts the event on the
+// wrong hour with nothing to say so.
 //
 // A recurrence line names a zone too: an RDATE or an EXDATE carries its
-// own TZID, and RFC 5545 section 3.6.5 wants a VTIMEZONE for every TZID
-// in the object, not only for the ones on the endpoints. An excluded
-// occurrence written with a zone the object does not describe is read
-// against another offset and lands on the wrong hour.
-func zonesOf(event provider.Event, rule []icalLine) []string {
+// own TZID, and an excluded occurrence written against a zone the object
+// does not describe misses the occurrence it was meant to remove.
+//
+// A name the database does not know is refused rather than dropped.
+// There is no fallback that is definitely right: a Windows style name
+// such as "W. Europe Standard Time" cannot be turned into an offset
+// without a catalogue this package does not carry, and writing the event
+// in UTC instead would move it by whatever that offset is. Refusing says
+// so, and internal/provider's second normalisation rule already makes an
+// IANA name the only thing a connector may hand over, so a value that
+// reaches here is a mapping fault upstream rather than a calendar a user
+// can fix.
+func zonesOf(event provider.Event, rule []icalLine) ([]string, error) {
 	var out []string
-	add := func(zone string) {
+	add := func(zone, where string) error {
 		if zone == "" || zone == "UTC" || containsString(out, zone) {
-			return
+			return nil
 		}
 		if _, err := time.LoadLocation(zone); err != nil {
-			return
+			return fmt.Errorf(
+				"%s names time zone %q, which is not an IANA zone this connector can describe: %w",
+				where, zone, provider.ErrInvalidEvent)
 		}
 		out = append(out, zone)
+
+		return nil
 	}
 
-	for _, t := range []provider.EventTime{event.Start, event.End} {
-		if t.Kind == provider.TimeKindZoned {
-			add(t.Zone)
+	for _, t := range []struct {
+		at    provider.EventTime
+		where string
+	}{{event.Start, "start"}, {event.End, "end"}} {
+		if t.at.Kind != provider.TimeKindZoned {
+			continue
+		}
+		if err := add(t.at.Zone, t.where); err != nil {
+			return nil, err
 		}
 	}
 	for _, line := range rule {
-		add(normaliseTZID(line.param("TZID")))
+		if err := add(normaliseTZID(line.param("TZID")), line.Name); err != nil {
+			return nil, err
+		}
 	}
 
-	return out
+	return out, nil
 }
 
 // coversEvent reports whether a zone's generated VTIMEZONE describes the
@@ -791,7 +817,11 @@ func writeEventTime(w *icalWriter, name string, t provider.EventTime) {
 
 			return
 		}
-		w.raw(name, []string{"TZID=" + t.Zone}, t.Wall.Format("20060102T150405"))
+		// zonesOf has already refused a zone with no VTIMEZONE behind it,
+		// so the name written here is one the object defines. quoteParam
+		// is belt and braces: it keeps a name holding a separator from
+		// becoming a second parameter.
+		w.raw(name, []string{"TZID=" + quoteParam(t.Zone)}, t.Wall.Format("20060102T150405"))
 	case provider.TimeKindFloating:
 		w.raw(name, nil, t.Wall.Format("20060102T150405"))
 	case provider.TimeKindUnset:
