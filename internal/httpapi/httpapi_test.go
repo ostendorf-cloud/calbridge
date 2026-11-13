@@ -17,6 +17,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/ostendorf-cloud/govue/clientip"
 	"github.com/ostendorf-cloud/govue/health"
 	"github.com/ostendorf-cloud/govue/logging"
 	"github.com/ostendorf-cloud/govue/metrics"
@@ -504,6 +505,114 @@ func TestLoginIsRateLimited(t *testing.T) {
 	if status := loginOnce(); status != http.StatusTooManyRequests {
 		t.Errorf("login after exhausting the burst status = %d, want %d", status, http.StatusTooManyRequests)
 	}
+}
+
+// TestLoginRateLimitKeyHonoursTrustedProxyOnly proves clientip.Resolver's
+// own contract reaches the login rate limiter correctly: with no trusted
+// proxy configured, a forged X-Forwarded-For is ignored and the limiter
+// keys on the TCP peer alone, matching config.Config.TrustedProxyCIDRs's
+// own doc comment. Configuring the test server's loopback peer as trusted
+// makes the resolver honour that header instead, so two requests that
+// share the same TCP peer but carry different client addresses in it get
+// their own separate budget.
+func TestLoginRateLimitKeyHonoursTrustedProxyOnly(t *testing.T) {
+	t.Parallel()
+
+	loginAs := func(t *testing.T, baseURL, forwardedFor string) int {
+		t.Helper()
+
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL+"/api/v1/auth/login", strings.NewReader(`{"email":"owner@example.com"}`))
+		if err != nil {
+			t.Fatalf("build login request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if forwardedFor != "" {
+			req.Header.Set("X-Forwarded-For", forwardedFor)
+		}
+
+		resp, err := (&http.Client{}).Do(req)
+		if err != nil {
+			t.Fatalf("login: %v", err)
+		}
+		t.Cleanup(func() { _ = resp.Body.Close() })
+
+		return resp.StatusCode
+	}
+
+	t.Run("no trusted proxy configured ignores a forged header", func(t *testing.T) {
+		t.Parallel()
+
+		handlers, err := httpapi.NewHandler(httpapi.Deps{
+			Logger:          logging.New(io.Discard, slog.LevelError),
+			HealthRegistry:  health.New(),
+			MetricsRegistry: metrics.NewRegistry(),
+			DistFS:          testDistFS(),
+			RateLimitBurst:  1,
+			RateLimitPer:    time.Minute,
+		})
+		if err != nil {
+			t.Fatalf("httpapi.NewHandler() error = %v", err)
+		}
+
+		server := httptest.NewServer(handlers.Public)
+		t.Cleanup(server.Close)
+
+		if status := loginAs(t, server.URL, "203.0.113.1"); status != http.StatusNoContent {
+			t.Fatalf("first login status = %d, want %d", status, http.StatusNoContent)
+		}
+
+		// A different forged client address buys no second bucket: with
+		// no trusted proxy, clientip.Resolver never reads
+		// X-Forwarded-For at all and keys this request on the same TCP
+		// peer as the one above.
+		if status := loginAs(t, server.URL, "203.0.113.2"); status != http.StatusTooManyRequests {
+			t.Errorf("second login with a different forged address status = %d, want %d: the rate limiter must key on the TCP peer, not on an untrusted header", status, http.StatusTooManyRequests)
+		}
+	})
+
+	t.Run("a configured trusted proxy honours the header", func(t *testing.T) {
+		t.Parallel()
+
+		loopback, err := clientip.ParseCIDRs("127.0.0.1/32")
+		if err != nil {
+			t.Fatalf("clientip.ParseCIDRs() error = %v", err)
+		}
+
+		handlers, err := httpapi.NewHandler(httpapi.Deps{
+			Logger:            logging.New(io.Discard, slog.LevelError),
+			HealthRegistry:    health.New(),
+			MetricsRegistry:   metrics.NewRegistry(),
+			DistFS:            testDistFS(),
+			RateLimitBurst:    1,
+			RateLimitPer:      time.Minute,
+			TrustedProxyCIDRs: loopback,
+		})
+		if err != nil {
+			t.Fatalf("httpapi.NewHandler() error = %v", err)
+		}
+
+		server := httptest.NewServer(handlers.Public)
+		t.Cleanup(server.Close)
+
+		// httptest.NewServer listens on 127.0.0.1, so every request below
+		// shares that same TCP peer; trusting that peer is what makes the
+		// resolver read X-Forwarded-For and separate them by the address
+		// it names instead.
+		if status := loginAs(t, server.URL, "203.0.113.1"); status != http.StatusNoContent {
+			t.Fatalf("first client login status = %d, want %d", status, http.StatusNoContent)
+		}
+		if status := loginAs(t, server.URL, "203.0.113.2"); status != http.StatusNoContent {
+			t.Errorf("second client login status = %d, want %d: a trusted proxy must give each forwarded address its own budget", status, http.StatusNoContent)
+		}
+
+		// Reusing the first client's own address exhausts its budget
+		// again, proving the separation above came from the resolved
+		// client address the trusted proxy's header named, not from some
+		// other cause.
+		if status := loginAs(t, server.URL, "203.0.113.1"); status != http.StatusTooManyRequests {
+			t.Errorf("repeated first client login status = %d, want %d: the trusted proxy's header must still be honoured on this request", status, http.StatusTooManyRequests)
+		}
+	})
 }
 
 // sessionCookie returns the session cookie resp carries, or false when it

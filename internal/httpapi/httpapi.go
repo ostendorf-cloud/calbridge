@@ -105,6 +105,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -133,18 +134,32 @@ import (
 // check, and session.MemoryStore.Save evicts an arbitrary tracked
 // session once the store is full, so an unthrottled login would let one
 // client force 1000 evictions in well under a minute. Capped at
-// config.Config's default of ten login starts a minute per client, one
-// client alone needs well over a day to cycle through the whole store;
-// a distributed flood across many clients is a different threat this
-// bound does not claim to close, matching the login route's wider
-// design as a shell with no account system to check a client against
-// yet.
+// config.Config's default of ten login starts a minute for one resolved
+// client address, that address needs 99 minutes to cycle through the
+// whole store: 10 starts immediately from the full burst, then the
+// remaining 990 at one every six seconds (990 * 6s = 5940s = 99m). That
+// turns the attack from seconds into an hour and a half, not into a day;
+// closing it further means lowering RateLimitBurst or raising
+// RateLimitPer, which narrows legitimate login traffic too, a trade this
+// shell does not make on its own.
+//
+// A flood spread across many distinct client addresses is a different
+// threat this bound does not close, and maxRateLimitKeys below does not
+// close it either: with 1000 sessions tracked against 100000 rate limit
+// keys, a thousand distinct addresses each get their own full burst and
+// can still empty this store between them in one round apiece. That
+// distributed case is this shell's acknowledged gap, matching the login
+// route's wider design as a shell with no account system to check a
+// client against yet, not a case the limiter already handles.
 const maxSessions = 1000
 
 // maxRateLimitKeys bounds the number of distinct client addresses the
 // login rate limiter tracks at once, matching govue's own example
 // application and solobill's internal/httpapi: a flood of one-shot
-// addresses must not grow that map without bound either.
+// addresses must not grow that map without bound either. See
+// maxSessions's own doc comment for why this number being far larger
+// than maxSessions does not by itself close a flood spread across many
+// addresses.
 const maxRateLimitKeys = 100_000
 
 // csrfKeyBytes is the length of the CSRF signing key NewHandler generates
@@ -184,6 +199,14 @@ type Deps struct {
 	// comment for why that route specifically needs one.
 	RateLimitBurst int
 	RateLimitPer   time.Duration
+
+	// TrustedProxyCIDRs mirrors config.Config.TrustedProxyCIDRs: the
+	// addresses the login rate limiter's clientip.Resolver trusts to have
+	// appended the real client address to X-Forwarded-For. Left empty,
+	// the resolver keys every request on its TCP peer; see
+	// config.Config.TrustedProxyCIDRs's own doc comment for what that
+	// means behind this application's Ingress or HTTPRoute.
+	TrustedProxyCIDRs []netip.Prefix
 }
 
 // Handlers is what NewHandler builds: Public, served on the listener the
@@ -228,8 +251,13 @@ func NewHandler(d Deps) (Handlers, error) {
 
 	limiter := ratelimit.New(d.RateLimitBurst, d.RateLimitPer, maxRateLimitKeys)
 	rateLimit, err := middleware.NewRateLimit(middleware.RateLimitConfig{
-		Limiter:  limiter,
-		ClientIP: clientip.NewResolver(nil),
+		Limiter: limiter,
+		// d.TrustedProxyCIDRs is empty by default, so this resolver
+		// trusts no proxy and keys every request on its TCP peer. See
+		// config.Config.TrustedProxyCIDRs's own doc comment for why
+		// that is the safe default and what it costs behind this
+		// application's Ingress or HTTPRoute.
+		ClientIP: clientip.NewResolver(d.TrustedProxyCIDRs),
 	})
 	fail(err)
 

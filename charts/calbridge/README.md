@@ -176,6 +176,31 @@ full period before it closes the listener. `terminationGracePeriodSeconds` in tu
 never kills the container before that shutdown sequence gets to finish on its own. The three
 defaults already satisfy both orderings; changing one means checking the other two.
 
+## The login rate limit is per client only with trusted proxies configured
+
+`cmd/calbridge` rate limits `POST /api/v1/auth/login` by the client address
+its login rate limiter resolves, through govue's `clientip` package.
+`config.trustedProxyCIDRs` is empty by default, which is the secure choice:
+with nothing configured, the resolver trusts no proxy and keys every
+request on its TCP peer.
+
+`templates/ingress.yaml` and `templates/httproute.yaml` both route every
+request through the chosen `Ingress` controller or Gateway data plane
+before it reaches this Service, so with `config.trustedProxyCIDRs` left
+empty, the TCP peer calbridge sees is that controller or data plane for
+every request alike, not the client. The login budget then ends up shared
+by every client instead of kept one per client, and one client exhausting
+it trips the limit for everyone else too.
+
+Set `config.trustedProxyCIDRs` to the address or CIDR range the ingress
+controller's or Gateway data plane's pods send traffic from, as a comma
+separated list, so the resolver trusts the `X-Forwarded-For` entry that
+component appends and recovers the real client address instead. The right
+value depends on the ingress controller or Gateway implementation in the
+cluster; consult its own documentation for the pod network or source
+address its data plane uses to reach a Service, and verify the resolved
+address changes per client rather than staying fixed before relying on it.
+
 ## Database
 
 This chart ships with no Postgres subchart: the database is a connection this chart takes as
@@ -216,6 +241,7 @@ for the full list `cmd/calbridge` reads today.
 | `migrationJob.enabled` | Run `db/migrations` as a pre-install,pre-upgrade hook Job. See "Migrations" above. | `true` |
 | `migrationJob.databaseUser` | A separate role that applies `db/migrations`, distinct from `config.databaseUser`. Required; no usable default. See "Migrations run as a separate role" above. | `""` |
 | `migrationJob.image.repository` / `migrationJob.image.tag` / `migrationJob.image.digest` | The dbmate image the migration Job runs. | `ghcr.io/amacneil/dbmate` / `2.38.1` / pinned, see `values.yaml` |
+| `config.trustedProxyCIDRs` | `TRUSTED_PROXY_CIDRS`, a comma separated list of CIDRs (or bare addresses). Empty keeps the login rate limiter keyed on the TCP peer; see "The login rate limit is per client only with trusted proxies configured" above. | `""` |
 
 See `values.yaml` for the full list, including resources, startup and liveness probes, and pod
 security settings.
