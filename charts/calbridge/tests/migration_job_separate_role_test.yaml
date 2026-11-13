@@ -1,0 +1,74 @@
+suite: migration job with a separate migration role
+templates:
+  - templates/migration-job.yaml
+  - templates/deployment.yaml
+set:
+  existingSecret:
+    name: calbridge-secrets
+  config:
+    databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
+    databaseUser: calbridge_app
+  migrationJob:
+    databaseUser: calbridge_migrator
+tests:
+  - it: authenticates as migrationJob.databaseUser and its own secret key once both are set
+    template: templates/migration-job.yaml
+    set:
+      existingSecret:
+        migrationDatabasePasswordKey: MIGRATION_DATABASE_PASSWORD
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASE_USER
+            value: calbridge_migrator
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASE_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: calbridge-secrets
+                key: MIGRATION_DATABASE_PASSWORD
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASE_USER
+            value: calbridge_app
+
+  - it: leaves the Deployment's own database env untouched when migrationJob.databaseUser is set
+    template: templates/deployment.yaml
+    set:
+      existingSecret:
+        migrationDatabasePasswordKey: MIGRATION_DATABASE_PASSWORD
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASE_USER
+            value: calbridge_app
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASE_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: calbridge-secrets
+                key: DATABASE_PASSWORD
+
+  - it: falls back to databasePasswordKey when migrationDatabasePasswordKey is not set
+    template: templates/migration-job.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASE_USER
+            value: calbridge_migrator
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASE_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: calbridge-secrets
+                key: DATABASE_PASSWORD

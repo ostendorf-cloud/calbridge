@@ -1,0 +1,18 @@
+suite: migration job disabled
+templates:
+  - templates/migration-job.yaml
+  - templates/migration-configmap.yaml
+set:
+  existingSecret:
+    name: calbridge-secrets
+  config:
+    databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
+    databaseUser: calbridge_app
+  migrationJob:
+    enabled: false
+    databaseUser: calbridge_migrator
+tests:
+  - it: renders neither the Job nor its ConfigMap, leaving nothing orphaned
+    asserts:
+      - hasDocuments:
+          count: 0

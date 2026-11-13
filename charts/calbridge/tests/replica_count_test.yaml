@@ -1,6 +1,14 @@
 suite: replicaCount and selector label stability
 templates:
   - templates/deployment.yaml
+set:
+  existingSecret:
+    name: calbridge-secrets
+  config:
+    databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
+    databaseUser: calbridge_app
+  migrationJob:
+    databaseUser: calbridge_migrator
 tests:
   - it: defaults to one replica with stable selector labels
     asserts:

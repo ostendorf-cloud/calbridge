@@ -1,19 +1,194 @@
 # Local development only: `docker compose up --build` gives a running
-# calbridge with nothing else, since this milestone has no database and
-# no provider connector yet (see docs/concepts/calbridge.md's delivery
-# order). A later issue that adds Postgres, a provider connector or login
-# extends this file with the services and secrets those need.
+# calbridge, a Postgres with db/migrations already applied, and nothing
+# else, since this milestone adds no provider connector and no login yet
+# (see docs/concepts/calbridge.md's delivery order).
+#
+# Every secret this file needs comes from a developer's own .env, never
+# from a value written into this file: POSTGRES_SUPERUSER_PASSWORD,
+# APP_DB_PASSWORD and ENCRYPTION_KEY, each generated with
+# "openssl rand -hex 24" (the first two) or "openssl rand -hex 32" (the
+# encryption key, which internal/storage/postgres decodes as exactly 32
+# bytes of AES-256 key material, not a password of arbitrary length).
 services:
+  # ---------------------------------------------------------------------
+  # Two Postgres roles, on purpose
+  # ---------------------------------------------------------------------
+  # db/migrations enables FORCE ROW LEVEL SECURITY on every table that
+  # references users: internal/storage/postgres/integration_test.go's
+  # TestRowLevelSecurity is the proof that this, not application code, is
+  # what keeps one user's rows out of another user's reach. That proof
+  # depends on one fact about Postgres that is easy to miss: a superuser
+  # bypasses row level security regardless of FORCE. The official postgres
+  # image makes whatever POSTGRES_USER is set here a superuser. If
+  # cmd/calbridge connected as that same user, every policy those
+  # migrations create would do nothing at all in this compose file - the
+  # isolation guarantee the whole milestone is built around would be
+  # cosmetic the moment anyone actually ran it.
+  #
+  # So this service ends up with two roles:
+  #   - the bootstrap superuser below (POSTGRES_USER/POSTGRES_PASSWORD),
+  #     used only by the "migrate" service to run the schema migrations
+  #     themselves. Table ownership has to exist before
+  #     FORCE ROW LEVEL SECURITY means anything, and the owning role is
+  #     irrelevant to the guarantee once FORCE is set - exactly
+  #     db/migrations' own reasoning for not creating an application role
+  #     itself.
+  #   - "calbridge_app", NOSUPERUSER NOBYPASSRLS, created by
+  #     docker/postgres/init-app-role.sh (mounted below into
+  #     /docker-entrypoint-initdb.d/, which the official image runs once,
+  #     against a freshly initialized data directory, as the bootstrap
+  #     superuser). That script only grants USAGE on the schema: users and
+  #     every table after it do not exist yet at initdb time, since
+  #     "migrate" below only creates them after postgres is healthy, well
+  #     after every initdb script has already run. A third step,
+  #     "grant-app-role", runs after "migrate" completes and grants
+  #     calbridge_app exactly the privileges its own repositories in
+  #     internal/storage/postgres use, plus a standing default-privileges
+  #     rule so a later migration's new table is covered without editing
+  #     this file again. This is the role the "calbridge" service's
+  #     DATABASE_USER / DATABASE_PASSWORD point at; it is the only role
+  #     that ever runs this application's own queries.
+  #
+  # The init script needs calbridge_app's password without ever reading or
+  # forwarding the superuser's own password: APP_DB_PASSWORD is a separate
+  # environment variable, generated separately in .env, for exactly that
+  # reason.
+  postgres:
+    image: postgres:18@sha256:b9f6b8ff03b62f3cfd9d9ba3fe56226a9991c79d3fb46fd46536263bf02be553
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: calbridge_super
+      POSTGRES_PASSWORD: "${POSTGRES_SUPERUSER_PASSWORD:?set in .env, generate with openssl rand -hex 24}"
+      POSTGRES_DB: calbridge
+      APP_DB_PASSWORD: "${APP_DB_PASSWORD:?set in .env, generate with openssl rand -hex 24}"
+    volumes:
+      # Postgres 18 changed its own default PGDATA to a version-specific
+      # path (/var/lib/postgresql/18/docker); the image's own docs now
+      # say to target the mount at /var/lib/postgresql itself, not
+      # .../data as every earlier major documented. Mirrors solobill's
+      # own fix for the same change.
+      - postgres-data:/var/lib/postgresql
+      - ./docker/postgres/init-app-role.sh:/docker-entrypoint-initdb.d/10-init-app-role.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U calbridge_super -d calbridge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # One-shot: applies db/migrations as the bootstrap superuser, then
+  # exits. "calbridge" below waits for this to exit 0
+  # (service_completed_successfully), not merely for postgres to be
+  # healthy, so the tables and row level security policies are always
+  # there before the application ever opens a connection.
+  #
+  # Reuses the official dbmate image rather than installing dbmate into
+  # this repository's own Go build stage: dbmate and this application
+  # share nothing at runtime (they only coordinate through files on disk),
+  # so pulling a small, maintained, single-purpose image is simpler than
+  # adding a tool this application itself never calls to its own
+  # multi-stage build. Pinned to 2.38.1, the latest patch in the 2.38 line
+  # mise.toml already pins dbmate to.
+  migrate:
+    image: ghcr.io/amacneil/dbmate:2.38.1@sha256:b0c8a87bfef4f2819fdb0a68ca357a44d12fb90d23eca695fcfc3b7e159cb1c5
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://calbridge_super:${POSTGRES_SUPERUSER_PASSWORD:?}@postgres:5432/\
+        calbridge?sslmode=disable"
+      # dbmate's default "up" also rewrites db/schema.sql next to the
+      # migrations it just ran. db/migrations is bind mounted read-only
+      # below (this service is not allowed to write back into the
+      # repository it is running against), and nothing in this repository
+      # commits or reads a schema.sql at all, so that rewrite is turned
+      # off rather than left to fail against a read-only mount.
+      DBMATE_NO_DUMP_SCHEMA: "true"
+    volumes:
+      - ./db/migrations:/db/migrations:ro
+    command: ["up"]
+
+  # One-shot: grants calbridge_app exactly the table privileges it needs,
+  # then exits. Separate from docker/postgres/init-app-role.sh above
+  # because this step needs every table to already exist, and those are
+  # only created by "migrate", which only runs after postgres is healthy -
+  # well after init-app-role.sh already ran as part of initdb. Running
+  # the GRANTs there instead would fail "psql -v ON_ERROR_STOP=1" against
+  # tables that do not exist yet and abort the whole
+  # "docker compose up --build".
+  #
+  # ALTER DEFAULT PRIVILEGES only ever applies to a table created AFTER it
+  # runs, by the role that ran it (calbridge_super, the same role
+  # "migrate" above uses), so it cannot retroactively cover users or any
+  # table added by this milestone's own migrations: those still need
+  # their own explicit GRANT here, once. The ALTER DEFAULT PRIVILEGES line
+  # is what then covers any later migration's new table automatically,
+  # with no further edit to this file. "calbridge" below waits on this
+  # service, not merely on "migrate", so the application itself never
+  # opens a connection before these grants exist either.
+  #
+  # Runs as calbridge_super against the postgres service: it only grants
+  # privileges, so it needs no password of calbridge_app's own. Nothing
+  # here ever deletes a user, so users gets no DELETE; every other table
+  # gets exactly the privileges its own repository in
+  # internal/storage/postgres uses, matching
+  # internal/storage/postgres/integration_test.go's own test role grant.
+  # EXECUTE on users_find_by_email is the one way calbridge_app may read
+  # a users row it does not already own: see that migration's own
+  # comment for why the GRANT cannot live inside db/migrations itself.
+  grant-app-role:
+    image: postgres:18@sha256:b9f6b8ff03b62f3cfd9d9ba3fe56226a9991c79d3fb46fd46536263bf02be553
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      PGPASSWORD: "${POSTGRES_SUPERUSER_PASSWORD:?set in .env, generate with openssl rand -hex 24}"
+    command:
+      - psql
+      - -v
+      - ON_ERROR_STOP=1
+      - --host=postgres
+      - --username=calbridge_super
+      - --dbname=calbridge
+      - -c
+      - GRANT SELECT, INSERT, UPDATE ON users TO calbridge_app;
+      - -c
+      - GRANT EXECUTE ON FUNCTION users_find_by_email(text) TO calbridge_app;
+      - -c
+      - GRANT SELECT, INSERT, DELETE ON identities, calendars, calendar_grants TO calbridge_app;
+      - -c
+      - GRANT SELECT, INSERT, UPDATE, DELETE ON connections, edges, event_mapping TO calbridge_app;
+      - -c
+      - ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO calbridge_app;
+
   calbridge:
     build:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    depends_on:
+      grant-app-role:
+        condition: service_completed_successfully
     environment:
       LISTEN_ADDR: ":8080"
       LOG_LEVEL: info
+      # No credentials here: internal/config.Config.DatabaseURL carries no
+      # credentials by its own contract; DATABASE_USER/DATABASE_PASSWORD
+      # below are assembled into a real connection separately
+      # (internal/storage/postgres.NewPoolWithCredentials).
+      # sslmode=disable is this compose network's own local-dev choice -
+      # postgres and calbridge share an unencrypted Docker network with no
+      # other user on it; a real deployment's managed Postgres would set
+      # sslmode=require instead.
+      DATABASE_URL: "postgres://postgres:5432/calbridge?sslmode=disable"
+      DATABASE_USER: calbridge_app
+      DATABASE_PASSWORD: "${APP_DB_PASSWORD:?set in .env, generate with openssl rand -hex 24}"
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY:?set in .env, generate with openssl rand -hex 32}"
     ports:
       # Bound to loopback only: "8080:8080" alone binds every interface,
       # which on a shared network would expose this service to anyone
       # else on it.
       - "127.0.0.1:8080:8080"
+
+volumes:
+  postgres-data:

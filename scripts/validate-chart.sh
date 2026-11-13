@@ -2,7 +2,10 @@
 # Validates charts/calbridge for its default values and every documented non-default
 # combination, so CI and a local run share the exact same logic. The combinations below
 # mirror charts/calbridge/tests/*_test.yaml exactly: default, ingress enabled, httproute
-# enabled, startup probe enabled, service account disabled.
+# enabled, startup probe enabled, service account disabled. Every one of them also carries
+# the baseline below: config.databaseUrl, config.databaseUser and existingSecret.name have
+# no usable default and are required by values.schema.json, so even "default values" fails
+# to render without them.
 #
 # Takes exactly one mode argument:
 #   lint        - helm lint, one job per check (Taskfile's lint:helm / CI's helm-lint job)
@@ -35,6 +38,12 @@ esac
 
 chart="charts/calbridge"
 
+# config.databaseUrl, config.databaseUser, migrationJob.databaseUser and
+# existingSecret.name have no usable default (see values.yaml) and are
+# required by values.schema.json, so every combination below needs them
+# set, the default values combination included.
+baseline="existingSecret.name=calbridge-secrets,config.databaseUrl=postgres://postgres.example.svc:5432/calbridge?sslmode=require,config.databaseUser=calbridge_app,migrationJob.databaseUser=calbridge_migrator"
+
 names=(
   "default values"
   "ingress enabled"
@@ -44,13 +53,14 @@ names=(
 )
 
 # Each entry is one combination's --set arguments, matching the corresponding
-# charts/calbridge/tests/*_test.yaml suite's "set:" block.
+# charts/calbridge/tests/*_test.yaml suite's "set:" block, always layered on
+# top of baseline above.
 sets=(
-  ""
-  "ingress.enabled=true,ingress.className=nginx,ingress.hosts[0].host=calbridge.example.org,ingress.hosts[0].paths[0].path=/,ingress.hosts[0].paths[0].pathType=Prefix"
-  "httproute.enabled=true,httproute.parentRefs[0].name=eg,httproute.parentRefs[0].namespace=gateway-system,httproute.parentRefs[0].sectionName=https,httproute.hostnames[0]=calbridge.example.org"
-  "startupProbe.enabled=true"
-  "serviceAccount.create=false"
+  "${baseline}"
+  "${baseline},ingress.enabled=true,ingress.className=nginx,ingress.hosts[0].host=calbridge.example.org,ingress.hosts[0].paths[0].path=/,ingress.hosts[0].paths[0].pathType=Prefix"
+  "${baseline},httproute.enabled=true,httproute.parentRefs[0].name=eg,httproute.parentRefs[0].namespace=gateway-system,httproute.parentRefs[0].sectionName=https,httproute.hostnames[0]=calbridge.example.org"
+  "${baseline},startupProbe.enabled=true"
+  "${baseline},serviceAccount.create=false"
 )
 
 for i in "${!names[@]}"; do
@@ -59,32 +69,18 @@ for i in "${!names[@]}"; do
 
   echo "==> validating combination (${mode}): ${name}"
 
-  # "default values" sets nothing (set_args is empty); every other combination
-  # passes its --set argument. Branching on set_args directly, rather than
-  # building a possibly empty args array and expanding it, sidesteps bash
-  # 3.2's "unbound variable" behaviour for an empty array under "set -u"
-  # (macOS still ships 3.2 as /bin/bash).
   case "$mode" in
     lint)
-      if [ -n "$set_args" ]; then
-        lint_ok=0; helm lint "${chart}" --set "$set_args" || lint_ok=1
-      else
-        lint_ok=0; helm lint "${chart}" || lint_ok=1
-      fi
-      if [ "$lint_ok" -ne 0 ]; then
+      if ! helm lint "${chart}" --set "${set_args}"; then
         echo "validate-chart: helm lint failed for combination: ${name}" >&2
         exit 1
       fi
       ;;
     kubeconform)
-      if [ -n "$set_args" ]; then
-        template_output=$(helm template "${chart}" --set "$set_args")
-      else
-        template_output=$(helm template "${chart}")
-      fi
-      if ! printf '%s\n' "$template_output" | kubeconform -strict -summary \
-        -schema-location default \
-        -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/89c736bdde38b5fecd0f8436ec5f3aa3679a3b86/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'; then
+      if ! helm template "${chart}" --set "${set_args}" \
+        | kubeconform -strict -summary \
+          -schema-location default \
+          -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/89c736bdde38b5fecd0f8436ec5f3aa3679a3b86/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'; then
         echo "validate-chart: kubeconform failed for combination: ${name}" >&2
         exit 1
       fi
