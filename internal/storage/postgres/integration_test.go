@@ -64,15 +64,36 @@ type connectionRawRow struct {
 	UpdatedAt   time.Time `db:"updated_at"`
 }
 
+// requireDatabaseURL returns DATABASE_URL, or stops the test: t.Skip when
+// CI is unset, the local-development case where no Postgres is expected
+// to be reachable, and t.Fatal when CI is set, so a job whose own env:
+// block lost DATABASE_URL reports a failure instead of reporting green
+// having proven nothing. GitHub Actions sets CI=true on every runner by
+// default, independent of checks.yaml's own "integration" job env: block,
+// which is what actually carries DATABASE_URL.
+func requireDatabaseURL(t *testing.T) string {
+	t.Helper()
+
+	adminURL := os.Getenv("DATABASE_URL")
+	if adminURL != "" {
+		return adminURL
+	}
+
+	if os.Getenv("CI") != "" {
+		t.Fatal("DATABASE_URL not set while CI is set; the integration job lost its own env: block")
+	}
+
+	t.Skip("DATABASE_URL not set; skipping the Postgres-backed test")
+
+	return ""
+}
+
 // TestRowLevelSecurity is the single most important test in this
 // milestone: it proves that Postgres row level security, not application
 // code, is what actually keeps one user's rows out of another user's
 // reach, including when a query does not even try to scope itself.
 func TestRowLevelSecurity(t *testing.T) {
-	adminURL := os.Getenv("DATABASE_URL")
-	if adminURL == "" {
-		t.Skip("DATABASE_URL not set; skipping the Postgres-backed row level security test")
-	}
+	adminURL := requireDatabaseURL(t)
 
 	ctx := context.Background()
 
@@ -376,6 +397,65 @@ func TestRowLevelSecurity(t *testing.T) {
 		}
 	})
 
+	t.Run("an unscoped SELECT on users returns zero rows", func(t *testing.T) {
+		tx, err := restrictedPool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+
+		// Deliberately no set_config call: the "never scoped by WithUser"
+		// case, exercised directly against users rather than through the
+		// repository, which now always runs FindByID and Update inside
+		// WithUser.
+
+		rows, err := tx.Query(ctx, `SELECT id FROM users WHERE id = ANY($1)`, []uuid.UUID{userA.ID, userB.ID})
+		if err != nil {
+			t.Fatalf("SELECT id FROM users with no user set: %v", err)
+		}
+
+		ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+		if err != nil {
+			t.Fatalf("scan users: %v", err)
+		}
+
+		if len(ids) != 0 {
+			t.Fatalf("SELECT id FROM users with no user set = %v, want none: "+
+				"users_self_isolation should hide every row with no scope set", ids)
+		}
+	})
+
+	t.Run("FindByEmail still resolves a user with no user scope set, through users_find_by_email", func(t *testing.T) {
+		found, err := store.Users().FindByEmail(ctx, userA.Email)
+		if err != nil {
+			t.Fatalf("FindByEmail(%q) with no user scope set: %v", userA.Email, err)
+		}
+
+		if found.ID != userA.ID {
+			t.Fatalf("FindByEmail(%q) = user %v, want %v", userA.Email, found.ID, userA.ID)
+		}
+	})
+
+	t.Run("user A cannot read or update user B's row by id", func(t *testing.T) {
+		err := store.WithUser(ctx, userA.ID, func(ctx context.Context) error {
+			_, err := store.Users().FindByID(ctx, userB.ID)
+
+			return err
+		})
+		if !errors.Is(err, storage.ErrNotFound) {
+			t.Fatalf("FindByID(userB.ID) while scoped to user A: err = %v, want errors.Is(err, storage.ErrNotFound)", err)
+		}
+
+		err = store.WithUser(ctx, userA.ID, func(ctx context.Context) error {
+			_, err := store.Users().Update(ctx, storage.User{ID: userB.ID, Status: storage.UserStatusDisabled})
+
+			return err
+		})
+		if !errors.Is(err, storage.ErrNotFound) {
+			t.Fatalf("Update(userB.ID) while scoped to user A: err = %v, want errors.Is(err, storage.ErrNotFound)", err)
+		}
+	})
+
 	t.Run("a calendar created under user A is invisible while scoped to user B", func(t *testing.T) {
 		var calendar storage.Calendar
 
@@ -517,6 +597,118 @@ func TestRowLevelSecurity(t *testing.T) {
 		}
 	})
 
+	t.Run("an edge may reference a calendar its own user does not own only where a matching grant exists", func(t *testing.T) {
+		grantor, err := store.Users().Create(ctx, storage.User{Email: "grantor-" + uuid.NewString() + "@example.com", Status: storage.UserStatusActive})
+		if err != nil {
+			t.Fatalf("create grantor: %v", err)
+		}
+
+		grantee, err := store.Users().Create(ctx, storage.User{Email: "grantee-" + uuid.NewString() + "@example.com", Status: storage.UserStatusActive})
+		if err != nil {
+			t.Fatalf("create grantee: %v", err)
+		}
+
+		stranger, err := store.Users().Create(ctx, storage.User{Email: "stranger-" + uuid.NewString() + "@example.com", Status: storage.UserStatusActive})
+		if err != nil {
+			t.Fatalf("create stranger: %v", err)
+		}
+
+		var sharedCalendar storage.Calendar
+
+		if err := store.WithUser(ctx, grantor.ID, func(ctx context.Context) error {
+			conn, err := store.Connections().Create(ctx, storage.Connection{
+				UserID: grantor.ID, Provider: storage.ConnectionProviderGoogle,
+				DisplayName: "grantor's Google account", Credentials: []byte("grantor-refresh-token"),
+			})
+			if err != nil {
+				return err
+			}
+
+			created, err := store.Calendars().Create(ctx, storage.Calendar{
+				UserID: grantor.ID, ConnectionID: conn.ID,
+				ExternalID: "ext-shared-" + uuid.NewString(), Name: "Shared",
+			})
+
+			sharedCalendar = created
+
+			return err
+		}); err != nil {
+			t.Fatalf("set up grantor's calendar: %v", err)
+		}
+
+		if err := store.WithUser(ctx, grantor.ID, func(ctx context.Context) error {
+			_, err := store.CalendarGrants().Create(ctx, storage.CalendarGrant{
+				OwnerUserID: grantor.ID, GranteeUserID: grantee.ID,
+				CalendarID: sharedCalendar.ID, MaxDetailLevel: storage.DetailLevelTitleTime,
+			})
+
+			return err
+		}); err != nil {
+			t.Fatalf("grant the shared calendar to the grantee: %v", err)
+		}
+
+		ownCalendarFor := func(t *testing.T, userID uuid.UUID) storage.Calendar {
+			t.Helper()
+
+			var calendar storage.Calendar
+
+			if err := store.WithUser(ctx, userID, func(ctx context.Context) error {
+				conn, err := store.Connections().Create(ctx, storage.Connection{
+					UserID: userID, Provider: storage.ConnectionProviderGoogle,
+					DisplayName: "own Google account", Credentials: []byte("own-refresh-token"),
+				})
+				if err != nil {
+					return err
+				}
+
+				created, err := store.Calendars().Create(ctx, storage.Calendar{
+					UserID: userID, ConnectionID: conn.ID,
+					ExternalID: "ext-own-" + uuid.NewString(), Name: "Own", Managed: true,
+				})
+
+				calendar = created
+
+				return err
+			}); err != nil {
+				t.Fatalf("set up a calendar of userID's own: %v", err)
+			}
+
+			return calendar
+		}
+
+		t.Run("the grantee builds an edge from the shared calendar into its own", func(t *testing.T) {
+			target := ownCalendarFor(t, grantee.ID)
+
+			err := store.WithUser(ctx, grantee.ID, func(ctx context.Context) error {
+				_, err := store.Edges().Create(ctx, storage.Edge{
+					UserID: grantee.ID, SourceCalendarID: sharedCalendar.ID, TargetCalendarID: target.ID,
+					DetailLevel: storage.DetailLevelTitleTime,
+				})
+
+				return err
+			})
+			if err != nil {
+				t.Fatalf("grantee building an edge over a calendar actually shared with it: %v", err)
+			}
+		})
+
+		t.Run("a stranger with no grant cannot build an edge over the same calendar", func(t *testing.T) {
+			target := ownCalendarFor(t, stranger.ID)
+
+			err := store.WithUser(ctx, stranger.ID, func(ctx context.Context) error {
+				_, err := store.Edges().Create(ctx, storage.Edge{
+					UserID: stranger.ID, SourceCalendarID: sharedCalendar.ID, TargetCalendarID: target.ID,
+					DetailLevel: storage.DetailLevelTitleTime,
+				})
+
+				return err
+			})
+			if err == nil {
+				t.Fatal("stranger built an edge over a calendar nobody shared with it, want it rejected")
+			}
+		})
+	})
+
 	t.Run("the table owner is still scoped by row level security because of FORCE", func(t *testing.T) {
 		// Every role exercised above is either DATABASE_URL's own role, a
 		// superuser that bypasses row level security unconditionally
@@ -634,24 +826,25 @@ func makeTemporaryOwner(ctx context.Context, t *testing.T, adminPool *pgxpool.Po
 
 // TestEveryUserScopedTableEnforcesRowLevelSecurity introspects the schema
 // itself, rather than naming identities, connections, calendars, edges,
-// calendar_grants and event_mapping by hand, so it catches a future table
-// that references users but forgets ENABLE ROW LEVEL SECURITY,
-// FORCE ROW LEVEL SECURITY or CREATE POLICY: exactly the three properties
-// the targeted tests above assume rather than verify generically. "User
-// scoped" is defined here as "has at least one foreign key column
-// referencing users(id)", which catches both the plain user_id columns
-// most tables carry and calendar_grants' owner_user_id/grantee_user_id
-// pair, rather than assuming every such column is literally named
-// user_id. It runs as DATABASE_URL's own admin/superuser role: querying
+// calendar_grants, event_mapping and users by hand, so it catches a
+// future table that references users but forgets
+// ENABLE ROW LEVEL SECURITY, FORCE ROW LEVEL SECURITY or CREATE POLICY:
+// exactly the three properties the targeted tests above assume rather
+// than verify generically. "User scoped" is defined here as "has at
+// least one foreign key column referencing users(id)", which catches
+// both the plain user_id columns most tables carry and calendar_grants'
+// owner_user_id/grantee_user_id pair, rather than assuming every such
+// column is literally named user_id. users itself holds no such foreign
+// key (a row there IS a user, not something owned by one), so it can
+// never be found this way; the query's second branch adds it by name
+// instead, which is the only table this introspection ever needs to name
+// directly. It runs as DATABASE_URL's own admin/superuser role: querying
 // pg_class, pg_policies and information_schema needs no special
 // privilege, and this test is about the schema's shape, not about who
 // can read which row, so the restricted role TestRowLevelSecurity's own
 // tests exercise is beside the point here.
 func TestEveryUserScopedTableEnforcesRowLevelSecurity(t *testing.T) {
-	adminURL := os.Getenv("DATABASE_URL")
-	if adminURL == "" {
-		t.Skip("DATABASE_URL not set; skipping the Postgres-backed row level security introspection test")
-	}
+	adminURL := requireDatabaseURL(t)
 
 	ctx := context.Background()
 
@@ -662,25 +855,41 @@ func TestEveryUserScopedTableEnforcesRowLevelSecurity(t *testing.T) {
 	t.Cleanup(adminPool.Close)
 
 	rows, err := adminPool.Query(ctx, `
-SELECT DISTINCT
-    c.relname,
-    c.relrowsecurity,
-    c.relforcerowsecurity,
-    EXISTS (
-        SELECT 1 FROM pg_policies p
-        WHERE p.schemaname = 'public' AND p.tablename = c.relname
-    ) AS has_policy
-FROM pg_class c
-JOIN pg_namespace n ON n.oid = c.relnamespace
-JOIN information_schema.table_constraints tc
-    ON tc.table_schema = 'public' AND tc.table_name = c.relname AND tc.constraint_type = 'FOREIGN KEY'
-JOIN information_schema.constraint_column_usage ccu
-    ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
-WHERE n.nspname = 'public'
-  AND c.relkind = 'r'
-  AND ccu.table_name = 'users'
-  AND c.relname <> 'users'
-ORDER BY c.relname`)
+SELECT relname, relrowsecurity, relforcerowsecurity, has_policy FROM (
+    SELECT DISTINCT
+        c.relname,
+        c.relrowsecurity,
+        c.relforcerowsecurity,
+        EXISTS (
+            SELECT 1 FROM pg_policies p
+            WHERE p.schemaname = 'public' AND p.tablename = c.relname
+        ) AS has_policy
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN information_schema.table_constraints tc
+        ON tc.table_schema = 'public' AND tc.table_name = c.relname AND tc.constraint_type = 'FOREIGN KEY'
+    JOIN information_schema.constraint_column_usage ccu
+        ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+    WHERE n.nspname = 'public'
+      AND c.relkind = 'r'
+      AND ccu.table_name = 'users'
+      AND c.relname <> 'users'
+
+    UNION ALL
+
+    SELECT
+        c.relname,
+        c.relrowsecurity,
+        c.relforcerowsecurity,
+        EXISTS (
+            SELECT 1 FROM pg_policies p
+            WHERE p.schemaname = 'public' AND p.tablename = c.relname
+        ) AS has_policy
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname = 'users'
+) t
+ORDER BY relname`)
 	if err != nil {
 		t.Fatalf("introspect user-scoped tables: %v", err)
 	}
@@ -730,10 +939,7 @@ ORDER BY c.relname`)
 // beyond the schema's own shape and the two repositories' own, disjoint
 // result types.
 func TestIdentitiesNeverResolveThroughConnections(t *testing.T) {
-	adminURL := os.Getenv("DATABASE_URL")
-	if adminURL == "" {
-		t.Skip("DATABASE_URL not set; skipping the Postgres-backed identity/connection separation test")
-	}
+	adminURL := requireDatabaseURL(t)
 
 	ctx := context.Background()
 
@@ -794,6 +1000,7 @@ $$;`
 	grant := `
 GRANT USAGE ON SCHEMA public TO ` + testAppRole + `;
 GRANT SELECT, INSERT, UPDATE ON users TO ` + testAppRole + `;
+GRANT EXECUTE ON FUNCTION users_find_by_email(text) TO ` + testAppRole + `;
 GRANT SELECT, INSERT, DELETE ON identities, calendars, calendar_grants TO ` + testAppRole + `;
 GRANT SELECT, INSERT, UPDATE, DELETE ON connections, edges, event_mapping TO ` + testAppRole + `;`
 

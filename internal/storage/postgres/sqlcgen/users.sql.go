@@ -27,9 +27,14 @@ type CreateUserParams struct {
 	Status          string
 }
 
-// users carries no row level security: a row here IS a user, not
-// something scoped by one. These queries run against the pool directly,
-// never inside a WithUser transaction.
+// users carries row level security scoped to a row's own id (see
+// db/migrations). CreateUser and GetUserByEmail run against the pool
+// directly, never inside a WithUser transaction: signup has no existing
+// self to scope by, and the email lookup has to work before any user id
+// is known at all, which is exactly what GetUserByEmail's
+// users_find_by_email call, a SECURITY DEFINER function, is for. Every
+// other query here runs inside a WithUser transaction like every other
+// repository.
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, error) {
 	row := q.db.QueryRow(ctx, createUser,
 		arg.Email,
@@ -54,8 +59,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 
 const getUserByEmail = `-- name: GetUserByEmail :one
 SELECT id, email, password_hash, totp_secret, totp_last_counter, status, created_at, updated_at
-FROM users
-WHERE lower(email) = lower($1)
+FROM users_find_by_email($1)
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {

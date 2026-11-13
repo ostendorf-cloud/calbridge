@@ -133,6 +133,9 @@ services:
   # gets exactly the privileges its own repository in
   # internal/storage/postgres uses, matching
   # internal/storage/postgres/integration_test.go's own test role grant.
+  # EXECUTE on users_find_by_email is the one way calbridge_app may read
+  # a users row it does not already own: see that migration's own
+  # comment for why the GRANT cannot live inside db/migrations itself.
   grant-app-role:
     image: postgres:18@sha256:b9f6b8ff03b62f3cfd9d9ba3fe56226a9991c79d3fb46fd46536263bf02be553
     depends_on:
@@ -149,6 +152,8 @@ services:
       - --dbname=calbridge
       - -c
       - GRANT SELECT, INSERT, UPDATE ON users TO calbridge_app;
+      - -c
+      - GRANT EXECUTE ON FUNCTION users_find_by_email(text) TO calbridge_app;
       - -c
       - GRANT SELECT, INSERT, DELETE ON identities, calendars, calendar_grants TO calbridge_app;
       - -c

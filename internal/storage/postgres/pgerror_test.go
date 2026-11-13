@@ -66,6 +66,8 @@ func TestMapWriteError(t *testing.T) {
 		wantNil bool
 	}{
 		{name: "nil error", input: nil, wantNil: true},
+		{name: "no rows", input: pgx.ErrNoRows, want: storage.ErrNotFound},
+		{name: "wrapped no rows", input: fmt.Errorf("update: %w", pgx.ErrNoRows), want: storage.ErrNotFound},
 		{name: "unique violation", input: uniqueViolation, want: storage.ErrConflict},
 		{name: "wrapped unique violation", input: fmt.Errorf("insert: %w", uniqueViolation), want: storage.ErrConflict},
 		{name: "other postgres error", input: otherPgError, want: otherPgError},
