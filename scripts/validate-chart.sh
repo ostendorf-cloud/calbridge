@@ -107,6 +107,7 @@ if [ "$mode" = "lint" ]; then
     "config.adminListenAddr disagreeing with service.adminPort"
     "migrationJob.databaseUser equal to config.databaseUser"
     "podLabels setting the reserved app.kubernetes.io/name selector key"
+    "podLabels setting the reserved app.kubernetes.io/instance selector key"
   )
 
   fail_sets=(
@@ -116,6 +117,7 @@ if [ "$mode" = "lint" ]; then
     "${baseline},config.adminListenAddr=:9001"
     "${baseline},migrationJob.databaseUser=calbridge_app"
     "${baseline},podLabels.app\.kubernetes\.io/name=evil"
+    "${baseline},podLabels.app\.kubernetes\.io/instance=evil"
   )
 
   fail_messages=(
@@ -125,6 +127,7 @@ if [ "$mode" = "lint" ]; then
     "config.adminListenAddr (:9001) and service.adminPort (8081) disagree on the port: both must name the same container port."
     "migrationJob.databaseUser (calbridge_app) must not equal config.databaseUser: the application's own role must never own the tables row level security protects it from. See README.md."
     "podLabels must not set app.kubernetes.io/name: it collides with calbridge's own immutable selector label."
+    "podLabels must not set app.kubernetes.io/instance: it collides with calbridge's own immutable selector label."
   )
 
   for i in "${!fail_names[@]}"; do
