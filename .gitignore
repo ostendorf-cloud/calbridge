@@ -30,5 +30,9 @@ coverage/
 # which is what a sandboxed run does.
 .pnpm-store/
 
+# Task's scratch directory, including the plugin directory task helm:plugins
+# builds for helm-unittest.
+.task/
+
 # Local secrets. .env.example stays tracked; nothing else named *.env does.
 *.env
