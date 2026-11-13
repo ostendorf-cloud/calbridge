@@ -1,17 +1,16 @@
 -- migrate:up
 
 -- users is the root of per-user isolation: every other user-owned table
--- carries a user_id referencing this one. It deliberately carries no row
--- level security policy of its own, because it has no user_id column to
--- scope by: a row here IS a user, not something owned by one.
+-- carries a user_id referencing this one. A row here IS a user rather
+-- than something owned by one, so its own policy, below, scopes by id
+-- directly instead of by a user_id column it has none of.
 --
--- A self-referential policy such as "id = current_setting('app.user_id')"
--- would also break the one flow that has to run before a user is known:
--- looking a local account up by email to check its password, which is
--- what then produces the user id passed to set_config for every later,
--- user-scoped query. Anyone can create an account themselves, per
--- docs/concepts/calbridge.md, so this lookup is unscoped by design, not a
--- gap: there is no tenant or invite step in front of it to resolve first.
+-- Anyone can create an account themselves, per docs/concepts/calbridge.md,
+-- so there is no tenant or invite step in front of signup to resolve
+-- first, and the one flow that has to run before any user id is known -
+-- looking a local account up by email to check its password - stays
+-- possible without opening SELECT to every row; see users_find_by_email
+-- below for how.
 --
 -- Local credentials live on this table directly, the same way solobill's
 -- accounts table holds them, rather than in a separate table: a local
@@ -49,6 +48,69 @@ CREATE TABLE users (
 -- uniqueness by, unlike solobill's per-tenant accounts_tenant_id_email_lower_idx.
 CREATE UNIQUE INDEX users_email_lower_idx ON users (lower(email));
 
+-- Same reasoning as every other table in this schema: ENABLE alone
+-- exempts the table's owning role, so FORCE is what actually binds the
+-- role that runs migrations and, unless charts/calbridge's
+-- migrationJob.databaseUser is set to a second role, the role the
+-- application connects as too.
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users FORCE ROW LEVEL SECURITY;
+
+-- Signup has no existing self to check a new row against, so INSERT
+-- stays unconditionally open; the policy below only ever narrows SELECT,
+-- UPDATE and DELETE. Postgres combines several permissive policies for
+-- the same command with OR, so this one only ever widens what the
+-- policy below allows for INSERT, never narrows what it allows for
+-- anything else.
+CREATE POLICY users_signup ON users
+    FOR INSERT
+    WITH CHECK (true);
+
+-- A row here IS a user, so "owned by" collapses to "is": every other
+-- command is scoped to the row's own id. Same NULLIF handling as every
+-- other policy in this schema; see identities' own migration for the
+-- full reasoning. This alone also blocks the pre-login email lookup,
+-- which runs before any user id is known - see users_find_by_email
+-- below for the one, auditable way around that.
+CREATE POLICY users_self_isolation ON users
+    USING (id = NULLIF(current_setting('app.user_id', true), '')::uuid)
+    WITH CHECK (id = NULLIF(current_setting('app.user_id', true), '')::uuid);
+
+-- The one bypass of the policy above: SECURITY DEFINER runs this
+-- function as its owner, the role that creates it by running this
+-- migration, which docker-compose.yaml's own "two Postgres roles"
+-- comment and charts/calbridge/README.md's "Migrations run as a
+-- separate role" section both require to be a Postgres superuser or
+-- otherwise able to run db/migrations in the first place, never the
+-- restricted role the application itself connects as. A superuser
+-- bypasses row level security regardless of FORCE, so this function
+-- sees every row regardless of who calls it. RETURNS SETOF users, not a
+-- hand-picked column list: a login check needs most of the row anyway
+-- (password_hash, totp_secret, totp_last_counter, status alongside id),
+-- and returning the same composite type GetUserByID and UpdateUser
+-- already return keeps the one function auditable without a second,
+-- narrower User shape to maintain. search_path is pinned so a caller
+-- cannot influence what "users" or "lower" resolve to.
+--
+-- EXECUTE is granted to the application role separately, wherever that
+-- role's other table grants are made (docker-compose.yaml's
+-- "grant-app-role" service; a cluster operator's own grant for
+-- charts/calbridge), never inside this migration: the role this
+-- function is meant for does not necessarily exist yet when migrations
+-- run, the same reason every other table-level GRANT in this schema
+-- lives outside db/migrations too.
+CREATE FUNCTION users_find_by_email(p_email text)
+RETURNS SETOF users
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+    SELECT *
+    FROM users
+    WHERE lower(email) = lower(p_email);
+$$;
+
 -- migrate:down
 
+DROP FUNCTION users_find_by_email(text);
 DROP TABLE users;

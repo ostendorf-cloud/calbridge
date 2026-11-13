@@ -25,6 +25,11 @@ CREATE TABLE calendar_grants (
     CONSTRAINT calendar_grants_owner_grantee_calendar_unique UNIQUE (owner_user_id, grantee_user_id, calendar_id)
 );
 
+-- Postgres does not index a foreign key column on its own; ListCalendarGrants'
+-- own grantee lookup, and edges_check_calendar_access (see db/migrations's
+-- edges migration), both filter on this column.
+CREATE INDEX calendar_grants_grantee_user_id_idx ON calendar_grants (grantee_user_id);
+
 ALTER TABLE calendar_grants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE calendar_grants FORCE ROW LEVEL SECURITY;
 

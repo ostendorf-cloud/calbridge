@@ -130,7 +130,10 @@ func Load(getenv func(string) string) (Config, error) {
 func decodeHexKey(name, raw string, wantBytes int) ([]byte, error) {
 	key, err := hex.DecodeString(raw)
 	if err != nil {
-		return nil, fmt.Errorf("%s: must be hex encoded: %w", name, err)
+		// Not wrapped with %w: hex.DecodeString's own error
+		// (hex.InvalidByteError) quotes the offending byte of the key
+		// material itself, which this message must not repeat.
+		return nil, fmt.Errorf("%s: must be hex encoded", name)
 	}
 
 	if len(key) != wantBytes {

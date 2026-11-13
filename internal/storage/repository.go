@@ -25,10 +25,15 @@ type UserScope interface {
 	WithUser(ctx context.Context, userID uuid.UUID, fn func(ctx context.Context) error) error
 }
 
-// UserRepository persists and queries users themselves. Its methods are
-// deliberately not user-scoped: looking a user up by email, to check its
-// password, is exactly the step that has to run before any user scope
-// exists.
+// UserRepository persists and queries users themselves. Create and
+// FindByEmail are deliberately not user-scoped: creating an account has
+// no existing self to scope by, and looking a user up by email, to check
+// its password, is exactly the step that has to run before any user
+// scope exists; FindByEmail reaches it through a SECURITY DEFINER
+// function, never by opening a row level security policy to every row
+// (see db/migrations). FindByID and Update must run inside a context
+// UserScope.WithUser produced, like every other repository; see
+// ErrNoUserScope.
 type UserRepository interface {
 	Create(ctx context.Context, user User) (User, error)
 	FindByID(ctx context.Context, id uuid.UUID) (User, error)

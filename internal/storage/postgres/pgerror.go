@@ -34,10 +34,19 @@ func mapReadError(err error) error {
 
 // mapWriteError translates a pgx error from an insert or update into a
 // storage sentinel, so a caller never has to import pgx or know a
-// Postgres error code to recognize a uniqueness conflict.
+// Postgres error code to recognize a uniqueness conflict. A row level
+// security policy's WITH CHECK clause does not reject a write with its
+// own error: a row that matches no scoped id simply matches no row,
+// which is exactly what an update whose id belongs to another user
+// looks like too, so both report ErrNotFound rather than the caller
+// seeing a raw "no rows in result set".
 func mapWriteError(err error) error {
 	if err == nil {
 		return nil
+	}
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return storage.ErrNotFound
 	}
 
 	var pgErr *pgconn.PgError
