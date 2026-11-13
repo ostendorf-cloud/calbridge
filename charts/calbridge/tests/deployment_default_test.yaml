@@ -115,6 +115,26 @@ tests:
           path: data["20261113155247_create_users.sql"]
           pattern: "CREATE TABLE users"
 
+  - it: trusts no proxy for the login rate limiter by default
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: TRUSTED_PROXY_CIDRS
+            value: ""
+
+  - it: passes a configured trusted proxy CIDR through to the login rate limiter
+    template: templates/deployment.yaml
+    set:
+      config.trustedProxyCIDRs: "10.0.0.0/8"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: TRUSTED_PROXY_CIDRS
+            value: "10.0.0.0/8"
+
   - it: runs as non root with a read only root filesystem and no capabilities
     template: templates/deployment.yaml
     asserts:

@@ -159,6 +159,16 @@ config:
   drainDelay: "5s"
   logLevel: "info"
 
+  # TRUSTED_PROXY_CIDRS: comma separated CIDRs (or bare addresses) the
+  # login rate limiter trusts to have appended the real client address to
+  # X-Forwarded-For. Empty by default, which keys the limiter on the TCP
+  # peer: behind ingress.enabled or httproute.enabled that peer is the
+  # ingress controller or Gateway data plane for every request, so the
+  # login budget ends up shared by every client instead of kept one per
+  # client. See the chart's README for what to set this to when exposing
+  # the service through either.
+  trustedProxyCIDRs: ""
+
   # --------------------------------------------------------------------
   # Database
   # --------------------------------------------------------------------
