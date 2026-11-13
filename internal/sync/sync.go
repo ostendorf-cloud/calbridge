@@ -56,11 +56,14 @@
 // single instance change on its own is covered by its master and skipped.
 //
 // The two strategies key their copies differently, the master's own id
-// against one id per occurrence, so an edge that switches between them,
-// by a changed detail level or a changed target, would leave the copies
-// under the old key with nothing writing to them. Every pass removes
-// them, reported as ReasonStrategyChanged. Without that, lowering an
-// edge's detail level would leave the wider copy standing for good.
+// against one id per occurrence, so a copy can end up under a key the
+// edge no longer writes to: the detail level changed, the target's
+// capabilities changed, or the source event stopped repeating. A full
+// pass decides a mapping row's fate by asking whether this edge still
+// writes to its key, which is one question covering all three, rather
+// than by checking the routes that lead there. Removals are reported as
+// ReasonStrategyChanged. Without it, lowering an edge's detail level
+// would leave the wider copy standing for good.
 //
 // # Reconcile
 //

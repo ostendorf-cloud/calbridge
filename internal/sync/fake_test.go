@@ -79,6 +79,16 @@ func (c *fakeConnector) addCalendar(name string, meta provider.Calendar) string 
 	return meta.ID
 }
 
+// setCapabilities changes what the provider declares, which is what a
+// connector gaining or losing a capability between two passes looks
+// like to the engine.
+func (c *fakeConnector) setCapabilities(caps provider.Capabilities) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.caps = caps
+}
+
 // counts returns the creates, updates and deletes so far.
 func (c *fakeConnector) counts() (creates, updates, deletes int) {
 	c.mu.Lock()
@@ -160,7 +170,12 @@ func (c *fakeConnector) put(calendarID string, event provider.Event) provider.Ev
 
 func (c *fakeConnector) ID() provider.ID { return memoryProvider }
 
-func (c *fakeConnector) Capabilities() provider.Capabilities { return c.caps }
+func (c *fakeConnector) Capabilities() provider.Capabilities {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.caps
+}
 
 func (c *fakeConnector) Calendars(ctx context.Context, cred provider.Credential) ([]provider.Calendar, error) {
 	if err := c.begin(ctx, cred); err != nil {

@@ -14,19 +14,19 @@
 - Issue #9 hands continuous enforcement to `internal/sync`: a revoked grant stops the edges it
   covered and removes what they wrote, the same way deleting an edge does.
 - The schema has no column for an edge that exists but does not run.
-- The grantee can no longer see the calendar the edge names, because row level security scopes
-  `calendars` to its owner.
+- The grantee can no longer resolve the calendar the edge names, because row level security scopes
+  `calendars` to its owner, so the edge names an id nothing can be read from.
 
 ## Decision
 
 - Revoking a grant deletes the edges it covered, after removing every event they wrote.
-- An edge the grant no longer covers cannot run again: the same trigger refuses to recreate or
-  update it while no grant exists.
-- Keeping the row would leave the grantee holding a reference to a calendar they may no longer
-  enumerate, which is the cross-user existence oracle the schema closes everywhere else.
-- A stopped state would need a column, a migration and a user interface to resume from, none of
-  which exist, and a dead row with no way to act on it is worse than none.
-- The issue asks for the same treatment a deleted edge gets, and a deleted edge takes its row.
+- There is no stopped state to put the edge in: it would need a column, a migration and a way to
+  resume from it, and a dead row nobody can act on is worse than none.
+- Issue #9 asks for the same treatment a deleted edge gets, and a deleted edge takes its row.
+- An edge the grant no longer covers cannot run again either way: the trigger on `edges` refuses
+  to recreate or update it while no grant exists.
+- The row left standing would read as a working edge in the topology the UI and the MCP server
+  show, while writing nothing.
 
 ## Consequences
 
@@ -45,6 +45,8 @@
   reference to a calendar the grantee cannot see.
 - Keep the row and let it fail on every pass: turns a revocation into a permanent error in every
   report, and the copies would have to be removed anyway.
+- Keep the row for a grantee who already knows the calendar id: the id is no longer the point,
+  since the row would describe a sync that cannot happen.
 - Stop at removing the copies and leave the edge: the next pass would copy them all back, because
   nothing else refuses the edge at run time.
 - Narrow the edge to the grant's own level instead of deleting it: changes what the grantee asked

@@ -30,9 +30,13 @@ import (
 
 // The role these tests run as. It is deliberately NOSUPERUSER and
 // NOBYPASSRLS: a superuser bypasses row level security regardless of
-// FORCE ROW LEVEL SECURITY, so running the grant assertions as the admin
-// connection from DATABASE_URL would prove nothing about what the
-// grantee can actually see. It carries its own name rather than reusing
+// FORCE ROW LEVEL SECURITY, and the revocation test below would then
+// fail rather than pass emptily. Engine.owns resolves the grantor's
+// calendar through the grantee's own scope; with row level security
+// bypassed that lookup succeeds, the coverage check never consults the
+// grants at all, and nothing is torn down. The restricted role is what
+// makes the grantee's view of the grantor's calendar the real one. It
+// carries its own name rather than reusing
 // internal/storage/postgres's, so the two packages never race to create
 // the same role. The password and the key are fixed, obviously-fake
 // values that only ever reach a disposable test Postgres.
