@@ -14,7 +14,12 @@ FROM node:26.13.0-bookworm-slim AS web
 
 WORKDIR /src
 
-RUN corepack enable && corepack prepare pnpm@12.19.0 --activate
+# corepack is installed from npm rather than used from the image: Node stopped
+# distributing it with v25, so the pinned node image above carries no corepack
+# binary at all. This is the migration nodejs/corepack documents. See the
+# Deviations section in AGENTS.md for why a tool arrives through npm here and
+# nowhere else.
+RUN npm install -g corepack && corepack enable && corepack prepare pnpm@12.19.0 --activate
 
 COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml web/
 RUN cd web && pnpm install --frozen-lockfile
