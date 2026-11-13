@@ -50,9 +50,17 @@ lands in the place already agreed on.
   endpoints, the calendar, edge and grant API, the webhook endpoint Google
   and Microsoft Graph push change notifications to, and the SPA fallback
   that serves the embedded Vue build for everything else.
-- `internal/auth` will hold login: OIDC against Keycloak through govue's
-  `oidc` package, plus local accounts with password and TOTP issued by
-  invite, the shape solobill's `internal/auth` already uses.
+- `internal/auth` will hold login: local accounts with password and TOTP,
+  plus sign in with Google, Microsoft and Apple through govue's `oidc`
+  package. calbridge owns identity and depends on no external identity
+  provider. A provider identity used to sign in is never linked to a
+  provider account another user connected as a calendar; that collision
+  creates a separate account.
+- `cmd/calbridge-mcp` will be the MCP server, its own binary and its own
+  deployment, letting an agent read the sync topology and create or change
+  edges and grants. It may not create, change or delete a provider
+  connection, and it calls the same authorisation rules as the web API
+  rather than carrying its own copy.
 - `internal/config` will load calbridge's configuration from the
   environment once, at startup, through govue's `envconf`, with every
   secret following its `_FILE`-suffix convention.
