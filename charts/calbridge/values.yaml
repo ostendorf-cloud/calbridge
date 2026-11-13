@@ -106,6 +106,14 @@ resources:
     # throttle the pod mid-request for being briefly busy, not for being
     # broken. A memory limit stays in place as a safety net against a
     # genuine leak.
+    #
+    # This number and internal/auth's MaxConcurrentPasswordHashes are one
+    # decision, not two. Argon2id holds 64 MiB for the whole of each
+    # derivation, so the two concurrent derivations that package allows
+    # are 128 MiB of this limit and the rest is everything else the
+    # process needs. internal/depsync's own test fails if either side is
+    # changed without the other, so raising this alone buys no capacity
+    # and lowering it alone is caught before it reaches a cluster.
     memory: 256Mi
 
 # Disabled by default: cmd/calbridge has no slow startup work in front of

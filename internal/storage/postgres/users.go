@@ -7,6 +7,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ostendorf-cloud/calbridge/internal/storage"
@@ -115,6 +116,34 @@ func (r *userRepository) Update(ctx context.Context, user storage.User) (storage
 	}
 
 	return userFromRow(row), nil
+}
+
+// AdvanceTOTPCounter implements storage.UserRepository. It requires a
+// context storage.UserScope.WithUser produced; see
+// storage.ErrNoUserScope. Zero rows affected is returned as
+// storage.ErrNotFound, which covers both a row the scope does not reach
+// and a counter that was already at or past this one; see the query's
+// own comment in queries/users.sql for why that second case is the
+// replay check itself.
+func (r *userRepository) AdvanceTOTPCounter(ctx context.Context, id uuid.UUID, counter int64) error {
+	tx, err := txFromContext(ctx)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := sqlcgen.New(tx).AdvanceUserTOTPCounter(ctx, sqlcgen.AdvanceUserTOTPCounterParams{
+		ID:              id,
+		TotpLastCounter: pgtype.Int8{Int64: counter, Valid: true},
+	})
+	if err != nil {
+		return mapWriteError(err)
+	}
+
+	if rowsAffected == 0 {
+		return storage.ErrNotFound
+	}
+
+	return nil
 }
 
 // DeleteAccount implements storage.UserRepository. Like Create, it

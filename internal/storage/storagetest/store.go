@@ -55,7 +55,29 @@ type Store struct {
 	// database itself is unavailable.
 	FailUserCreate error
 
+	// hideIdentities makes FindByProviderSubject answer "not found" for
+	// an identity that is really there, while Create still collides with
+	// it. See HideIdentities.
+	hideIdentities bool
+
 	scope *uuid.UUID
+}
+
+// HideIdentities makes the identity lookup answer "not found" while the
+// rows are still there to collide with on a write.
+//
+// It reproduces, deterministically, what two sign-ins racing for the
+// same provider subject do to each other: both look, neither finds, both
+// create an account, and the second loses the uniqueness check on the
+// identity itself. A test cannot schedule that race reliably, and the
+// path it leads to, the losing request undoing the account it just
+// created, is the one that decides whether an address stays claimed for
+// good.
+func (s *Store) HideIdentities(hide bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.hideIdentities = hide
 }
 
 // NewStore builds an empty store.
@@ -218,6 +240,37 @@ func (r *users) Update(_ context.Context, user storage.User) (storage.User, erro
 	return user, nil
 }
 
+// AdvanceTOTPCounter implements storage.UserRepository. The comparison
+// and the write happen under the store's own lock, which is what the
+// real implementation gets from doing both in one SQL statement: two
+// logins racing with the same code cannot both advance the counter here
+// either, so a test can exercise the replay refusal without a database.
+func (r *users) AdvanceTOTPCounter(_ context.Context, id uuid.UUID, counter int64) error {
+	r.store.mu.Lock()
+	defer r.store.mu.Unlock()
+
+	scope, err := r.store.scoped()
+	if err != nil {
+		return err
+	}
+
+	user, ok := r.store.users[id]
+	if !ok || user.ID != scope {
+		return storage.ErrNotFound
+	}
+
+	if user.TOTPLastCounter != nil && counter <= *user.TOTPLastCounter {
+		return storage.ErrNotFound
+	}
+
+	advanced := counter
+	user.TOTPLastCounter = &advanced
+	user.UpdatedAt = fixedTime
+	r.store.users[id] = user
+
+	return nil
+}
+
 // DeleteAccount implements storage.UserRepository. It removes the user
 // and everything it owns, in the same order the real implementation's
 // queries/account_deletion.sql does.
@@ -303,6 +356,10 @@ func (r *identities) FindByProviderSubject(
 ) (storage.Identity, error) {
 	r.store.mu.Lock()
 	defer r.store.mu.Unlock()
+
+	if r.store.hideIdentities {
+		return storage.Identity{}, storage.ErrNotFound
+	}
 
 	for _, identity := range r.store.identities {
 		if identity.Provider == provider && identity.Subject == subject {

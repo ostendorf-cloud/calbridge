@@ -4,12 +4,14 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -47,6 +49,61 @@ const (
 	argon2SaltLen = 16
 )
 
+// PasswordHashMemoryMiB is argon2MemoryKiB expressed in the unit a
+// Kubernetes resource limit uses, so the arithmetic below and the
+// chart's own limit can be compared directly. See
+// MaxConcurrentPasswordHashes.
+const PasswordHashMemoryMiB = argon2MemoryKiB / 1024
+
+// MaxConcurrentPasswordHashes is how many Argon2id derivations may run
+// at the same time in one process. It is a hard cap on memory, not a
+// rate: argon2.IDKey allocates PasswordHashMemoryMiB for the whole of
+// its run, and every concurrent call holds its own block, so nothing a
+// garbage collector does can bring the total below the number of calls
+// in flight.
+//
+// The number comes from the pod this runs in.
+// charts/calbridge/values.yaml limits the container to 256Mi, and
+// internal/depsync's own test fails if that limit and this constant stop
+// agreeing, so neither can be changed alone. Two derivations is 128 MiB,
+// half the limit, leaving the other half for the Go runtime, the
+// embedded SPA, the pgx pool, the session store and the headroom a
+// collector needs to not be running against the limit continuously.
+// Three would be 192 MiB and leave 64 MiB for all of that, which is not
+// enough to be confident in; one would serialize every login behind a
+// deliberately slow function for no memory gained worth having.
+//
+// Without this cap the rate limiter is the only thing in front of
+// argon2.IDKey, and it bounds how often a request arrives, not how many
+// are being served: config.Config's default burst of ten lets ten
+// signups or logins into this function at once, which is 640 MiB against
+// a 256Mi limit, so one unauthenticated client ends the process in a
+// single burst and, because the session store is in memory, signs
+// everybody else out with it.
+const MaxConcurrentPasswordHashes = 2
+
+// hashSlots is that cap. A caller holds a slot only for the derivation
+// itself, never across a database call, so the queue in front of it
+// drains at the rate the derivations finish.
+var hashSlots = make(chan struct{}, MaxConcurrentPasswordHashes)
+
+// maxHashWait is how long a caller waits for a slot before the request
+// is shed. At roughly 0.3 seconds per derivation and
+// MaxConcurrentPasswordHashes running at once, a full rate limit burst
+// of ten clears in about 1.5 seconds, so this leaves room for that and
+// then some while still being far below any sensible client timeout.
+// Waiting costs nothing: a waiting caller holds no Argon2id block, only
+// its own goroutine.
+const maxHashWait = 5 * time.Second
+
+// ErrHashingBusy is returned when no slot came free within maxHashWait,
+// or when the request was cancelled while waiting. It is the one error
+// from this file a caller answers differently: internal/httpapi turns it
+// into a 503, which is the honest answer to "this server is at capacity,
+// come back", and never into a failed login, which would tell the person
+// their password is wrong when it is not.
+var ErrHashingBusy = errors.New("auth: too many password hashes are already running")
+
 // ErrPasswordHashInvalid is returned by VerifyPassword when the stored
 // value is not a hash this package wrote: the
 // "$argon2id$v=...$m=...$...$..." encoding does not parse. It is an
@@ -54,6 +111,50 @@ const (
 // entirely), not a login outcome: see Local.Login, which never lets this
 // surface differently from an ordinary wrong password.
 var ErrPasswordHashInvalid = errors.New("auth: password hash is not a recognized argon2id encoding")
+
+// derivation is argon2.IDKey. It is a variable so a test can observe how
+// many derivations really run at once; nothing outside a test replaces
+// it.
+// Deliberately not named with "key" in it: an assignment whose left hand
+// side ends in "key" reads to a secret scanner as a key being set, and
+// gitleaks flags it as one however the right hand side is spelled.
+var derivation = argon2.IDKey
+
+// derive runs one Argon2id derivation under hashSlots, so at most
+// MaxConcurrentPasswordHashes of them hold their memory at the same
+// time.
+func derive(
+	ctx context.Context,
+	password, salt []byte,
+	iterations, memoryKiB uint32,
+	threads uint8,
+	keyLen uint32,
+) ([]byte, error) {
+	if err := acquireHashSlot(ctx); err != nil {
+		return nil, err
+	}
+	defer func() { <-hashSlots }()
+
+	return derivation(password, salt, iterations, memoryKiB, threads, keyLen), nil
+}
+
+// acquireHashSlot takes a slot, waits up to maxHashWait for one, or
+// gives up. A context already cancelled, or cancelled while waiting,
+// sheds immediately: the caller has gone away, and spending a slot on it
+// would keep one from somebody still there.
+func acquireHashSlot(ctx context.Context) error {
+	timer := time.NewTimer(maxHashWait)
+	defer timer.Stop()
+
+	select {
+	case hashSlots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("%w: %w", ErrHashingBusy, ctx.Err())
+	case <-timer.C:
+		return ErrHashingBusy
+	}
+}
 
 // HashPassword derives an Argon2id hash of password with a fresh random
 // salt, and encodes the algorithm, its parameters, the salt and the hash
@@ -63,13 +164,19 @@ var ErrPasswordHashInvalid = errors.New("auth: password hash is not a recognized
 // hash, rather than assuming whatever argon2Time, argon2MemoryKiB and
 // argon2Threads currently are, is what lets VerifyPassword still check
 // an old hash correctly after those constants change.
-func HashPassword(password string) (string, error) {
+//
+// ctx bounds only the wait for a derivation slot, never the derivation
+// itself; see MaxConcurrentPasswordHashes and ErrHashingBusy.
+func HashPassword(ctx context.Context, password string) (string, error) {
 	salt := make([]byte, argon2SaltLen)
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("auth: read password salt: %w", err)
 	}
 
-	hash := argon2.IDKey([]byte(password), salt, argon2Time, argon2MemoryKiB, argon2Threads, argon2KeyLen)
+	hash, err := derive(ctx, []byte(password), salt, argon2Time, argon2MemoryKiB, argon2Threads, argon2KeyLen)
+	if err != nil {
+		return "", err
+	}
 
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2.Version, argon2MemoryKiB, argon2Time, argon2Threads,
@@ -97,14 +204,22 @@ type argon2idParams struct {
 // deliberately distinguished by return value only for an operator's log,
 // never for a caller to answer a login differently: Local.Login
 // collapses both, and "no such account" besides, into one identical
-// failure before anything reaches outside this package.
-func VerifyPassword(encoded, password string) (bool, error) {
+// failure before anything reaches outside this package. ErrHashingBusy
+// is the exception: it is not an outcome of this comparison at all and
+// is answered as a 503, see MaxConcurrentPasswordHashes.
+//
+// ctx bounds only the wait for a derivation slot, never the derivation
+// itself.
+func VerifyPassword(ctx context.Context, encoded, password string) (bool, error) {
 	params, salt, hash, err := decodeArgon2id(encoded)
 	if err != nil {
 		return false, err
 	}
 
-	candidate := argon2.IDKey([]byte(password), salt, params.time, params.memory, params.threads, uint32(len(hash)))
+	candidate, err := derive(ctx, []byte(password), salt, params.time, params.memory, params.threads, uint32(len(hash)))
+	if err != nil {
+		return false, err
+	}
 
 	return subtle.ConstantTimeCompare(candidate, hash) == 1, nil
 }

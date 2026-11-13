@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,8 +29,6 @@ func fixedNow() time.Time { return testNow }
 // an account is created, its enrolment produces a code, and the login
 // takes the password and that code together.
 func TestSignUpThenLoginWithBothFactors(t *testing.T) {
-	t.Parallel()
-
 	ctx := context.Background()
 	store := storagetest.NewStore()
 	local := auth.NewLocal(store, fixedNow)
@@ -72,8 +71,6 @@ func TestSignUpThenLoginWithBothFactors(t *testing.T) {
 // good once, so one observed over a shoulder cannot be replayed for the
 // rest of its skew window.
 func TestLoginRefusesTheSameCodeTwice(t *testing.T) {
-	t.Parallel()
-
 	ctx := context.Background()
 	store := storagetest.NewStore()
 	local := auth.NewLocal(store, fixedNow)
@@ -98,13 +95,80 @@ func TestLoginRefusesTheSameCodeTwice(t *testing.T) {
 	}
 }
 
+// TestTwoLoginsRacingWithOneCodeLetExactlyOneThrough is the replay
+// guard under the conditions it exists for. A code observed over
+// somebody's shoulder or captured in transit is good for up to ninety
+// seconds, and the obvious way to use one is to send it at the same
+// time as the person it was taken from.
+//
+// Checking the counter in Go and writing it afterwards cannot refuse
+// that: both logins read the same value before either writes. The
+// refusal has to come from the write itself, which is what
+// storage.UserRepository.AdvanceTOTPCounter does in one statement, and
+// this test is what says so: exactly one of the racing logins may
+// succeed.
+func TestTwoLoginsRacingWithOneCodeLetExactlyOneThrough(t *testing.T) {
+	ctx := context.Background()
+	store := storagetest.NewStore()
+	local := auth.NewLocal(store, fixedNow)
+
+	_, enrolment, err := local.SignUp(ctx, "person@example.com", goodPassword)
+	if err != nil {
+		t.Fatalf("SignUp() error = %v", err)
+	}
+
+	code, err := auth.GenerateTOTPCode(enrolment.Secret, testNow)
+	if err != nil {
+		t.Fatalf("GenerateTOTPCode() error = %v", err)
+	}
+
+	const attempts = 8
+
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		granted int
+		start   = make(chan struct{})
+	)
+
+	for range attempts {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			<-start
+
+			_, err := local.Login(ctx, "person@example.com", goodPassword, code)
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			switch {
+			case err == nil:
+				granted++
+			case errors.Is(err, auth.ErrInvalidCredentials):
+			default:
+				t.Errorf("Login() error = %v, want nil or ErrInvalidCredentials", err)
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+
+	if granted != 1 {
+		t.Fatalf("%d of %d concurrent logins with the same code succeeded, want exactly 1: "+
+			"RFC 6238 section 5.2 requires an already validated code to be refused on every later use",
+			granted, attempts)
+	}
+}
+
 // TestLoginRefusalsAreIndistinguishable: a wrong password, a wrong code
 // and an address with no account behind it all answer with the identical
 // error, so nothing here tells an attacker which part of a guess was
 // right.
 func TestLoginRefusalsAreIndistinguishable(t *testing.T) {
-	t.Parallel()
-
 	ctx := context.Background()
 	store := storagetest.NewStore()
 	local := auth.NewLocal(store, fixedNow)
@@ -129,8 +193,6 @@ func TestLoginRefusalsAreIndistinguishable(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
 			_, err := local.Login(ctx, test.email, test.password, test.code)
 			if !errors.Is(err, auth.ErrInvalidCredentials) {
 				t.Fatalf("Login() error = %v, want ErrInvalidCredentials", err)
@@ -143,8 +205,6 @@ func TestLoginRefusalsAreIndistinguishable(t *testing.T) {
 // through provider sign-in has no password and no TOTP secret, and must
 // not become loggable by password because somebody guessed its address.
 func TestLoginRefusesAnAccountWithNoPasswordOfItsOwn(t *testing.T) {
-	t.Parallel()
-
 	ctx := context.Background()
 	store := storagetest.NewStore()
 	local := auth.NewLocal(store, fixedNow)
@@ -160,8 +220,6 @@ func TestLoginRefusesAnAccountWithNoPasswordOfItsOwn(t *testing.T) {
 // TestLoginRefusesADisabledAccount: disabling an account has to stop its
 // password login too, not only its provider sign-in.
 func TestLoginRefusesADisabledAccount(t *testing.T) {
-	t.Parallel()
-
 	ctx := context.Background()
 	store := storagetest.NewStore()
 	local := auth.NewLocal(store, fixedNow)
@@ -195,6 +253,17 @@ func TestSignUpRefusals(t *testing.T) {
 		"empty email":        {"", goodPassword, auth.ErrEmailInvalid},
 		"password too short": {"person@example.com", strings.Repeat("x", auth.MinPasswordLength-1), auth.ErrPasswordTooShort},
 		"password too long":  {"person@example.com", strings.Repeat("x", auth.MaxPasswordLength+1), auth.ErrPasswordTooLong},
+		// The placeholder namespace is this application's own, handed
+		// out by provider sign-in. A local signup able to pick an
+		// address in it could claim the slot a particular provider
+		// account will land in and lock that person out of the provider
+		// they are entitled to use.
+		"an address in the placeholder namespace": {
+			"apple-0123456789abcdef@" + auth.PlaceholderEmailDomain, goodPassword, auth.ErrEmailInvalid,
+		},
+		"the placeholder namespace in another case": {
+			"anything@" + strings.ToUpper(auth.PlaceholderEmailDomain), goodPassword, auth.ErrEmailInvalid,
+		},
 	}
 
 	for name, test := range tests {
@@ -220,8 +289,6 @@ func TestSignUpRefusals(t *testing.T) {
 // across calbridge, so a collision has to be refused rather than turned
 // into a login attempt against somebody else's account.
 func TestSignUpRefusesAnAddressThatAlreadyHasAnAccount(t *testing.T) {
-	t.Parallel()
-
 	ctx := context.Background()
 	store := storagetest.NewStore()
 	local := auth.NewLocal(store, fixedNow)
@@ -240,8 +307,6 @@ func TestSignUpRefusesAnAddressThatAlreadyHasAnAccount(t *testing.T) {
 // operational problem, not a refusal to show the person as a rule they
 // broke.
 func TestSignUpReportsAStoreFailureAsItself(t *testing.T) {
-	t.Parallel()
-
 	store := storagetest.NewStore()
 	store.FailUserCreate = errStoreUnavailable
 	local := auth.NewLocal(store, fixedNow)

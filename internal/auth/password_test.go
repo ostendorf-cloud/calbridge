@@ -12,16 +12,14 @@ import (
 )
 
 func TestHashPasswordAndVerifyPasswordRoundTrip(t *testing.T) {
-	t.Parallel()
-
 	const password = "a reasonably long passphrase"
 
-	encoded, err := auth.HashPassword(password)
+	encoded, err := auth.HashPassword(t.Context(), password)
 	if err != nil {
 		t.Fatalf("HashPassword() error = %v", err)
 	}
 
-	ok, err := auth.VerifyPassword(encoded, password)
+	ok, err := auth.VerifyPassword(t.Context(), encoded, password)
 	if err != nil {
 		t.Fatalf("VerifyPassword() error = %v", err)
 	}
@@ -30,7 +28,7 @@ func TestHashPasswordAndVerifyPasswordRoundTrip(t *testing.T) {
 		t.Fatal("VerifyPassword() = false for the password that was hashed")
 	}
 
-	ok, err = auth.VerifyPassword(encoded, password+" ")
+	ok, err = auth.VerifyPassword(t.Context(), encoded, password+" ")
 	if err != nil {
 		t.Fatalf("VerifyPassword() error = %v", err)
 	}
@@ -44,14 +42,12 @@ func TestHashPasswordAndVerifyPasswordRoundTrip(t *testing.T) {
 // not match, or one stolen hash would reveal every account using that
 // password.
 func TestHashPasswordSaltsEveryHash(t *testing.T) {
-	t.Parallel()
-
-	first, err := auth.HashPassword("the same password")
+	first, err := auth.HashPassword(t.Context(), "the same password")
 	if err != nil {
 		t.Fatalf("first HashPassword() error = %v", err)
 	}
 
-	second, err := auth.HashPassword("the same password")
+	second, err := auth.HashPassword(t.Context(), "the same password")
 	if err != nil {
 		t.Fatalf("second HashPassword() error = %v", err)
 	}
@@ -65,9 +61,7 @@ func TestHashPasswordSaltsEveryHash(t *testing.T) {
 // algorithm and its cost, which is what lets an old hash still verify
 // after those constants change.
 func TestHashPasswordEncodesItsOwnParameters(t *testing.T) {
-	t.Parallel()
-
-	encoded, err := auth.HashPassword("a reasonably long passphrase")
+	encoded, err := auth.HashPassword(t.Context(), "a reasonably long passphrase")
 	if err != nil {
 		t.Fatalf("HashPassword() error = %v", err)
 	}
@@ -86,8 +80,6 @@ func TestHashPasswordEncodesItsOwnParameters(t *testing.T) {
 // constants. The fixture below is an argon2id hash of "correct horse"
 // computed at a deliberately lower cost than this package now uses.
 func TestVerifyPasswordStillChecksAHashWrittenUnderOtherParameters(t *testing.T) {
-	t.Parallel()
-
 	const (
 		password = "correct horse"
 		// Produced by this package's own encoding with m=8192, t=1, p=1,
@@ -96,7 +88,7 @@ func TestVerifyPasswordStillChecksAHashWrittenUnderOtherParameters(t *testing.T)
 			"VUb1MU9keqzYdC2qxxg8TINs58T5JhM89UUu+A4En3A"
 	)
 
-	ok, err := auth.VerifyPassword(encoded, password)
+	ok, err := auth.VerifyPassword(t.Context(), encoded, password)
 	if err != nil {
 		t.Fatalf("VerifyPassword() error = %v", err)
 	}
@@ -124,7 +116,7 @@ func TestVerifyPasswordRejectsAnEncodingItDidNotWrite(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			ok, err := auth.VerifyPassword(encoded, "any password")
+			ok, err := auth.VerifyPassword(t.Context(), encoded, "any password")
 			if !errors.Is(err, auth.ErrPasswordHashInvalid) {
 				t.Fatalf("VerifyPassword() error = %v, want ErrPasswordHashInvalid", err)
 			}

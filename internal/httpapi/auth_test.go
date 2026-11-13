@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ostendorf-cloud/govue/api"
+
 	"github.com/ostendorf-cloud/calbridge/internal/auth"
 	"github.com/ostendorf-cloud/calbridge/internal/httpapi"
 	"github.com/ostendorf-cloud/calbridge/internal/storage"
@@ -276,6 +278,48 @@ func TestSignUpRefusesAnAddressThatAlreadyHasAnAccount(t *testing.T) {
 	resp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/signup", body, "")
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("second signup status = %d, want %d", resp.StatusCode, http.StatusConflict)
+	}
+}
+
+// TestAShedRequestIsAnswered503AndNeverAsAFailedLogin: internal/auth
+// caps how many Argon2id derivations run at once, and a request over
+// that cap never had its password checked. Answering 401 would tell
+// somebody with the right password that it is wrong; 503 says what is
+// actually true, that this server is at capacity.
+func TestAShedRequestIsAnswered503AndNeverAsAFailedLogin(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]func(error) error{
+		"login":  httpapi.LoginError,
+		"signup": httpapi.SignUpError,
+	}
+
+	for name, mapError := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			answer := api.AsError(mapError(fmt.Errorf("wrapped: %w", auth.ErrHashingBusy)))
+
+			if answer.Status != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want %d", answer.Status, http.StatusServiceUnavailable)
+			}
+
+			if answer.Status == http.StatusUnauthorized {
+				t.Fatal("a shed request was answered as a failed login")
+			}
+		})
+	}
+}
+
+// TestALoginRefusalStaysOne401: every wrong credential still answers
+// alike, so adding the shed path above did not pull the refusals apart.
+func TestALoginRefusalStaysOne401(t *testing.T) {
+	t.Parallel()
+
+	answer := api.AsError(httpapi.LoginError(auth.ErrInvalidCredentials))
+
+	if answer.Status != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", answer.Status, http.StatusUnauthorized)
 	}
 }
 

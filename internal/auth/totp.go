@@ -10,10 +10,12 @@ import (
 	"crypto/subtle"
 	"encoding/base32"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // TOTP (RFC 6238, built on the HOTP of RFC 4226) is implemented directly
@@ -78,8 +80,27 @@ func GenerateTOTPSecret() (string, error) {
 // the UI's concern, not this package's.
 //
 // accountName identifies the account inside the app, conventionally the
-// email the account was created under.
-func TOTPProvisioningURI(secret, accountName string) string {
+// email the account was created under. It is checked here rather than
+// assumed: this function is exported, and every caller having happened
+// to validate its input already is not a property the function itself
+// carries. An empty name, one longer than maxTOTPAccountName, or one
+// holding a control character is refused, since none of those is a label
+// an authenticator app can show and the last would mean the caller never
+// checked its input at all.
+func TOTPProvisioningURI(secret, accountName string) (string, error) {
+	switch {
+	case accountName == "":
+		return "", errors.New("auth: totp account name is empty")
+	case len(accountName) > maxTOTPAccountName:
+		return "", fmt.Errorf("auth: totp account name is longer than %d bytes", maxTOTPAccountName)
+	}
+
+	for _, r := range accountName {
+		if unicode.IsControl(r) {
+			return "", errors.New("auth: totp account name holds a control character")
+		}
+	}
+
 	u := url.URL{
 		Scheme: "otpauth",
 		Host:   "totp",
@@ -94,8 +115,14 @@ func TOTPProvisioningURI(secret, accountName string) string {
 	q.Set("period", fmt.Sprintf("%d", int(totpStep.Seconds())))
 	u.RawQuery = q.Encode()
 
-	return u.String()
+	return u.String(), nil
 }
+
+// maxTOTPAccountName bounds the label inside the provisioning URI. It is
+// the longest address RFC 5321 section 4.5.3.1.3 allows, which is the
+// only kind of name calbridge puts here, so nothing legitimate is cut
+// off and a QR code stays a size a phone camera can read.
+const maxTOTPAccountName = 254
 
 // GenerateTOTPCode computes the code for secret at the step containing
 // at. It exists for a test that wants to check a just-generated secret
