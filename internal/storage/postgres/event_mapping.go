@@ -84,6 +84,29 @@ func (r *eventMappingRepository) FindByEdgeAndSourceEventID(ctx context.Context,
 	return r.eventMappingFromRow(row)
 }
 
+// ListByEdge implements storage.EventMappingRepository.
+func (r *eventMappingRepository) ListByEdge(ctx context.Context, edgeID uuid.UUID) ([]storage.EventMapping, error) {
+	tx, err := txFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := sqlcgen.New(tx).ListEventMappingsByEdge(ctx, edgeID)
+	if err != nil {
+		return nil, mapReadError(err)
+	}
+
+	mappings := make([]storage.EventMapping, len(rows))
+	for i, row := range rows {
+		mappings[i], err = r.eventMappingFromRow(row)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return mappings, nil
+}
+
 // Update implements storage.EventMappingRepository.
 func (r *eventMappingRepository) Update(ctx context.Context, mapping storage.EventMapping) (storage.EventMapping, error) {
 	tx, err := txFromContext(ctx)
@@ -128,6 +151,23 @@ func (r *eventMappingRepository) Delete(ctx context.Context, id uuid.UUID) error
 	}
 
 	return nil
+}
+
+// DeleteByEdge implements storage.EventMappingRepository. Removing no
+// row is not an error here: an edge that never wrote anything is torn
+// down the same way as one that did.
+func (r *eventMappingRepository) DeleteByEdge(ctx context.Context, edgeID uuid.UUID) (int64, error) {
+	tx, err := txFromContext(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	rowsAffected, err := sqlcgen.New(tx).DeleteEventMappingsByEdge(ctx, edgeID)
+	if err != nil {
+		return 0, mapWriteError(err)
+	}
+
+	return rowsAffected, nil
 }
 
 func (r *eventMappingRepository) eventMappingFromRow(row sqlcgen.EventMapping) (storage.EventMapping, error) {

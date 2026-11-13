@@ -71,6 +71,26 @@ func (r *edgeRepository) List(ctx context.Context) ([]storage.Edge, error) {
 	return edges, nil
 }
 
+// ListByCalendar implements storage.EdgeRepository.
+func (r *edgeRepository) ListByCalendar(ctx context.Context, calendarID uuid.UUID) ([]storage.Edge, error) {
+	tx, err := txFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := sqlcgen.New(tx).ListEdgesByCalendar(ctx, calendarID)
+	if err != nil {
+		return nil, mapReadError(err)
+	}
+
+	edges := make([]storage.Edge, len(rows))
+	for i, row := range rows {
+		edges[i] = edgeFromRow(row)
+	}
+
+	return edges, nil
+}
+
 // UpdateDetailLevel implements storage.EdgeRepository.
 func (r *edgeRepository) UpdateDetailLevel(ctx context.Context, id uuid.UUID, detailLevel storage.DetailLevel) (storage.Edge, error) {
 	tx, err := txFromContext(ctx)
