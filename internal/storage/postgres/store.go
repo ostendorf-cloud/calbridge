@@ -100,11 +100,12 @@ func (s *Store) Close() {
 	s.pool.Close()
 }
 
-// Users returns the user repository. Create and FindByEmail are not
-// user-scoped; FindByID and Update require a context WithUser produced,
-// like every other repository; see storage.UserRepository.
+// Users returns the user repository. FindByEmail is not user-scoped;
+// FindByID and Update require a context WithUser produced, like every
+// other repository, and Create scopes a transaction of its own to the
+// user it creates; see storage.UserRepository.
 func (s *Store) Users() storage.UserRepository {
-	return &userRepository{pool: s.pool}
+	return &userRepository{pool: s.pool, scope: s}
 }
 
 // Identities returns the identity repository. Every method on it

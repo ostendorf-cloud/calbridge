@@ -16,11 +16,13 @@ import (
 	"errors"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ostendorf-cloud/calbridge/internal/storage"
@@ -398,31 +400,81 @@ func TestRowLevelSecurity(t *testing.T) {
 	})
 
 	t.Run("an unscoped SELECT on users returns zero rows", func(t *testing.T) {
-		tx, err := restrictedPool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("begin: %v", err)
-		}
-		defer func() { _ = tx.Rollback(ctx) }()
+		// The control first: as a superuser, which bypasses row level
+		// security, both rows are unambiguously there. Without it, the
+		// restricted role seeing nothing below would prove only that
+		// nothing had been written.
+		requireUsersExist(ctx, t, adminPool, userA.ID, userB.ID)
 
-		// Deliberately no set_config call: the "never scoped by WithUser"
-		// case, exercised directly against users rather than through the
-		// repository, which now always runs FindByID and Update inside
-		// WithUser.
-
-		rows, err := tx.Query(ctx, `SELECT id FROM users WHERE id = ANY($1)`, []uuid.UUID{userA.ID, userB.ID})
-		if err != nil {
-			t.Fatalf("SELECT id FROM users with no user set: %v", err)
-		}
-
-		ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
-		if err != nil {
-			t.Fatalf("scan users: %v", err)
-		}
+		ids := visibleUserIDs(ctx, t, restrictedPool, uuid.Nil)
 
 		if len(ids) != 0 {
 			t.Fatalf("SELECT id FROM users with no user set = %v, want none: "+
 				"users_self_isolation should hide every row with no scope set", ids)
 		}
+	})
+
+	t.Run("signup needs no user scope of its own and the row it creates is still policied", func(t *testing.T) {
+		// The regression this subtest exists for. Create runs with no
+		// app.user_id set by its caller, and its INSERT carries a
+		// RETURNING clause, which is a read: the new row has to satisfy
+		// the table's SELECT policy as well as its INSERT WITH CHECK, and
+		// a FOR INSERT policy takes no part in that SELECT check. Create
+		// therefore generates the new id and scopes its own transaction
+		// to it. Everything below asserts that this scoping is real
+		// rather than an exemption.
+		email := "signup-" + uuid.NewString() + "@example.com"
+
+		created, err := store.Users().Create(ctx, storage.User{Email: email, Status: storage.UserStatusActive})
+		if err != nil {
+			t.Fatalf("signup with no user scope set: %v", err)
+		}
+
+		if created.ID == uuid.Nil {
+			t.Fatal("signup returned the zero id, so INSERT ... RETURNING never read the new row back")
+		}
+
+		requireUsersExist(ctx, t, adminPool, created.ID)
+
+		t.Run("the new row stays invisible to the restricted role with no scope set", func(t *testing.T) {
+			ids := visibleUserIDs(ctx, t, restrictedPool, uuid.Nil)
+
+			if len(ids) != 0 {
+				t.Fatalf("SELECT id FROM users with no user set = %v, want none: signup must not have opened the table", ids)
+			}
+		})
+
+		t.Run("the new row is visible to the restricted role scoped to the new user itself", func(t *testing.T) {
+			ids := visibleUserIDs(ctx, t, restrictedPool, created.ID)
+
+			if len(ids) != 1 || ids[0] != created.ID {
+				t.Fatalf("SELECT id FROM users scoped to the new user = %v, want exactly [%v]: "+
+					"users_self_isolation must scope by the row's own id, not refuse or admit everything", ids, created.ID)
+			}
+		})
+
+		t.Run("an INSERT naming an id other than the scope is refused by the policy itself", func(t *testing.T) {
+			// What stops signup's scoping from becoming a way to write an
+			// arbitrary row: the id the transaction is scoped to is the
+			// only id it may insert. A permissive FOR INSERT policy beside
+			// users_self_isolation would let this through, so this subtest
+			// is what keeps one from being reintroduced.
+			tx, err := restrictedPool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin: %v", err)
+			}
+			defer func() { _ = tx.Rollback(ctx) }()
+
+			if _, err := tx.Exec(ctx, `SELECT set_config('app.user_id', $1, true)`, created.ID.String()); err != nil {
+				t.Fatalf("set_config: %v", err)
+			}
+
+			_, err = tx.Exec(ctx,
+				`INSERT INTO users (id, email, status) VALUES ($1, $2, 'active')`,
+				uuid.New(), "smuggled-"+uuid.NewString()+"@example.com")
+
+			requirePgError(t, err, pgInsufficientPrivilege, `new row violates row-level security policy`)
+		})
 	})
 
 	t.Run("FindByEmail still resolves a user with no user scope set, through users_find_by_email", func(t *testing.T) {
@@ -453,6 +505,56 @@ func TestRowLevelSecurity(t *testing.T) {
 		})
 		if !errors.Is(err, storage.ErrNotFound) {
 			t.Fatalf("Update(userB.ID) while scoped to user A: err = %v, want errors.Is(err, storage.ErrNotFound)", err)
+		}
+
+		// Both assertions above run through the repository, whose own
+		// queries carry "WHERE id = $1". They would pass unchanged against
+		// a policy quietly rewritten to USING (true): the query's own
+		// predicate, not the policy, would be doing the work. The two
+		// below are what actually name the policy as the mechanism. The
+		// SELECT carries no predicate at all, so with several users in the
+		// table it returns exactly what row level security admits; the
+		// UPDATE names user B explicitly and must still change nothing,
+		// checked against the superuser's own view of the row.
+		requireUsersExist(ctx, t, adminPool, userA.ID, userB.ID)
+
+		ids := visibleUserIDs(ctx, t, restrictedPool, userA.ID)
+
+		if len(ids) != 1 || ids[0] != userA.ID {
+			t.Fatalf("SELECT id FROM users scoped to user A = %v, want exactly [%v]", ids, userA.ID)
+		}
+
+		tx, err := restrictedPool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+
+		if _, err := tx.Exec(ctx, `SELECT set_config('app.user_id', $1, true)`, userA.ID.String()); err != nil {
+			t.Fatalf("set_config: %v", err)
+		}
+
+		tag, err := tx.Exec(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, userB.ID)
+		if err != nil {
+			t.Fatalf("UPDATE users WHERE id = user B while scoped to user A: %v", err)
+		}
+
+		if tag.RowsAffected() != 0 {
+			t.Fatalf("UPDATE on user B's row while scoped to user A touched %d row(s), want 0", tag.RowsAffected())
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+
+		var status string
+		if err := adminPool.QueryRow(ctx, `SELECT status FROM users WHERE id = $1`, userB.ID).Scan(&status); err != nil {
+			t.Fatalf("admin read of user B's status: %v", err)
+		}
+
+		if status != string(storage.UserStatusActive) {
+			t.Fatalf("user B's status = %q after user A tried to disable it, want %q",
+				status, storage.UserStatusActive)
 		}
 	})
 
@@ -693,6 +795,11 @@ func TestRowLevelSecurity(t *testing.T) {
 		})
 
 		t.Run("a stranger with no grant cannot build an edge over the same calendar", func(t *testing.T) {
+			// "Some error came back" would not prove this: the plain
+			// foreign key, the row level security policy on edges and the
+			// trigger all refuse a write with an error, and only the
+			// trigger refuses this particular one for the right reason.
+			// The SQLSTATE and the message are what name the mechanism.
 			target := ownCalendarFor(t, stranger.ID)
 
 			err := store.WithUser(ctx, stranger.ID, func(ctx context.Context) error {
@@ -703,9 +810,29 @@ func TestRowLevelSecurity(t *testing.T) {
 
 				return err
 			})
-			if err == nil {
-				t.Fatal("stranger built an edge over a calendar nobody shared with it, want it rejected")
-			}
+
+			requirePgError(t, err, pgRaiseException, edgesSourceCalendarRefusal)
+		})
+
+		t.Run("a calendar id that exists under nobody is refused identically, closing the oracle", func(t *testing.T) {
+			// The point of the trigger firing before the foreign key: a
+			// guessed calendar UUID that exists under another user and one
+			// that exists nowhere at all must be indistinguishable from
+			// outside. A foreign key violation here (SQLSTATE 23503, a
+			// different message) would mean the two cases fail differently
+			// and the existence oracle is open again.
+			target := ownCalendarFor(t, stranger.ID)
+
+			err := store.WithUser(ctx, stranger.ID, func(ctx context.Context) error {
+				_, err := store.Edges().Create(ctx, storage.Edge{
+					UserID: stranger.ID, SourceCalendarID: uuid.New(), TargetCalendarID: target.ID,
+					DetailLevel: storage.DetailLevelTitleTime,
+				})
+
+				return err
+			})
+
+			requirePgError(t, err, pgRaiseException, edgesSourceCalendarRefusal)
 		})
 	})
 
@@ -1016,6 +1143,105 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON connections, edges, event_mapping TO ` +
 	restricted.User = url.UserPassword(testAppRole, testAppPassword)
 
 	return restricted.String()
+}
+
+// The SQLSTATEs the assertions above name a refusing mechanism by. See
+// https://www.postgresql.org/docs/current/errcodes-appendix.html.
+const (
+	// pgInsufficientPrivilege is what a row level security policy raises
+	// when it refuses a write outright, rather than filtering a row away.
+	pgInsufficientPrivilege = "42501"
+	// pgRaiseException is what a plpgsql RAISE EXCEPTION that names no
+	// ERRCODE of its own carries, which is how
+	// edges_check_calendar_access refuses.
+	pgRaiseException = "P0001"
+)
+
+// edgesSourceCalendarRefusal is the message edges_check_calendar_access
+// raises for a source calendar the edge's own user neither owns nor was
+// granted. It is spelled out here, matching db/migrations, so a test can
+// assert which check refused a write rather than only that one did.
+const edgesSourceCalendarRefusal = "edges: source_calendar_id is not owned by or granted to this edge's user"
+
+// requirePgError fails unless err carries a Postgres error with the given
+// SQLSTATE and a message containing wantMessage. A test that only asserts
+// "an error came back" cannot tell a trigger's refusal from a row level
+// security refusal, a foreign key violation or a check constraint, so it
+// keeps passing when the check it is about is removed and a different one
+// happens to refuse in its place.
+func requirePgError(t *testing.T, err error, code, wantMessage string) {
+	t.Helper()
+
+	if err == nil {
+		t.Fatalf("got no error, want SQLSTATE %s with a message containing %q", code, wantMessage)
+	}
+
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		t.Fatalf("err = %v, want a Postgres error with SQLSTATE %s", err, code)
+	}
+
+	if pgErr.Code != code {
+		t.Fatalf("SQLSTATE = %s (%q), want %s: a different mechanism refused this write than the one under test",
+			pgErr.Code, pgErr.Message, code)
+	}
+
+	if !strings.Contains(pgErr.Message, wantMessage) {
+		t.Fatalf("message = %q, want it to contain %q", pgErr.Message, wantMessage)
+	}
+}
+
+// requireUsersExist asserts, through a connection that bypasses row level
+// security, that every id is really in the users table. It is the control
+// every "the restricted role sees nothing" assertion needs: without it,
+// an empty result proves only that nothing was ever written.
+func requireUsersExist(ctx context.Context, t *testing.T, adminPool *pgxpool.Pool, ids ...uuid.UUID) {
+	t.Helper()
+
+	var found int
+
+	if err := adminPool.QueryRow(ctx, `SELECT count(*) FROM users WHERE id = ANY($1)`, ids).Scan(&found); err != nil {
+		t.Fatalf("admin count of users %v: %v", ids, err)
+	}
+
+	if found != len(ids) {
+		t.Fatalf("admin found %d of the %d expected user rows; the assertions that follow would prove nothing", found, len(ids))
+	}
+}
+
+// visibleUserIDs runs a deliberately unfiltered "SELECT id FROM users"
+// through pool, in a transaction scoped to scope, or in one scoped to no
+// user at all when scope is uuid.Nil. The query carries no predicate of
+// its own on purpose: with several users in the table, whatever comes
+// back is what the policy admitted and nothing else, so a policy quietly
+// replaced with USING (true) fails this where a repository call, whose
+// query filters by id itself, would still pass.
+func visibleUserIDs(ctx context.Context, t *testing.T, pool *pgxpool.Pool, scope uuid.UUID) []uuid.UUID {
+	t.Helper()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if scope != uuid.Nil {
+		if _, err := tx.Exec(ctx, `SELECT set_config('app.user_id', $1, true)`, scope.String()); err != nil {
+			t.Fatalf("set_config: %v", err)
+		}
+	}
+
+	rows, err := tx.Query(ctx, `SELECT id FROM users`)
+	if err != nil {
+		t.Fatalf("SELECT id FROM users: %v", err)
+	}
+
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		t.Fatalf("scan users: %v", err)
+	}
+
+	return ids
 }
 
 // connectionIDs decodes a literal "SELECT * FROM connections" result

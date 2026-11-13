@@ -25,9 +25,10 @@ const (
 )
 
 // User is the root of per-user isolation: every other user-owned row
-// carries a UserID referencing one. User itself carries no user_id column
-// and no row level security policy, because a row here IS a user, not
-// something owned by one; see db/migrations for the full reasoning.
+// carries a UserID referencing one. User itself carries no user_id
+// column, because a row here IS a user, not something owned by one, so
+// its row level security policy scopes by the row's own id instead; see
+// db/migrations for the full reasoning.
 // PasswordHash and TOTPSecret are nil until internal/auth, a later step,
 // computes and sets them; this package never hashes a password or
 // generates a TOTP secret, it only stores and returns whatever

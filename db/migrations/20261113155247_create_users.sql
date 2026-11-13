@@ -56,22 +56,35 @@ CREATE UNIQUE INDEX users_email_lower_idx ON users (lower(email));
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE users FORCE ROW LEVEL SECURITY;
 
--- Signup has no existing self to check a new row against, so INSERT
--- stays unconditionally open; the policy below only ever narrows SELECT,
--- UPDATE and DELETE. Postgres combines several permissive policies for
--- the same command with OR, so this one only ever widens what the
--- policy below allows for INSERT, never narrows what it allows for
--- anything else.
-CREATE POLICY users_signup ON users
-    FOR INSERT
-    WITH CHECK (true);
+-- Signup is the one write that runs before the user it writes exists,
+-- but it is still scoped rather than exempt: internal/storage/postgres
+-- generates the new user's id in Go, before the INSERT, and scopes the
+-- signup transaction to that id, so the row being written is exactly the
+-- row app.user_id names and the single policy below covers signup like
+-- every other command. The column keeps its own DEFAULT for a row
+-- inserted by hand.
+--
+-- An INSERT ... RETURNING needs exactly that. A FOR INSERT policy only
+-- ever contributes to the INSERT WITH CHECK, and RETURNING reads the new
+-- row back, which is a read: per CREATE POLICY, "if a data-modifying
+-- query has a RETURNING clause, SELECT permissions are required on the
+-- relation, and any newly inserted or updated rows from the relation
+-- must satisfy the relation's SELECT policies in order to be available
+-- to the RETURNING clause", and its "Policies Applied by Command Type"
+-- table lists the SELECT/ALL policy's USING expression as checking the
+-- new row of an INSERT whenever read access to that row is required. So
+-- an unconditional FOR INSERT policy would let the row be written and
+-- still not let signup read it back. Only a scope the SELECT policy
+-- itself accepts does both. Keeping the one policy, with no FOR INSERT
+-- escape hatch beside it, also means no row can be written here at all
+-- except under the scope of the very user it creates.
 
--- A row here IS a user, so "owned by" collapses to "is": every other
--- command is scoped to the row's own id. Same NULLIF handling as every
--- other policy in this schema; see identities' own migration for the
--- full reasoning. This alone also blocks the pre-login email lookup,
--- which runs before any user id is known - see users_find_by_email
--- below for the one, auditable way around that.
+-- A row here IS a user, so "owned by" collapses to "is": every command
+-- is scoped to the row's own id. Same NULLIF handling as every other
+-- policy in this schema; see identities' own migration for the full
+-- reasoning. This also blocks the pre-login email lookup, which runs
+-- before any user id is known. See users_find_by_email below for the
+-- one, auditable way around that.
 CREATE POLICY users_self_isolation ON users
     USING (id = NULLIF(current_setting('app.user_id', true), '')::uuid)
     WITH CHECK (id = NULLIF(current_setting('app.user_id', true), '')::uuid);

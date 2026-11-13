@@ -13,31 +13,60 @@ import (
 	"github.com/ostendorf-cloud/calbridge/internal/storage/postgres/sqlcgen"
 )
 
-// userRepository satisfies storage.UserRepository. Create and FindByEmail
-// run directly against the pool: signup has no existing self to scope a
-// new row by, and the email lookup has to work before any user id is
-// known at all, through users_find_by_email, a SECURITY DEFINER
-// function; see db/migrations. FindByID and Update run inside a context
-// storage.UserScope.WithUser produced, like every other repository, now
-// that users carries row level security of its own.
+// userRepository satisfies storage.UserRepository. FindByEmail is the
+// only method that runs directly against the pool: the email lookup has
+// to work before any user id is known at all, through
+// users_find_by_email, a SECURITY DEFINER function; see db/migrations.
+// Create, FindByID and Update all run inside a transaction
+// storage.UserScope.WithUser scoped, like every other repository, now
+// that users carries row level security of its own. Create is the one
+// that scopes that transaction itself, to the user it is about to
+// create; its caller has no id to pass yet.
 type userRepository struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	scope storage.UserScope
 }
 
-// Create implements storage.UserRepository.
+// Create implements storage.UserRepository. It generates the new user's
+// id and runs the INSERT in a transaction scoped to exactly that id,
+// which is what lets signup work for a user who does not exist yet
+// without exempting users from its own policy: the row written and the
+// row RETURNING reads back are both the row app.user_id names, so
+// users_self_isolation accepts both, and nothing else in the same
+// transaction becomes reachable. Any id on user is ignored; the created
+// user carries the generated one.
 func (r *userRepository) Create(ctx context.Context, user storage.User) (storage.User, error) {
-	row, err := sqlcgen.New(r.pool).CreateUser(ctx, sqlcgen.CreateUserParams{
-		Email:           user.Email,
-		PasswordHash:    ptrToText(user.PasswordHash),
-		TotpSecret:      ptrToText(user.TOTPSecret),
-		TotpLastCounter: ptrToInt8(user.TOTPLastCounter),
-		Status:          string(user.Status),
+	id := uuid.New()
+
+	var created storage.User
+
+	err := r.scope.WithUser(ctx, id, func(ctx context.Context) error {
+		tx, err := txFromContext(ctx)
+		if err != nil {
+			return err
+		}
+
+		row, err := sqlcgen.New(tx).CreateUser(ctx, sqlcgen.CreateUserParams{
+			ID:              id,
+			Email:           user.Email,
+			PasswordHash:    ptrToText(user.PasswordHash),
+			TotpSecret:      ptrToText(user.TOTPSecret),
+			TotpLastCounter: ptrToInt8(user.TOTPLastCounter),
+			Status:          string(user.Status),
+		})
+		if err != nil {
+			return mapWriteError(err)
+		}
+
+		created = userFromRow(row)
+
+		return nil
 	})
 	if err != nil {
-		return storage.User{}, mapWriteError(err)
+		return storage.User{}, err
 	}
 
-	return userFromRow(row), nil
+	return created, nil
 }
 
 // FindByID implements storage.UserRepository. It requires a context
