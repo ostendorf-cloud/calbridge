@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/ostendorf-cloud/govue/health"
 	"github.com/ostendorf-cloud/govue/logging"
@@ -22,6 +23,11 @@ import (
 
 	"github.com/ostendorf-cloud/calbridge/internal/httpapi"
 )
+
+// generousRateLimit is a burst high enough that no test below the rate
+// limiting tests themselves ever trips it, the same reasoning solobill's
+// own httpapi_test.go uses for its default Deps.
+const generousRateLimit = 1000
 
 // indexHTML is the SPA shell's own content, distinct from any API error
 // body, so a test can tell the fallback and a JSON answer apart.
@@ -51,6 +57,8 @@ func buildTestHandlers(t *testing.T, registry *health.Registry) httpapi.Handlers
 		HealthRegistry:  registry,
 		MetricsRegistry: metrics.NewRegistry(),
 		DistFS:          testDistFS(),
+		RateLimitBurst:  generousRateLimit,
+		RateLimitPer:    time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("httpapi.NewHandler() error = %v", err)
@@ -159,16 +167,35 @@ func TestAdminHealthAndMetricsEndpoints(t *testing.T) {
 	}
 }
 
+// TestAdminHealthAndMetricsEndpointsAreUnreachableOnPublic covers the two
+// decisions httpapi.go's own comment on the admin-path 404 registrations
+// argues for: registering with no method, so every method gets the 404
+// and not only GET, and registering both the exact path and its
+// trailing-slash subtree, so a path under it cannot fall through to the
+// SPA catch-all either.
 func TestAdminHealthAndMetricsEndpointsAreUnreachableOnPublic(t *testing.T) {
 	t.Parallel()
 
 	handlers := buildTestHandlers(t, nil)
 
-	for _, path := range []string{"/healthz", "/readyz", "/metrics"} {
-		t.Run(path, func(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "liveness", method: http.MethodGet, path: "/healthz"},
+		{name: "readiness", method: http.MethodGet, path: "/readyz"},
+		{name: "metrics", method: http.MethodGet, path: "/metrics"},
+		{name: "liveness trailing slash subtree", method: http.MethodGet, path: "/healthz/"},
+		{name: "metrics subtree path", method: http.MethodGet, path: "/metrics/foo"},
+		{name: "liveness with a non-GET method", method: http.MethodPost, path: "/healthz"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
+			req := httptest.NewRequestWithContext(context.Background(), tt.method, tt.path, nil)
 			rec := httptest.NewRecorder()
 
 			handlers.Public.ServeHTTP(rec, req)
@@ -433,6 +460,127 @@ func TestLoginStartsASessionMeAnswersItAndLogoutEndsIt(t *testing.T) {
 	afterLogout := do(t, client, http.MethodGet, baseURL+"/api/v1/me", "", "")
 	if afterLogout.StatusCode != http.StatusUnauthorized {
 		t.Errorf("me status after logout = %d, want %d", afterLogout.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+// TestLoginIsRateLimited proves the login route carries its own rate
+// limiter: handleLogin starts a session for any email with no account
+// check, so this is the one route a request needs no session at all to
+// reach, and the one maxSessions's own doc comment relies on being
+// throttled. Each call below uses a fresh client with no cookie jar, so
+// every request arrives with no session of its own and the CSRF
+// protector has nothing to check; they still share one rate limit
+// bucket, since clientip.Resolver keys by the loopback address every one
+// of them connects from.
+func TestLoginIsRateLimited(t *testing.T) {
+	t.Parallel()
+
+	handlers, err := httpapi.NewHandler(httpapi.Deps{
+		Logger:          logging.New(io.Discard, slog.LevelError),
+		HealthRegistry:  health.New(),
+		MetricsRegistry: metrics.NewRegistry(),
+		DistFS:          testDistFS(),
+		RateLimitBurst:  2,
+		RateLimitPer:    time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("httpapi.NewHandler() error = %v", err)
+	}
+
+	server := httptest.NewServer(handlers.Public)
+	t.Cleanup(server.Close)
+
+	loginOnce := func() int {
+		resp := do(t, &http.Client{}, http.MethodPost, server.URL+"/api/v1/auth/login", `{"email":"owner@example.com"}`, "")
+		return resp.StatusCode
+	}
+
+	for i := range 2 {
+		if status := loginOnce(); status != http.StatusNoContent {
+			t.Fatalf("login %d status = %d, want %d", i, status, http.StatusNoContent)
+		}
+	}
+
+	if status := loginOnce(); status != http.StatusTooManyRequests {
+		t.Errorf("login after exhausting the burst status = %d, want %d", status, http.StatusTooManyRequests)
+	}
+}
+
+// sessionCookie returns the session cookie resp carries, or false when it
+// carries none: a helper so the two tests below do not each repeat the
+// name matching, since the cookie's own name changes with AllowPlainHTTP.
+func sessionCookie(resp *http.Response) (*http.Cookie, bool) {
+	for _, c := range resp.Cookies() {
+		if strings.HasSuffix(c.Name, "session") {
+			return c, true
+		}
+	}
+	return nil, false
+}
+
+// TestSessionCookieIsSecureByDefault proves AllowPlainHTTP's default is
+// the secure one: Secure set and the __Host- prefix kept, which is what
+// config.Config.SessionAllowPlainHTTP's own doc comment promises a
+// deployment that never sets SESSION_ALLOW_PLAIN_HTTP.
+func TestSessionCookieIsSecureByDefault(t *testing.T) {
+	t.Parallel()
+
+	client, baseURL := testClient(t, buildTestHandlers(t, nil))
+
+	resp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/login", `{"email":"owner@example.com"}`, "")
+
+	cookie, ok := sessionCookie(resp)
+	if !ok {
+		t.Fatal("login set no session cookie")
+	}
+	if !cookie.Secure {
+		t.Errorf("cookie %q Secure = %v, want true by default", cookie.Name, cookie.Secure)
+	}
+	if !strings.HasPrefix(cookie.Name, "__Host-") {
+		t.Errorf("cookie name = %q, want the __Host- prefix by default", cookie.Name)
+	}
+	if got := resp.Header.Get("Strict-Transport-Security"); got == "" {
+		t.Error("Strict-Transport-Security header is empty, want it set by default")
+	}
+}
+
+// TestSessionCookieDropsSecureWhenPlainHTTPIsAllowed proves the opt-in
+// side of the same decision: AllowPlainHTTP true drops Secure, the
+// __Host- prefix it is a precondition of, and HSTS, so a local plain
+// HTTP run still gets a working session cookie instead of one a browser
+// refuses to store at all.
+func TestSessionCookieDropsSecureWhenPlainHTTPIsAllowed(t *testing.T) {
+	t.Parallel()
+
+	handlers, err := httpapi.NewHandler(httpapi.Deps{
+		Logger:          logging.New(io.Discard, slog.LevelError),
+		HealthRegistry:  health.New(),
+		MetricsRegistry: metrics.NewRegistry(),
+		DistFS:          testDistFS(),
+		RateLimitBurst:  generousRateLimit,
+		RateLimitPer:    time.Minute,
+		AllowPlainHTTP:  true,
+	})
+	if err != nil {
+		t.Fatalf("httpapi.NewHandler() error = %v", err)
+	}
+
+	client, baseURL := testClient(t, handlers)
+
+	resp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/login", `{"email":"owner@example.com"}`, "")
+
+	cookie, ok := sessionCookie(resp)
+	if !ok {
+		t.Fatal("login set no session cookie")
+	}
+	if cookie.Secure {
+		t.Errorf("cookie %q Secure = %v, want false when plain HTTP is allowed", cookie.Name, cookie.Secure)
+	}
+	if strings.HasPrefix(cookie.Name, "__Host-") {
+		t.Errorf("cookie name = %q, want the __Host- prefix dropped when plain HTTP is allowed", cookie.Name)
+	}
+	if got := resp.Header.Get("Strict-Transport-Security"); got != "" {
+		t.Errorf("Strict-Transport-Security header = %q, want it omitted when plain HTTP is allowed", got)
 	}
 }
 

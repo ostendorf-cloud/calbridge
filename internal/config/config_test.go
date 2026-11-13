@@ -61,6 +61,15 @@ func TestLoad(t *testing.T) {
 		if len(cfg.EncryptionKey) != 32 {
 			t.Errorf("EncryptionKey decodes to %d bytes, want 32", len(cfg.EncryptionKey))
 		}
+		if cfg.SessionAllowPlainHTTP {
+			t.Error("SessionAllowPlainHTTP = true, want the secure default of false")
+		}
+		if cfg.RateLimitBurst != 10 {
+			t.Errorf("RateLimitBurst = %d, want default 10", cfg.RateLimitBurst)
+		}
+		if cfg.RateLimitPer != time.Minute {
+			t.Errorf("RateLimitPer = %v, want default 1m", cfg.RateLimitPer)
+		}
 	})
 
 	t.Run("listen addr override", func(t *testing.T) {
@@ -189,6 +198,42 @@ func TestLoad(t *testing.T) {
 		_, err := Load(validEnv(map[string]string{"ENCRYPTION_KEY": "not-hex!"}))
 		if err == nil {
 			t.Fatal("Load() error = nil, want an error for a non-hex ENCRYPTION_KEY")
+		}
+	})
+
+	t.Run("session allow plain http override", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, err := Load(validEnv(map[string]string{"SESSION_ALLOW_PLAIN_HTTP": "true"}))
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if !cfg.SessionAllowPlainHTTP {
+			t.Error("SessionAllowPlainHTTP = false, want true")
+		}
+	})
+
+	t.Run("rate limit override", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, err := Load(validEnv(map[string]string{"RATE_LIMIT_BURST": "5", "RATE_LIMIT_PER": "30s"}))
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.RateLimitBurst != 5 {
+			t.Errorf("RateLimitBurst = %d, want 5", cfg.RateLimitBurst)
+		}
+		if cfg.RateLimitPer != 30*time.Second {
+			t.Errorf("RateLimitPer = %v, want 30s", cfg.RateLimitPer)
+		}
+	})
+
+	t.Run("rate limit per below the minimum is an error", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := Load(validEnv(map[string]string{"RATE_LIMIT_PER": "100ms"}))
+		if err == nil {
+			t.Fatal("Load() error = nil, want an error for a RATE_LIMIT_PER below the minimum")
 		}
 	})
 }
