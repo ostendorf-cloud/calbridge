@@ -484,10 +484,11 @@ func (e *Engine) removeOrphans(ctx context.Context, b Binding, p *pass, accounte
 //
 // Where the master is still in the calendar, the occurrence sits inside
 // an object this edge owns, so removing the master removes it and
-// writing the master replaces it. Writing the master is what a changed
-// source leads to and nothing else does, so an override on a master
-// whose source never changes again stands for as long as the edge does,
-// reported as covered on every pass. The alternative, writing the master
+// writing the master replaces it. A changed source leads to that write,
+// and so does a hand edit of the master's own copy, which ADR 0001 has
+// the pass overwrite. Neither is something a pass can bring about, so an
+// override on a master nobody touches again stands for as long as the
+// edge does, reported as covered on every pass. The alternative, writing the master
 // to flush the override, would delete a deliberate edit on every pass
 // and turn an unchanged source into a write, which is the failure this
 // package's content hash exists to prevent.

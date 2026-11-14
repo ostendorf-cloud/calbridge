@@ -88,10 +88,10 @@
 // ReasonCoveredByMaster and leaves it standing.
 //
 // What removes it is the master's next write, which replaces the whole
-// object. Only a changed source leads to that write, so an override on a
-// master whose source never changes again stands indefinitely, reported
-// as covered on every pass. Deleting the edge removes it, because that
-// removes the master's object.
+// object. A changed source leads to that write, and so does a hand edit
+// of the master's own copy; an override on a master nobody touches again
+// stands indefinitely, reported as covered on every pass. Deleting the
+// edge removes it, because that removes the master's object.
 //
 // Where no master of it is in the calendar at all, nothing the engine can
 // name removes it, and the pass reports ReasonInstanceUnreachable rather
