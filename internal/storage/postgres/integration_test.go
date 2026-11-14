@@ -1622,8 +1622,18 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON connections, edges, event_mapping TO ` +
 // The SQLSTATEs the assertions above name a refusing mechanism by. See
 // https://www.postgresql.org/docs/current/errcodes-appendix.html.
 const (
-	// pgInsufficientPrivilege is what a row level security policy raises
-	// when it refuses a write outright, rather than filtering a row away.
+	// pgInsufficientPrivilege is carried by two different refusals, and
+	// an assertion using it has to name the message as well as the code
+	// to say which one it got.
+	//
+	// A row level security policy raises it when it refuses a write
+	// outright rather than filtering a row away: "new row violates row
+	// level security policy for table ...". A missing table privilege
+	// raises it too, before any policy is consulted at all: "permission
+	// denied for table ...". The first means the role may attempt the
+	// command and this row was refused; the second means the role may
+	// not attempt the command. Asserting only the code cannot tell a
+	// guarantee the schema makes from one a GRANT list makes.
 	pgInsufficientPrivilege = "42501"
 	// pgRaiseException is what a plpgsql RAISE EXCEPTION that names no
 	// ERRCODE of its own carries, which is how
@@ -1904,11 +1914,39 @@ func TestAGrantIsWhatLetsAGranteeReadTheSharedCalendar(t *testing.T) {
 }
 
 // TestAGranteeMayReadASharedCalendarAndNothingElseWithIt is the other
-// half of the policy: calendars_grantee_read is FOR SELECT, so it widens
-// what comes back and cannot widen what may be written.
-// calendars_user_isolation still decides every write, which this proves
-// by naming the SQLSTATE each refusal carries rather than only that one
-// happened.
+// half of calendars_grantee_read: it is FOR SELECT, so it widens what
+// comes back and cannot widen what may be written.
+//
+// The two writes it tries are refused by two different mechanisms, and
+// the difference is the point of this test rather than an accident of
+// it:
+//
+//   - UPDATE is refused before any policy is consulted, because the
+//     application role holds no UPDATE privilege on calendars at all.
+//     internal/storage's CalendarRepository has no update method and
+//     queries/calendars.sql contains no UPDATE statement, so the grant
+//     lists in docker-compose.yaml's grant-app-role service and in
+//     setUpTestAppRole below both give calendars SELECT, INSERT and
+//     DELETE and nothing more. That is a table privilege, so it raises
+//     42501 rather than filtering a row.
+//   - DELETE is granted at the table level, so it reaches the policies,
+//     and calendars_user_isolation's USING clause is what refuses it.
+//     A USING clause refuses by matching no row, not by raising, so
+//     this one comes back with no error and zero rows affected.
+//
+// calendars_grantee_read still matters even though UPDATE is denied
+// outright: DELETE is reachable at the table level and the policy is the
+// only thing standing between a grantee and deleting somebody else's
+// calendar. And the privilege list is not a guarantee of the schema, it
+// is a choice recorded in two deployment files: the day a calendar gains
+// a rename, UPDATE gets granted and the policy becomes the only refusal
+// left on that path too. Both halves are asserted here so that neither
+// can quietly become the only one.
+//
+// The privileges themselves are read out of the database first, rather
+// than assumed from those two files, so that this test states what it
+// depends on. internal/depsync is what keeps the two files agreeing with
+// each other.
 func TestAGranteeMayReadASharedCalendarAndNothingElseWithIt(t *testing.T) {
 	adminURL := requireDatabaseURL(t)
 
@@ -1929,21 +1967,42 @@ func TestAGranteeMayReadASharedCalendarAndNothingElseWithIt(t *testing.T) {
 	}
 	t.Cleanup(restrictedPool.Close)
 
-	tx, err := restrictedPool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	// What the role may attempt at all, before any policy has a say. An
+	// UPDATE that is denied here never reaches calendars_user_isolation,
+	// and a DELETE that is allowed here reaches it and nothing else.
+	for _, privilege := range []struct {
+		name string
+		want bool
+	}{
+		{"SELECT", true},
+		{"INSERT", true},
+		{"DELETE", true},
+		{"UPDATE", false},
+	} {
+		var held bool
 
-	if _, err := tx.Exec(ctx, `SELECT set_config('app.user_id', $1, true)`, fixture.grantee.ID.String()); err != nil {
-		t.Fatalf("scope the transaction to the grantee: %v", err)
+		// $1 is cast to name explicitly: has_table_privilege has both a
+		// (name, text, text) and a (oid, text, text) overload, and an
+		// untyped parameter could resolve to either, which Postgres
+		// refuses as "function is not unique" rather than guessing.
+		if err := adminPool.QueryRow(ctx,
+			`SELECT has_table_privilege($1::name, 'calendars', $2)`, testAppRole, privilege.name).Scan(&held); err != nil {
+			t.Fatalf("read %s's %s privilege on calendars: %v", testAppRole, privilege.name, err)
+		}
+
+		if held != privilege.want {
+			t.Fatalf("%s on calendars is held = %t, want %t; the grant lists in docker-compose.yaml and "+
+				"in setUpTestAppRole give calendars exactly the privileges its own repository uses, and "+
+				"the two refusals asserted below depend on which of them this is",
+				privilege.name, held, privilege.want)
+		}
 	}
 
 	// The read the new policy admits, run with no predicate on user_id
 	// at all, so what comes back is what the policies admitted.
 	var visible int
 
-	if err := tx.QueryRow(ctx,
+	if err := granteeTx(ctx, t, restrictedPool, fixture.grantee.ID).QueryRow(ctx,
 		`SELECT count(*) FROM calendars WHERE id = $1`, fixture.ownerCalendar.ID).Scan(&visible); err != nil {
 		t.Fatalf("read the shared calendar as the grantee: %v", err)
 	}
@@ -1953,26 +2012,30 @@ func TestAGranteeMayReadASharedCalendarAndNothingElseWithIt(t *testing.T) {
 			"is what admits it", visible)
 	}
 
-	// An UPDATE and a DELETE are decided by calendars_user_isolation
-	// alone, which the grantee does not satisfy, so both match no row.
-	// They are refused by matching nothing rather than by raising, which
-	// is how a USING clause refuses a command it filters.
-	for _, statement := range []struct {
-		name string
-		sql  string
-	}{
-		{"update", `UPDATE calendars SET name = 'renamed by the grantee' WHERE id = $1`},
-		{"delete", `DELETE FROM calendars WHERE id = $1`},
-	} {
-		tag, err := tx.Exec(ctx, statement.sql, fixture.ownerCalendar.ID)
-		if err != nil {
-			t.Fatalf("%s the shared calendar as the grantee: %v", statement.name, err)
-		}
+	// The UPDATE, refused at the table level. It gets a transaction of
+	// its own because a raised error aborts the one it happened in, and
+	// every later statement there would then fail with 25P02 rather than
+	// with whatever it was meant to prove. The message is what separates
+	// a missing table privilege from a policy's own 42501; see
+	// pgInsufficientPrivilege.
+	_, err = granteeTx(ctx, t, restrictedPool, fixture.grantee.ID).Exec(ctx,
+		`UPDATE calendars SET name = 'renamed by the grantee' WHERE id = $1`, fixture.ownerCalendar.ID)
 
-		if tag.RowsAffected() != 0 {
-			t.Errorf("the grantee's %s touched %d rows, want 0: calendars_grantee_read is FOR SELECT "+
-				"and must not widen a write", statement.name, tag.RowsAffected())
-		}
+	requirePgError(t, err, pgInsufficientPrivilege, "permission denied for table calendars")
+
+	// The DELETE, refused by the policy. The role may attempt it, so
+	// this reaches calendars_user_isolation, whose USING clause the
+	// grantee does not satisfy: no error, no row.
+	tag, err := granteeTx(ctx, t, restrictedPool, fixture.grantee.ID).Exec(ctx,
+		`DELETE FROM calendars WHERE id = $1`, fixture.ownerCalendar.ID)
+	if err != nil {
+		t.Fatalf("delete the shared calendar as the grantee: %v, want it filtered away by "+
+			"calendars_user_isolation rather than refused with an error", err)
+	}
+
+	if tag.RowsAffected() != 0 {
+		t.Errorf("the grantee's delete touched %d rows, want 0: calendars_grantee_read is FOR SELECT "+
+			"and must not widen a write", tag.RowsAffected())
 	}
 
 	// And the row really is still there and unchanged, read through a
@@ -1988,6 +2051,28 @@ func TestAGranteeMayReadASharedCalendarAndNothingElseWithIt(t *testing.T) {
 	if name != fixture.ownerCalendar.Name {
 		t.Errorf("the shared calendar is now named %q, want %q", name, fixture.ownerCalendar.Name)
 	}
+}
+
+// granteeTx opens a transaction on pool scoped to userID and rolls it
+// back when the test ends. Each caller gets its own, because a statement
+// that raises aborts the transaction it ran in: reusing one would turn
+// every assertion after the first refusal into 25P02, "current
+// transaction is aborted", whatever it was meant to check.
+func granteeTx(ctx context.Context, t *testing.T, pool *pgxpool.Pool, userID uuid.UUID) pgx.Tx {
+	t.Helper()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.user_id', $1, true)`, userID.String()); err != nil {
+		t.Fatalf("scope the transaction to %s: %v", userID, err)
+	}
+
+	return tx
 }
 
 // TestGrantCounterpartiesDisclosesOnlyThePeopleAGrantAlreadyNames holds

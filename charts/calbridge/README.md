@@ -67,15 +67,44 @@ not just read another user's rows through a live connection, but could also swit
 protection off for every user at once, by virtue of owning the tables. This chart therefore
 never renders with the two equal.
 
-`migrationJob.databaseUser` additionally needs `EXECUTE` on each of `db/migrations`'s own
-`SECURITY DEFINER` functions granted to `config.databaseUser`, the same way
-`docker-compose.yaml`'s own `grant-app-role` service grants them to `calbridge_app`:
-`users_find_by_email` (the pre-login email lookup, also what resolves the address a grant
-names), `identities_find_by_provider_subject` (the provider sign-in lookup) and
-`grant_counterparties` (the addresses on the other side of a grant). Each is revoked from
-`PUBLIC` in `db/migrations`, so these grants are what actually decide who may call them.
-Provisioning them, like every other table-level grant `config.databaseUser` needs on a database
-this chart does not itself own, is the cluster operator's responsibility; see "Database" below.
+`config.databaseUser` needs its privileges granted by `migrationJob.databaseUser`, which owns
+the tables. This chart cannot do that itself: it does not own the database and runs no step
+after the migration Job that could, so provisioning them is the cluster operator's
+responsibility. The list is not left to the operator to work out, though, because a privilege
+granted here that is not granted elsewhere makes
+`internal/storage/postgres`'s own row level security tests prove less than they claim. It is
+exactly what `docker-compose.yaml`'s `grant-app-role` service applies, and
+`internal/depsync`'s `TestTheApplicationRoleAndTheTestRoleHoldTheSameGrants` is what keeps that
+service and the integration test's own role from drifting apart:
+
+```sql
+GRANT USAGE ON SCHEMA public TO <config.databaseUser>;
+GRANT SELECT, INSERT, UPDATE, DELETE ON users TO <config.databaseUser>;
+GRANT SELECT, INSERT, DELETE ON identities, calendars, calendar_grants TO <config.databaseUser>;
+GRANT SELECT, INSERT, UPDATE, DELETE ON connections, edges, event_mapping TO <config.databaseUser>;
+GRANT EXECUTE ON FUNCTION users_find_by_email(text) TO <config.databaseUser>;
+GRANT EXECUTE ON FUNCTION identities_find_by_provider_subject(text, text) TO <config.databaseUser>;
+GRANT EXECUTE ON FUNCTION grant_counterparties() TO <config.databaseUser>;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO <config.databaseUser>;
+```
+
+Three things about that list are deliberate rather than incidental:
+
+- Each table gets exactly the privileges its own repository in `internal/storage/postgres`
+  uses, and no more. `users` gets no `DELETE` because nothing deletes a user row other than
+  account deletion, which does hold it. `calendars`, `identities` and `calendar_grants` get no
+  `UPDATE` because none of them has an update query; for `calendars` that withheld privilege is
+  a guarantee an integration test asserts directly, so granting it here without revisiting that
+  test would weaken a check rather than widen a permission.
+- The three `EXECUTE` grants are the only way `config.databaseUser` reads a row it does not
+  own: a local account by email (also what resolves the address a grant names), a sign-in
+  identity by `(provider, subject)`, and the addresses on the other side of a grant. Each
+  function is revoked from `PUBLIC` in `db/migrations`, so these grants are what actually decide
+  who may call them.
+- `ALTER DEFAULT PRIVILEGES` covers a table a later migration adds, and only one added after it
+  runs, by the role that ran it. It cannot retroactively cover the tables above, which is why
+  each of them is still named explicitly.
 
 ## Migrations
 
