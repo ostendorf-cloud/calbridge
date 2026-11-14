@@ -479,13 +479,22 @@ func (e *Engine) removeOrphans(ctx context.Context, b Binding, p *pass, accounte
 // supposed to make impossible, and the live case is a user overriding
 // one occurrence of a master this edge mirrors into iCloud.
 //
-// Neither answer is a silent skip. Where the master is still in the
-// calendar, removing it removes this with it, and the master's next
-// write replaces the whole object: the occurrence is accounted for by
-// something the edge owns, and the pass says so. Where the master is
-// gone, which is a resource holding overrides and no master at all,
-// nothing this edge can name removes it, and the pass says that instead
-// of looking like it swept a calendar it did not.
+// Neither answer is a silent skip, and neither is a cleanup that has
+// already happened.
+//
+// Where the master is still in the calendar, the occurrence sits inside
+// an object this edge owns, so removing the master removes it and
+// writing the master replaces it. Writing the master is what a changed
+// source leads to and nothing else does, so an override on a master
+// whose source never changes again stands for as long as the edge does,
+// reported as covered on every pass. The alternative, writing the master
+// to flush the override, would delete a deliberate edit on every pass
+// and turn an unchanged source into a write, which is the failure this
+// package's content hash exists to prevent.
+//
+// Where the master is gone, which is an object holding overrides and no
+// master at all, nothing this edge can name removes it at all. The pass
+// says so rather than looking like it swept a calendar it did not.
 func (e *Engine) sweepInstance(b Binding, eventID string, event provider.Event, targetState map[string]provider.Event) (Operation, bool) {
 	if b.Target.Connector.Capabilities().InstanceWrites {
 		return Operation{}, false

@@ -85,12 +85,19 @@
 // repeating event, where the target provider keeps the override inside
 // the master's own object. There is no id such a provider accepts for it,
 // so the engine never asks: it reports the occurrence as
-// ReasonCoveredByMaster and leaves it, and the master's next write
-// replaces the object and the override with it. Where no master of it is
-// in the calendar at all, nothing the engine can name removes it, and the
-// pass reports ReasonInstanceUnreachable rather than looking like it
-// swept a calendar it did not. That is also the one exception to the
-// teardown promise below.
+// ReasonCoveredByMaster and leaves it standing.
+//
+// What removes it is the master's next write, which replaces the whole
+// object. Only a changed source leads to that write, so an override on a
+// master whose source never changes again stands indefinitely, reported
+// as covered on every pass. Deleting the edge removes it, because that
+// removes the master's object.
+//
+// Where no master of it is in the calendar at all, nothing the engine can
+// name removes it, and the pass reports ReasonInstanceUnreachable rather
+// than looking like it swept a calendar it did not. That one is permanent
+// for the life of the edge, and it is the one exception to the teardown
+// promise below.
 //
 // # Teardown
 //
