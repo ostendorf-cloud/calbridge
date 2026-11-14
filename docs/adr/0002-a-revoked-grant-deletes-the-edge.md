@@ -23,8 +23,9 @@
 - There is no stopped state to put the edge in: it would need a column, a migration and a way to
   resume from it, and a dead row nobody can act on is worse than none.
 - Issue #9 asks for the same treatment a deleted edge gets, and a deleted edge takes its row.
-- An edge the grant no longer covers cannot run again either way: the trigger on `edges` refuses
-  to recreate or update it while no grant exists.
+- An edge the grant no longer covers cannot run again either way: the engine's own coverage check
+  refuses it on every pass, and the trigger on `edges` refuses to recreate or update it while no
+  grant exists.
 - The row left standing would read as a working edge in the topology the UI and the MCP server
   show, while writing nothing.
 
