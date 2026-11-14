@@ -176,14 +176,22 @@ describe('CanvasView', () => {
     renderCanvasView()
 
     // The button lives inside a Vue Flow node, hidden until measured; a
-    // plain getByRole would run before that and come back empty.
+    // plain getByRole would run before that and come back empty. Every
+    // control from here on is driven by the keyboard alone, matching the
+    // test's own name: a pointer click on the same elements would exercise
+    // the same handlers and could not tell a keyboard-only path from one
+    // that only happens to also accept a click.
     const connectFromWork = await screen.findByRole('button', { name: 'Connect from here: Work' })
-    await user.click(connectFromWork)
+    connectFromWork.focus()
+    await user.keyboard('{Enter}')
     expect(screen.getByText('Connecting from Work. Choose a target below.')).toBeVisible()
 
     await chooseOption('Target calendar', 'Personal (Personal Outlook)')
     await chooseOption('Detail level', 'Busy or free only')
-    await user.click(screen.getByRole('button', { name: 'Create connection' }))
+
+    const submit = screen.getByRole('button', { name: 'Create connection' })
+    submit.focus()
+    await user.keyboard('{Enter}')
 
     await waitFor(() =>
       expect(apiClient.post).toHaveBeenCalledWith('/edges', {
@@ -192,6 +200,62 @@ describe('CanvasView', () => {
         detail_level: 'busy_block',
       }),
     )
+  })
+
+  it('moves focus to the target calendar select once a node fills the source field', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({
+      accounts,
+      calendars: ownCalendars,
+      edges: [],
+      grants: { given: [], received: [] },
+      detail_levels: detailLevels,
+    })
+    const user = userEvent.setup()
+    renderCanvasView()
+
+    const connectFromWork = await screen.findByRole('button', { name: 'Connect from here: Work' })
+    await user.click(connectFromWork)
+
+    // Without this, a keyboard user who just pressed this button would have
+    // to tab past every remaining node to reach the field the announcement
+    // just told them to fill in.
+    await waitFor(() =>
+      expect(
+        screen.getByRole('combobox', { name: /^Target calendar( \(required\))?$/ }),
+      ).toHaveFocus(),
+    )
+  })
+
+  it('gives a calendar node no tab stop of its own beside its connect button', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({
+      accounts,
+      calendars: ownCalendars,
+      edges: [],
+      grants: { given: [], received: [] },
+      detail_levels: detailLevels,
+    })
+    renderCanvasView()
+
+    // Vue Flow's own node wrapper is already one focusable stop; a second,
+    // manual one on the node body duplicates it without doing anything on
+    // activation.
+    const node = await screen.findByRole('group', { name: 'Work' })
+    expect(node).not.toHaveAttribute('tabindex')
+  })
+
+  it('renders the shared navigation back to the other views', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({
+      accounts,
+      calendars: ownCalendars,
+      edges: [],
+      grants: { given: [], received: [] },
+      detail_levels: detailLevels,
+    })
+    renderCanvasView()
+    await screen.findByText('Work')
+
+    expect(screen.getByRole('link', { name: 'Overview' })).toHaveAttribute('href', '/')
+    expect(screen.getByRole('link', { name: 'Grants' })).toHaveAttribute('href', '/grants')
   })
 
   it('shows the field list of the chosen preset, taken from the server-sent detail levels', async () => {

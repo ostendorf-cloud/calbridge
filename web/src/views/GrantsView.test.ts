@@ -197,6 +197,15 @@ describe('GrantsView', () => {
     await vi.waitFor(() => expect(screen.queryByText('Work → bob@example.com')).toBeNull())
   })
 
+  it('renders the shared navigation back to the other views', async () => {
+    mockGraph()
+    renderGrantsView()
+    await screen.findByText('Work → bob@example.com')
+
+    expect(screen.getByRole('link', { name: 'Overview' })).toHaveAttribute('href', '/')
+    expect(screen.getByRole('link', { name: 'Calendar canvas' })).toHaveAttribute('href', '/canvas')
+  })
+
   it('redirects to login when the session is not authenticated', async () => {
     vi.mocked(apiClient.get).mockRejectedValue(
       new ApiError({ code: ErrorCode.unauthenticated, message: 'log in first', status: 401 }),

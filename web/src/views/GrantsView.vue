@@ -18,6 +18,7 @@ import {
   GovueEmptyState,
   GovueField,
   GovueInput,
+  GovueNav,
   GovuePage,
   GovueSelect,
   useForm,
@@ -61,6 +62,12 @@ interface GraphResponse {
 const i18n = useI18n()
 const { t } = i18n
 const router = useRouter()
+
+const navItems = computed(() => [
+  { href: '/', label: t('nav.home') },
+  { href: '/canvas', label: t('nav.canvas') },
+  { href: '/grants', label: t('nav.grants'), current: true },
+])
 
 const loading = ref(true)
 const loadError = ref('')
@@ -202,6 +209,8 @@ async function confirmRevoke(): Promise<void> {
 
 <template>
   <GovuePage :title="t('grants.title')" :lead="t('grants.lead')">
+    <GovueNav :items="navItems" :aria-label="t('nav.ariaLabel')" />
+
     <p v-if="loading">{{ t('grants.loading') }}</p>
 
     <p v-else-if="loadError" role="alert" class="text-danger-text">{{ loadError }}</p>

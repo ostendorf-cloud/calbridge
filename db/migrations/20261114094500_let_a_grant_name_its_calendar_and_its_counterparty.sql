@@ -88,10 +88,24 @@ CREATE POLICY calendars_grantee_read ON calendars
 -- FUNCTION time. See 20261113155247_create_users.sql for the shape the
 -- list below mirrors.
 --
--- SECURITY DEFINER means the body runs as this migration's owner and so
--- bypasses row level security on both tables it reads. The WHERE clause
--- below is therefore the whole of the access control, which is why it
--- names app.user_id on both sides of the grant rather than taking a
+-- SECURITY DEFINER runs this function as its owner, the role that
+-- creates it by running this migration, which docker-compose.yaml's own
+-- "two Postgres roles" comment and charts/calbridge/README.md's
+-- "Migrations run as a separate role" section both require to be a
+-- Postgres superuser or otherwise able to run db/migrations in the
+-- first place, never the restricted role the application itself
+-- connects as. A superuser bypasses row level security regardless of
+-- FORCE, so this function sees every row on both tables it reads
+-- regardless of who calls it. A deployment that runs migrations as a
+-- non-superuser owner instead would have FORCE bind that owner on both
+-- tables, so users_self_isolation and calendar_grants_user_isolation
+-- would apply to this function's own queries on top of the WHERE
+-- clause below, and it would quietly return fewer counterparties
+-- rather than failing in a way that points at the cause. The WHERE
+-- clause below is therefore the whole of the access control a
+-- correctly deployed, superuser-owned migration role relies on, which
+-- is why it names app.user_id on both sides of the grant rather than
+-- taking a
 -- parameter: a caller cannot ask about somebody else's grants, because
 -- there is nothing to ask with. app.user_id itself is transaction-local
 -- and set only by internal/storage/postgres's WithUser, so a caller

@@ -474,7 +474,7 @@ func TestRowLevelSecurity(t *testing.T) {
 				`INSERT INTO users (id, email, status) VALUES ($1, $2, 'active')`,
 				uuid.New(), "smuggled-"+uuid.NewString()+"@example.com")
 
-			requirePgError(t, err, pgInsufficientPrivilege, `new row violates row-level security policy`)
+			requirePgErrorRoutine(t, err, pgInsufficientPrivilege, pgRoutineRLSCheck)
 		})
 	})
 
@@ -812,7 +812,7 @@ func TestRowLevelSecurity(t *testing.T) {
 				return err
 			})
 
-			requirePgError(t, err, pgRaiseException, edgesSourceCalendarRefusal)
+			requireEdgesSourceCalendarRefusal(t, err)
 		})
 
 		t.Run("a calendar id that exists under nobody is refused identically, closing the oracle", func(t *testing.T) {
@@ -833,7 +833,7 @@ func TestRowLevelSecurity(t *testing.T) {
 				return err
 			})
 
-			requirePgError(t, err, pgRaiseException, edgesSourceCalendarRefusal)
+			requireEdgesSourceCalendarRefusal(t, err)
 		})
 	})
 
@@ -1651,23 +1651,78 @@ const (
 	pgRaiseException = "P0001"
 )
 
+// The two PostgreSQL C functions that raise pgInsufficientPrivilege, as
+// carried in pgconn.PgError.Routine. The message text for either comes
+// through lc_messages and is translated on a server running a non-English
+// locale; Routine names the mechanism directly and is stable regardless.
+const (
+	// pgRoutineAclCheck is aclcheck_error, raised when the role may not
+	// even attempt the command: a missing table privilege, consulted
+	// before any row level security policy.
+	pgRoutineAclCheck = "aclcheck_error"
+	// pgRoutineRLSCheck is ExecWithCheckOptions, raised when a row level
+	// security policy's WITH CHECK clause refuses a row the role was
+	// allowed to attempt writing.
+	pgRoutineRLSCheck = "ExecWithCheckOptions"
+)
+
 // edgesSourceCalendarRefusal is the message edges_check_calendar_access
 // raises for a source calendar the edge's own user neither owns nor was
 // granted. It is spelled out here, matching db/migrations, so a test can
 // assert which check refused a write rather than only that one did.
 const edgesSourceCalendarRefusal = "edges: source_calendar_id is not owned by or granted to this edge's user"
 
-// requirePgError fails unless err carries a Postgres error with the given
-// SQLSTATE and a message containing wantMessage. A test that only asserts
-// "an error came back" cannot tell a trigger's refusal from a row level
-// security refusal, a foreign key violation or a check constraint, so it
-// keeps passing when the check it is about is removed and a different one
-// happens to refuse in its place.
-func requirePgError(t *testing.T, err error, code, wantMessage string) {
+// requireEdgesSourceCalendarRefusal fails unless err carries a Postgres
+// error with SQLSTATE pgRaiseException and a message containing
+// edgesSourceCalendarRefusal: the edges_check_calendar_access trigger's
+// own refusal, which is the only RAISE EXCEPTION any test in this file
+// still asserts on message text. That message is plpgsql's own literal,
+// written once in db/migrations and spelled out again here; it is not a
+// server-generated message translated through lc_messages, so asserting
+// it is still locale-independent, unlike requirePgErrorRoutine's two
+// callers, which have to use Routine instead because pgInsufficientPrivilege
+// covers a privilege denial and a row level security refusal that share
+// one SQLSTATE and differ only in a message Postgres itself generates and
+// translates. A test that only asserts "an error came back" cannot tell
+// this trigger's refusal from a row level security refusal, a foreign key
+// violation or a check constraint, so it keeps passing when the check it
+// is about is removed and a different one happens to refuse in its place.
+func requireEdgesSourceCalendarRefusal(t *testing.T, err error) {
 	t.Helper()
 
 	if err == nil {
-		t.Fatalf("got no error, want SQLSTATE %s with a message containing %q", code, wantMessage)
+		t.Fatalf("got no error, want SQLSTATE %s with a message containing %q",
+			pgRaiseException, edgesSourceCalendarRefusal)
+	}
+
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		t.Fatalf("err = %v, want a Postgres error with SQLSTATE %s", err, pgRaiseException)
+	}
+
+	if pgErr.Code != pgRaiseException {
+		t.Fatalf("SQLSTATE = %s (%q), want %s: a different mechanism refused this write than the one under test",
+			pgErr.Code, pgErr.Message, pgRaiseException)
+	}
+
+	if !strings.Contains(pgErr.Message, edgesSourceCalendarRefusal) {
+		t.Fatalf("message = %q, want it to contain %q", pgErr.Message, edgesSourceCalendarRefusal)
+	}
+}
+
+// requirePgErrorRoutine fails unless err carries a Postgres error with the
+// given SQLSTATE and Routine. pgInsufficientPrivilege (42501) is raised by
+// two different mechanisms with two different messages, and the message
+// text is server-locale dependent, translated through lc_messages. Routine
+// names the C function that raised the error and does not vary with the
+// locale, so it is what this assertion names the mechanism by; the message
+// is still read into the failure output, where it helps explain what went
+// wrong, but it is never what the assertion depends on.
+func requirePgErrorRoutine(t *testing.T, err error, code, wantRoutine string) {
+	t.Helper()
+
+	if err == nil {
+		t.Fatalf("got no error, want SQLSTATE %s raised by %s", code, wantRoutine)
 	}
 
 	var pgErr *pgconn.PgError
@@ -1680,8 +1735,9 @@ func requirePgError(t *testing.T, err error, code, wantMessage string) {
 			pgErr.Code, pgErr.Message, code)
 	}
 
-	if !strings.Contains(pgErr.Message, wantMessage) {
-		t.Fatalf("message = %q, want it to contain %q", pgErr.Message, wantMessage)
+	if pgErr.Routine != wantRoutine {
+		t.Fatalf("Routine = %q (message %q), want %s: a different mechanism refused this write than the one under test",
+			pgErr.Routine, pgErr.Message, wantRoutine)
 	}
 }
 
@@ -2012,10 +2068,12 @@ func TestAGranteeMayReadASharedCalendarAndNothingElseWithIt(t *testing.T) {
 	// at all, so what comes back is what the policies admitted.
 	var visible int
 
-	if err := granteeTx(ctx, t, restrictedPool, fixture.grantee.ID).QueryRow(ctx,
-		`SELECT count(*) FROM calendars WHERE id = $1`, fixture.ownerCalendar.ID).Scan(&visible); err != nil {
-		t.Fatalf("read the shared calendar as the grantee: %v", err)
-	}
+	granteeTx(ctx, t, restrictedPool, fixture.grantee.ID, func(tx pgx.Tx) {
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM calendars WHERE id = $1`, fixture.ownerCalendar.ID).Scan(&visible); err != nil {
+			t.Fatalf("read the shared calendar as the grantee: %v", err)
+		}
+	})
 
 	if visible != 1 {
 		t.Fatalf("the grantee reads %d rows for the shared calendar, want 1; calendars_grantee_read "+
@@ -2025,22 +2083,33 @@ func TestAGranteeMayReadASharedCalendarAndNothingElseWithIt(t *testing.T) {
 	// The UPDATE, refused at the table level. It gets a transaction of
 	// its own because a raised error aborts the one it happened in, and
 	// every later statement there would then fail with 25P02 rather than
-	// with whatever it was meant to prove. The message is what separates
-	// a missing table privilege from a policy's own 42501; see
-	// pgInsufficientPrivilege.
-	_, err = granteeTx(ctx, t, restrictedPool, fixture.grantee.ID).Exec(ctx,
-		`UPDATE calendars SET name = 'renamed by the grantee' WHERE id = $1`, fixture.ownerCalendar.ID)
+	// with whatever it was meant to prove. Routine, not the message, is
+	// what separates a missing table privilege from a policy's own
+	// 42501; see pgInsufficientPrivilege.
+	var updateErr error
 
-	requirePgError(t, err, pgInsufficientPrivilege, "permission denied for table calendars")
+	granteeTx(ctx, t, restrictedPool, fixture.grantee.ID, func(tx pgx.Tx) {
+		_, updateErr = tx.Exec(ctx,
+			`UPDATE calendars SET name = 'renamed by the grantee' WHERE id = $1`, fixture.ownerCalendar.ID)
+	})
+
+	requirePgErrorRoutine(t, updateErr, pgInsufficientPrivilege, pgRoutineAclCheck)
 
 	// The DELETE, refused by the policy. The role may attempt it, so
 	// this reaches calendars_user_isolation, whose USING clause the
 	// grantee does not satisfy: no error, no row.
-	tag, err := granteeTx(ctx, t, restrictedPool, fixture.grantee.ID).Exec(ctx,
-		`DELETE FROM calendars WHERE id = $1`, fixture.ownerCalendar.ID)
-	if err != nil {
+	var (
+		tag       pgconn.CommandTag
+		deleteErr error
+	)
+
+	granteeTx(ctx, t, restrictedPool, fixture.grantee.ID, func(tx pgx.Tx) {
+		tag, deleteErr = tx.Exec(ctx, `DELETE FROM calendars WHERE id = $1`, fixture.ownerCalendar.ID)
+	})
+
+	if deleteErr != nil {
 		t.Fatalf("delete the shared calendar as the grantee: %v, want it filtered away by "+
-			"calendars_user_isolation rather than refused with an error", err)
+			"calendars_user_isolation rather than refused with an error", deleteErr)
 	}
 
 	if tag.RowsAffected() != 0 {
@@ -2063,26 +2132,37 @@ func TestAGranteeMayReadASharedCalendarAndNothingElseWithIt(t *testing.T) {
 	}
 }
 
-// granteeTx opens a transaction on pool scoped to userID and rolls it
-// back when the test ends. Each caller gets its own, because a statement
-// that raises aborts the transaction it ran in: reusing one would turn
-// every assertion after the first refusal into 25P02, "current
-// transaction is aborted", whatever it was meant to check.
-func granteeTx(ctx context.Context, t *testing.T, pool *pgxpool.Pool, userID uuid.UUID) pgx.Tx {
+// granteeTx opens a transaction on pool scoped to userID, runs fn against
+// it and rolls it back as soon as fn returns, rather than deferring the
+// rollback to t.Cleanup. Each caller gets a transaction of its own,
+// because a statement that raises aborts the transaction it ran in:
+// reusing one would turn every assertion after the first refusal into
+// 25P02, "current transaction is aborted", whatever it was meant to
+// check.
+//
+// Rolling back immediately, instead of at the end of the test, is what
+// keeps this safe to call more than a handful of times in one test: a
+// transaction held open until t.Cleanup keeps its pooled connection
+// checked out for the rest of the test, and pool's default MaxConns is 4.
+// A test with four or more calls would have its fourth granteeTx block in
+// Begin, on a context.Background() with no deadline, and hang rather
+// than fail. Rolling back here returns the connection before the next
+// call needs one, so the number of calls in one test is no longer bounded
+// by MaxConns.
+func granteeTx(ctx context.Context, t *testing.T, pool *pgxpool.Pool, userID uuid.UUID, fn func(tx pgx.Tx)) {
 	t.Helper()
 
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	defer func() { _ = tx.Rollback(context.Background()) }()
 
 	if _, err := tx.Exec(ctx, `SELECT set_config('app.user_id', $1, true)`, userID.String()); err != nil {
 		t.Fatalf("scope the transaction to %s: %v", userID, err)
 	}
 
-	return tx
+	fn(tx)
 }
 
 // TestGrantCounterpartiesDisclosesOnlyThePeopleAGrantAlreadyNames holds
@@ -2252,11 +2332,13 @@ func TestGrantCounterpartiesCarriesNoCredentialAtAll(t *testing.T) {
 		gotCount  *int64
 	)
 
-	if err := granteeTx(ctx, t, restrictedPool, fixture.grantee.ID).QueryRow(ctx,
-		`SELECT id, email, password_hash, totp_secret, totp_last_counter FROM grant_counterparties()`,
-	).Scan(&gotID, &gotEmail, &gotHash, &gotSecret, &gotCount); err != nil {
-		t.Fatalf("read the counterparty's columns as the grantee: %v", err)
-	}
+	granteeTx(ctx, t, restrictedPool, fixture.grantee.ID, func(tx pgx.Tx) {
+		if err := tx.QueryRow(ctx,
+			`SELECT id, email, password_hash, totp_secret, totp_last_counter FROM grant_counterparties()`,
+		).Scan(&gotID, &gotEmail, &gotHash, &gotSecret, &gotCount); err != nil {
+			t.Fatalf("read the counterparty's columns as the grantee: %v", err)
+		}
+	})
 
 	if gotID != fixture.owner.ID {
 		t.Fatalf("counterparty = %v, want the owner %v", gotID, fixture.owner.ID)
@@ -2324,10 +2406,12 @@ func TestTheProjectionIsWhatWithholdsASharedCalendarsProviderIdentifier(t *testi
 
 	var admitted string
 
-	if err := granteeTx(ctx, t, restrictedPool, fixture.grantee.ID).QueryRow(ctx,
-		`SELECT external_id FROM calendars WHERE id = $1`, fixture.ownerCalendar.ID).Scan(&admitted); err != nil {
-		t.Fatalf("read the shared calendar's external_id as the grantee: %v", err)
-	}
+	granteeTx(ctx, t, restrictedPool, fixture.grantee.ID, func(tx pgx.Tx) {
+		if err := tx.QueryRow(ctx,
+			`SELECT external_id FROM calendars WHERE id = $1`, fixture.ownerCalendar.ID).Scan(&admitted); err != nil {
+			t.Fatalf("read the shared calendar's external_id as the grantee: %v", err)
+		}
+	})
 
 	if admitted != fixture.ownerCalendar.ExternalID {
 		t.Errorf("external_id = %q, want %q", admitted, fixture.ownerCalendar.ExternalID)
@@ -2419,7 +2503,7 @@ func TestAnEdgeOverACalendarNoGrantSharesIsRefusedByTheTrigger(t *testing.T) {
 		return err
 	})
 
-	requirePgError(t, err, pgRaiseException, edgesSourceCalendarRefusal)
+	requireEdgesSourceCalendarRefusal(t, err)
 
 	// A calendar id that names nothing at all is refused by the same
 	// trigger with the same message, which is what keeps the two cases
@@ -2435,7 +2519,7 @@ func TestAnEdgeOverACalendarNoGrantSharesIsRefusedByTheTrigger(t *testing.T) {
 		return err
 	})
 
-	requirePgError(t, err, pgRaiseException, edgesSourceCalendarRefusal)
+	requireEdgesSourceCalendarRefusal(t, err)
 
 	// And the grantee, who does hold a grant, may build the same edge
 	// over the same source. Without this the two refusals above would

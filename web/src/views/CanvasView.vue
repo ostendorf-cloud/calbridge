@@ -13,7 +13,7 @@
 import '@vue-flow/core/dist/style.css'
 import '../theme/vue-flow.css'
 
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import {
@@ -37,6 +37,7 @@ import {
   GovueEmptyState,
   GovueField,
   GovueInput,
+  GovueNav,
   GovuePage,
   GovueSelect,
   useForm,
@@ -92,6 +93,12 @@ interface CreatedEdgeResponse extends EdgeDto {
 const i18n = useI18n()
 const { t } = i18n
 const router = useRouter()
+
+const navItems = computed(() => [
+  { href: '/', label: t('nav.home') },
+  { href: '/canvas', label: t('nav.canvas'), current: true },
+  { href: '/grants', label: t('nav.grants') },
+])
 
 /** Created before the VueFlow component below mounts, so the store it
  *  provides is the one that component injects instead of creating its
@@ -323,9 +330,25 @@ const flowEdges = computed<FlowEdge[]>(() =>
    fills this form, it never creates an edge on its own ---- */
 const connectAnnouncement = ref('')
 
-function connectFrom(calendar: CalendarDto): void {
+/** targetCalendarSelectEl and newTargetAccountSelectEl wrap whichever
+ *  target control the form currently shows, so connectFrom can move
+ *  focus there: the live region below announces the next step, but an
+ *  announcement does not move focus by itself, and without this a
+ *  keyboard user would still have to tab past every remaining node to
+ *  reach it. */
+const targetCalendarSelectEl = ref<HTMLElement | null>(null)
+const newTargetAccountSelectEl = ref<HTMLElement | null>(null)
+
+async function connectFrom(calendar: CalendarDto): Promise<void> {
   connectForm.values.sourceId = calendar.id
   connectAnnouncement.value = t('canvas.connectAnnouncement', { name: calendar.name })
+
+  await nextTick()
+  const targetEl =
+    connectForm.values.targetMode === 'existing'
+      ? targetCalendarSelectEl.value
+      : newTargetAccountSelectEl.value
+  targetEl?.querySelector<HTMLElement>('button[role="combobox"]')?.focus()
 }
 
 interface ConnectFormFields {
@@ -578,6 +601,8 @@ async function confirmDeleteEdge(): Promise<void> {
 
 <template>
   <GovuePage :title="t('canvas.title')" :lead="t('canvas.lead')" width="shell">
+    <GovueNav :items="navItems" :aria-label="t('nav.ariaLabel')" />
+
     <p v-if="loading">{{ t('canvas.loading') }}</p>
 
     <p v-else-if="loadError" role="alert" class="text-danger-text">{{ loadError }}</p>
@@ -618,7 +643,6 @@ async function confirmDeleteEdge(): Promise<void> {
           <template #node-calendar="{ id }">
             <template v-for="calendar in calendarForNode(id)" :key="calendar.id">
               <div
-                tabindex="0"
                 role="group"
                 :aria-label="calendar.name"
                 class="nopan nodrag flex h-full w-full flex-col gap-1.5 rounded-md border border-border-strong bg-surface p-2.5 text-left shadow-card"
@@ -688,11 +712,13 @@ async function confirmDeleteEdge(): Promise<void> {
             :error="connectForm.errorOf('targetId')"
             required
           >
-            <GovueSelect
-              v-model="connectForm.values.targetId"
-              :options="targetCalendarOptions"
-              :placeholder="t('canvas.form.selectPlaceholder')"
-            />
+            <div ref="targetCalendarSelectEl">
+              <GovueSelect
+                v-model="connectForm.values.targetId"
+                :options="targetCalendarOptions"
+                :placeholder="t('canvas.form.selectPlaceholder')"
+              />
+            </div>
           </GovueField>
 
           <template v-else>
@@ -701,11 +727,13 @@ async function confirmDeleteEdge(): Promise<void> {
               :error="connectForm.errorOf('newTargetAccountId')"
               required
             >
-              <GovueSelect
-                v-model="connectForm.values.newTargetAccountId"
-                :options="accountOptions"
-                :placeholder="t('canvas.form.selectPlaceholder')"
-              />
+              <div ref="newTargetAccountSelectEl">
+                <GovueSelect
+                  v-model="connectForm.values.newTargetAccountId"
+                  :options="accountOptions"
+                  :placeholder="t('canvas.form.selectPlaceholder')"
+                />
+              </div>
             </GovueField>
             <GovueField
               :label="t('canvas.form.newTargetName')"
