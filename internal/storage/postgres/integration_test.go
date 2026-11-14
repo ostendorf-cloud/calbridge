@@ -1152,6 +1152,7 @@ func TestTheSecurityDefinerLookupsAreNotExecutableByPublic(t *testing.T) {
 	for _, signature := range []string{
 		"users_find_by_email(text)",
 		"identities_find_by_provider_subject(text, text)",
+		"grant_counterparties()",
 	} {
 		var executableByPublic bool
 
@@ -1600,6 +1601,7 @@ GRANT USAGE ON SCHEMA public TO ` + testAppRole + `;
 GRANT SELECT, INSERT, UPDATE, DELETE ON users TO ` + testAppRole + `;
 GRANT EXECUTE ON FUNCTION users_find_by_email(text) TO ` + testAppRole + `;
 GRANT EXECUTE ON FUNCTION identities_find_by_provider_subject(text, text) TO ` + testAppRole + `;
+GRANT EXECUTE ON FUNCTION grant_counterparties() TO ` + testAppRole + `;
 GRANT SELECT, INSERT, DELETE ON identities, calendars, calendar_grants TO ` + testAppRole + `;
 GRANT SELECT, INSERT, UPDATE, DELETE ON connections, edges, event_mapping TO ` + testAppRole + `;`
 
@@ -1734,6 +1736,442 @@ func connectionIDs(t *testing.T, rows pgx.Rows) []uuid.UUID {
 	}
 
 	return ids
+}
+
+// sharingFixture is two accounts, each with a connection and a
+// calendar, and one grant from the owner's calendar to the grantee. It
+// is what every assertion about the sharing surface needs in front of
+// it.
+type sharingFixture struct {
+	store *postgres.Store
+
+	owner            storage.User
+	ownerCalendar    storage.Calendar
+	grantee          storage.User
+	granteeCalendar  storage.Calendar
+	unrelated        storage.User
+	grant            storage.CalendarGrant
+	grantDetailLevel storage.DetailLevel
+}
+
+// seedSharing builds that fixture through the restricted role, so every
+// row in it was written under the same policies the assertions then run
+// against.
+func seedSharing(ctx context.Context, t *testing.T, store *postgres.Store) sharingFixture {
+	t.Helper()
+
+	fixture := sharingFixture{store: store, grantDetailLevel: storage.DetailLevelTitleTime}
+
+	for _, seat := range []struct {
+		user     *storage.User
+		calendar *storage.Calendar
+		prefix   string
+	}{
+		{&fixture.owner, &fixture.ownerCalendar, "owner"},
+		{&fixture.grantee, &fixture.granteeCalendar, "grantee"},
+		{&fixture.unrelated, nil, "unrelated"},
+	} {
+		user, err := store.Users().Create(ctx, storage.User{
+			Email:  seat.prefix + "-" + uuid.NewString() + "@example.com",
+			Status: storage.UserStatusActive,
+		})
+		if err != nil {
+			t.Fatalf("create the %s user: %v", seat.prefix, err)
+		}
+
+		*seat.user = user
+
+		if seat.calendar == nil {
+			continue
+		}
+
+		if err := store.WithUser(ctx, user.ID, func(ctx context.Context) error {
+			connection, err := store.Connections().Create(ctx, storage.Connection{
+				UserID:      user.ID,
+				Provider:    storage.ConnectionProviderGoogle,
+				DisplayName: seat.prefix + "'s Google account",
+				Credentials: []byte("not-a-real-refresh-token"),
+			})
+			if err != nil {
+				return err
+			}
+
+			calendar, err := store.Calendars().Create(ctx, storage.Calendar{
+				UserID:       user.ID,
+				ConnectionID: connection.ID,
+				ExternalID:   seat.prefix + "-" + uuid.NewString(),
+				Name:         seat.prefix + "'s calendar",
+			})
+			if err != nil {
+				return err
+			}
+
+			*seat.calendar = calendar
+
+			return nil
+		}); err != nil {
+			t.Fatalf("seed the %s calendar: %v", seat.prefix, err)
+		}
+	}
+
+	if err := store.WithUser(ctx, fixture.owner.ID, func(ctx context.Context) error {
+		grant, err := store.CalendarGrants().Create(ctx, storage.CalendarGrant{
+			OwnerUserID:    fixture.owner.ID,
+			GranteeUserID:  fixture.grantee.ID,
+			CalendarID:     fixture.ownerCalendar.ID,
+			MaxDetailLevel: fixture.grantDetailLevel,
+		})
+		if err != nil {
+			return err
+		}
+
+		fixture.grant = grant
+
+		return nil
+	}); err != nil {
+		t.Fatalf("create the grant: %v", err)
+	}
+
+	return fixture
+}
+
+// TestAGrantIsWhatLetsAGranteeReadTheSharedCalendar holds down the
+// policy this milestone added: calendars_grantee_read, and nothing else,
+// is what admits a calendar somebody else owns, and it admits exactly
+// the ones a grant names.
+func TestAGrantIsWhatLetsAGranteeReadTheSharedCalendar(t *testing.T) {
+	adminURL := requireDatabaseURL(t)
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	store := restrictedStore(ctx, t, adminPool, adminURL)
+	fixture := seedSharing(ctx, t, store)
+
+	var shared []storage.SharedCalendar
+
+	if err := store.WithUser(ctx, fixture.grantee.ID, func(ctx context.Context) error {
+		var err error
+		shared, err = store.Sharing().ListCalendarsSharedWithMe(ctx)
+
+		return err
+	}); err != nil {
+		t.Fatalf("list the calendars shared with the grantee: %v", err)
+	}
+
+	if len(shared) != 1 {
+		t.Fatalf("the grantee sees %d shared calendars, want exactly the one the grant names", len(shared))
+	}
+
+	if shared[0].ID != fixture.ownerCalendar.ID {
+		t.Errorf("shared calendar = %v, want %v", shared[0].ID, fixture.ownerCalendar.ID)
+	}
+
+	if shared[0].UserID != fixture.owner.ID {
+		t.Errorf("shared calendar's owner = %v, want %v", shared[0].UserID, fixture.owner.ID)
+	}
+
+	if shared[0].MaxDetailLevel != fixture.grantDetailLevel {
+		t.Errorf("max detail level = %q, want %q; a shared calendar without its bound is the thing "+
+			"storage.SharedCalendar exists to prevent", shared[0].MaxDetailLevel, fixture.grantDetailLevel)
+	}
+
+	if shared[0].GrantID != fixture.grant.ID {
+		t.Errorf("grant id = %v, want %v", shared[0].GrantID, fixture.grant.ID)
+	}
+
+	// The control: an account no grant names sees nothing, even though
+	// the very same row is really there and the very same query runs.
+	var unrelated []storage.SharedCalendar
+
+	if err := store.WithUser(ctx, fixture.unrelated.ID, func(ctx context.Context) error {
+		var err error
+		unrelated, err = store.Sharing().ListCalendarsSharedWithMe(ctx)
+
+		return err
+	}); err != nil {
+		t.Fatalf("list the calendars shared with an unrelated account: %v", err)
+	}
+
+	if len(unrelated) != 0 {
+		t.Fatalf("an account no grant names sees %d shared calendars, want none", len(unrelated))
+	}
+}
+
+// TestAGranteeMayReadASharedCalendarAndNothingElseWithIt is the other
+// half of the policy: calendars_grantee_read is FOR SELECT, so it widens
+// what comes back and cannot widen what may be written.
+// calendars_user_isolation still decides every write, which this proves
+// by naming the SQLSTATE each refusal carries rather than only that one
+// happened.
+func TestAGranteeMayReadASharedCalendarAndNothingElseWithIt(t *testing.T) {
+	adminURL := requireDatabaseURL(t)
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	store := restrictedStore(ctx, t, adminPool, adminURL)
+	fixture := seedSharing(ctx, t, store)
+
+	restrictedPool, err := postgres.NewPool(ctx, setUpTestAppRole(ctx, t, adminPool, adminURL))
+	if err != nil {
+		t.Fatalf("open restricted pool as %s: %v", testAppRole, err)
+	}
+	t.Cleanup(restrictedPool.Close)
+
+	tx, err := restrictedPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.user_id', $1, true)`, fixture.grantee.ID.String()); err != nil {
+		t.Fatalf("scope the transaction to the grantee: %v", err)
+	}
+
+	// The read the new policy admits, run with no predicate on user_id
+	// at all, so what comes back is what the policies admitted.
+	var visible int
+
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM calendars WHERE id = $1`, fixture.ownerCalendar.ID).Scan(&visible); err != nil {
+		t.Fatalf("read the shared calendar as the grantee: %v", err)
+	}
+
+	if visible != 1 {
+		t.Fatalf("the grantee reads %d rows for the shared calendar, want 1; calendars_grantee_read "+
+			"is what admits it", visible)
+	}
+
+	// An UPDATE and a DELETE are decided by calendars_user_isolation
+	// alone, which the grantee does not satisfy, so both match no row.
+	// They are refused by matching nothing rather than by raising, which
+	// is how a USING clause refuses a command it filters.
+	for _, statement := range []struct {
+		name string
+		sql  string
+	}{
+		{"update", `UPDATE calendars SET name = 'renamed by the grantee' WHERE id = $1`},
+		{"delete", `DELETE FROM calendars WHERE id = $1`},
+	} {
+		tag, err := tx.Exec(ctx, statement.sql, fixture.ownerCalendar.ID)
+		if err != nil {
+			t.Fatalf("%s the shared calendar as the grantee: %v", statement.name, err)
+		}
+
+		if tag.RowsAffected() != 0 {
+			t.Errorf("the grantee's %s touched %d rows, want 0: calendars_grantee_read is FOR SELECT "+
+				"and must not widen a write", statement.name, tag.RowsAffected())
+		}
+	}
+
+	// And the row really is still there and unchanged, read through a
+	// connection that bypasses row level security. Without this the
+	// assertions above would pass against an empty table.
+	var name string
+
+	if err := adminPool.QueryRow(ctx,
+		`SELECT name FROM calendars WHERE id = $1`, fixture.ownerCalendar.ID).Scan(&name); err != nil {
+		t.Fatalf("admin read of the shared calendar: %v", err)
+	}
+
+	if name != fixture.ownerCalendar.Name {
+		t.Errorf("the shared calendar is now named %q, want %q", name, fixture.ownerCalendar.Name)
+	}
+}
+
+// TestGrantCounterpartiesDisclosesOnlyThePeopleAGrantAlreadyNames holds
+// down the SECURITY DEFINER function this milestone added. It bypasses
+// row level security on users and calendar_grants by design, so its own
+// WHERE clause is the whole of the access control and is what this
+// checks: both sides of a grant see each other, an account on neither
+// side sees nobody, and nothing but the address comes back.
+func TestGrantCounterpartiesDisclosesOnlyThePeopleAGrantAlreadyNames(t *testing.T) {
+	adminURL := requireDatabaseURL(t)
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	store := restrictedStore(ctx, t, adminPool, adminURL)
+	fixture := seedSharing(ctx, t, store)
+
+	requireUsersExist(ctx, t, adminPool, fixture.owner.ID, fixture.grantee.ID, fixture.unrelated.ID)
+
+	cases := []struct {
+		name      string
+		scope     uuid.UUID
+		wantID    uuid.UUID
+		wantEmail string
+		wantNone  bool
+	}{
+		{
+			name:      "the owner sees the account they shared with",
+			scope:     fixture.owner.ID,
+			wantID:    fixture.grantee.ID,
+			wantEmail: fixture.grantee.Email,
+		},
+		{
+			name:      "the grantee sees the account that shared with them",
+			scope:     fixture.grantee.ID,
+			wantID:    fixture.owner.ID,
+			wantEmail: fixture.owner.Email,
+		},
+		{
+			name:     "an account on neither side of any grant sees nobody",
+			scope:    fixture.unrelated.ID,
+			wantNone: true,
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var counterparties []storage.GrantCounterparty
+
+			if err := store.WithUser(ctx, testCase.scope, func(ctx context.Context) error {
+				var err error
+				counterparties, err = store.Sharing().ListGrantCounterparties(ctx)
+
+				return err
+			}); err != nil {
+				t.Fatalf("list the counterparties: %v", err)
+			}
+
+			if testCase.wantNone {
+				if len(counterparties) != 0 {
+					t.Fatalf("got %d counterparties, want none: the function's own WHERE clause is "+
+						"the only thing bounding it", len(counterparties))
+				}
+
+				return
+			}
+
+			if len(counterparties) != 1 {
+				t.Fatalf("got %d counterparties, want exactly the one the grant names", len(counterparties))
+			}
+
+			if counterparties[0].UserID != testCase.wantID {
+				t.Errorf("counterparty = %v, want %v", counterparties[0].UserID, testCase.wantID)
+			}
+
+			if counterparties[0].Email != testCase.wantEmail {
+				t.Errorf("email = %q, want %q", counterparties[0].Email, testCase.wantEmail)
+			}
+		})
+	}
+}
+
+// TestFindUserIDByEmailAnswersOnlyTheID holds down the projection
+// queries/users.sql relies on: the SECURITY DEFINER function behind it
+// returns a whole users row, and what leaves the database is the id.
+func TestFindUserIDByEmailAnswersOnlyTheID(t *testing.T) {
+	adminURL := requireDatabaseURL(t)
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	store := restrictedStore(ctx, t, adminPool, adminURL)
+	fixture := seedSharing(ctx, t, store)
+
+	found, err := store.Sharing().FindUserIDByEmail(ctx, fixture.grantee.Email)
+	if err != nil {
+		t.Fatalf("find the grantee by address: %v", err)
+	}
+
+	if found != fixture.grantee.ID {
+		t.Errorf("found %v, want %v", found, fixture.grantee.ID)
+	}
+
+	if _, err := store.Sharing().FindUserIDByEmail(ctx, "nobody-"+uuid.NewString()+"@example.com"); !errors.Is(err, storage.ErrNotFound) {
+		t.Errorf("err = %v, want storage.ErrNotFound for an address no account has", err)
+	}
+}
+
+// TestAnEdgeOverACalendarNoGrantSharesIsRefusedByTheTrigger is the rule
+// internal/httpapi relies on underneath its own checks: the database
+// refuses the edge whatever the handler did or did not look at first.
+// It names the mechanism by SQLSTATE and message, so a different check
+// refusing in the trigger's place fails here.
+func TestAnEdgeOverACalendarNoGrantSharesIsRefusedByTheTrigger(t *testing.T) {
+	adminURL := requireDatabaseURL(t)
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	store := restrictedStore(ctx, t, adminPool, adminURL)
+	fixture := seedSharing(ctx, t, store)
+
+	// The unrelated account owns no calendar at all, so it builds its
+	// edge naming the owner's calendar as source and, as target, a
+	// calendar the grantee owns. Neither is reachable from it.
+	err = store.WithUser(ctx, fixture.unrelated.ID, func(ctx context.Context) error {
+		_, err := store.Edges().Create(ctx, storage.Edge{
+			UserID:           fixture.unrelated.ID,
+			SourceCalendarID: fixture.ownerCalendar.ID,
+			TargetCalendarID: fixture.granteeCalendar.ID,
+			DetailLevel:      storage.DetailLevelBusyBlock,
+		})
+
+		return err
+	})
+
+	requirePgError(t, err, pgRaiseException, edgesSourceCalendarRefusal)
+
+	// A calendar id that names nothing at all is refused by the same
+	// trigger with the same message, which is what keeps the two cases
+	// indistinguishable at the database as well as at the API.
+	err = store.WithUser(ctx, fixture.unrelated.ID, func(ctx context.Context) error {
+		_, err := store.Edges().Create(ctx, storage.Edge{
+			UserID:           fixture.unrelated.ID,
+			SourceCalendarID: uuid.New(),
+			TargetCalendarID: fixture.granteeCalendar.ID,
+			DetailLevel:      storage.DetailLevelBusyBlock,
+		})
+
+		return err
+	})
+
+	requirePgError(t, err, pgRaiseException, edgesSourceCalendarRefusal)
+
+	// And the grantee, who does hold a grant, may build the same edge
+	// over the same source. Without this the two refusals above would
+	// prove only that the trigger refuses everything.
+	if err := store.WithUser(ctx, fixture.grantee.ID, func(ctx context.Context) error {
+		_, err := store.Edges().Create(ctx, storage.Edge{
+			UserID:           fixture.grantee.ID,
+			SourceCalendarID: fixture.ownerCalendar.ID,
+			TargetCalendarID: fixture.granteeCalendar.ID,
+			DetailLevel:      storage.DetailLevelBusyBlock,
+		})
+
+		return err
+	}); err != nil {
+		t.Fatalf("the grantee's own edge over the shared calendar was refused: %v", err)
+	}
 }
 
 func assertOnlyConnection(t *testing.T, connections []storage.Connection, wantID uuid.UUID) {

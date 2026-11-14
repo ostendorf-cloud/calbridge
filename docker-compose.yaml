@@ -157,6 +157,8 @@ services:
       - -c
       - GRANT EXECUTE ON FUNCTION identities_find_by_provider_subject(text, text) TO calbridge_app;
       - -c
+      - GRANT EXECUTE ON FUNCTION grant_counterparties() TO calbridge_app;
+      - -c
       - GRANT SELECT, INSERT, DELETE ON identities, calendars, calendar_grants TO calbridge_app;
       - -c
       - GRANT SELECT, INSERT, UPDATE, DELETE ON connections, edges, event_mapping TO calbridge_app;

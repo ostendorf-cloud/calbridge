@@ -9,6 +9,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createCalendar = `-- name: CreateCalendar :one
@@ -111,6 +112,74 @@ func (q *Queries) ListCalendars(ctx context.Context) ([]Calendar, error) {
 			&i.Managed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCalendarsSharedWithMe = `-- name: ListCalendarsSharedWithMe :many
+
+SELECT c.id, c.user_id, c.connection_id, c.external_id, c.name, c.managed, c.created_at, c.updated_at,
+       g.id AS grant_id, g.max_detail_level
+FROM calendars c
+JOIN calendar_grants g ON g.calendar_id = c.id
+WHERE g.grantee_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
+ORDER BY c.created_at
+`
+
+type ListCalendarsSharedWithMeRow struct {
+	ID             uuid.UUID
+	UserID         uuid.UUID
+	ConnectionID   uuid.UUID
+	ExternalID     string
+	Name           string
+	Managed        bool
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+	GrantID        uuid.UUID
+	MaxDetailLevel string
+}
+
+// ListCalendarsSharedWithMe is the other half of ListCalendars: the
+// calendars somebody else owns and shared with this user through a
+// calendar_grants row. It is a separate query rather than an OR inside
+// ListCalendars because the two answer different questions and a caller
+// that confuses them would, for instance, offer somebody else's calendar
+// as a target calbridge may create a calendar in.
+//
+// The join to calendar_grants is the same test
+// calendars_grantee_read's own USING clause makes (see db/migrations),
+// the second independent layer every query in this directory carries.
+// max_detail_level and the owner come back with the row: a shared
+// calendar is only ever usable up to the level its grant allows, and
+// the two are read together so nothing above can hold one without the
+// other.
+func (q *Queries) ListCalendarsSharedWithMe(ctx context.Context) ([]ListCalendarsSharedWithMeRow, error) {
+	rows, err := q.db.Query(ctx, listCalendarsSharedWithMe)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCalendarsSharedWithMeRow
+	for rows.Next() {
+		var i ListCalendarsSharedWithMeRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.ConnectionID,
+			&i.ExternalID,
+			&i.Name,
+			&i.Managed,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.GrantID,
+			&i.MaxDetailLevel,
 		); err != nil {
 			return nil, err
 		}

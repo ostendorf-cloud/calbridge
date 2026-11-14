@@ -1,0 +1,58 @@
+/*
+ * Vue Flow's own structural stylesheet (@vue-flow/core/dist/style.css) is
+ * imported alongside this file wherever the canvas is used. Its theme file,
+ * theme-default.css, is deliberately not imported: it carries a second,
+ * unrelated colour palette (plain hex values such as #b1b1b7 and #1a192b).
+ * Every colour Vue Flow still needs comes from this repository's own tokens
+ * instead, the same ones calbridge.css and govue's components use.
+ *
+ * Calendar and group nodes are rendered through this app's own node
+ * templates, styled with the usual Tailwind utility classes against the
+ * token set, so this file only has to cover what Vue Flow renders itself:
+ * the connection line, the edge path, the handles and the selection
+ * rectangle.
+ */
+
+.vue-flow__edge-path,
+.vue-flow__connection-path {
+  stroke: var(--color-border-strong);
+  stroke-width: 2;
+}
+
+.vue-flow__edge.selected .vue-flow__edge-path,
+.vue-flow__edge:focus .vue-flow__edge-path,
+.vue-flow__edge:focus-visible .vue-flow__edge-path {
+  stroke: var(--color-accent-strong);
+}
+
+.vue-flow__edge-text {
+  fill: var(--color-text);
+  font-size: 0.75rem;
+}
+
+.vue-flow__edge-textbg {
+  fill: var(--color-surface);
+}
+
+.vue-flow__handle {
+  width: 10px;
+  height: 10px;
+  border-radius: 9999px;
+  background: var(--color-accent);
+  border: 2px solid var(--color-surface);
+}
+
+.vue-flow__handle.connectable {
+  cursor: crosshair;
+}
+
+.vue-flow__handle:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.vue-flow__nodesselection-rect,
+.vue-flow__selection {
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  border: 1px dashed var(--color-accent);
+}

@@ -142,6 +142,32 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 	return i, err
 }
 
+const getUserIDByEmail = `-- name: GetUserIDByEmail :one
+SELECT id
+FROM users_find_by_email($1)
+`
+
+// GetUserIDByEmail resolves the address a grant names into the user id
+// the grant row stores. It goes through the same users_find_by_email
+// the login lookup does, rather than through a second SECURITY DEFINER
+// function: the question is the same question, and the projection to id
+// alone means password_hash and totp_secret stay inside the database
+// rather than travelling to Go for a grant to be created.
+//
+// That an unknown address can be told apart from a known one here is
+// deliberate and discloses nothing new: signup already answers "an
+// account already exists for this email address" (see internal/httpapi's
+// signUpError), so whether an address has an account is already known to
+// anyone who can reach the signup route. Closing it here and leaving it
+// open there would buy nothing and would leave a person unable to tell a
+// mistyped address from a successful share.
+func (q *Queries) GetUserIDByEmail(ctx context.Context, email string) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, getUserIDByEmail, email)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const updateUser = `-- name: UpdateUser :one
 UPDATE users
 SET password_hash = $2,

@@ -5,3 +5,14 @@
 # Reused from solobill, the sibling this web/ package follows.
 overrides:
   '@testing-library/dom': '^10'
+
+# pnpm 10+ refuses to run a dependency's install script unless it is
+# approved here, and without that an install run non-interactively (task
+# web:deps, CI) fails outright instead of silently skipping the script.
+# vue-demi comes in transitively through @vue-flow/core's use of
+# @vueuse/core; its postinstall only copies the lib file matching the
+# installed Vue major version into its own package folder
+# (vue-demi/scripts/postinstall.js), no network access and nothing
+# outside that package. Written by `pnpm approve-builds vue-demi`.
+allowBuilds:
+  vue-demi: true

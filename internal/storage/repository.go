@@ -105,13 +105,46 @@ type ConnectionRepository interface {
 	Delete(ctx context.Context, id uuid.UUID) error
 }
 
-// CalendarRepository persists and queries calendars. Every method must
-// run inside a context UserScope.WithUser produced; see ErrNoUserScope.
+// CalendarRepository persists and queries the calendars one user owns.
+// Every method must run inside a context UserScope.WithUser produced;
+// see ErrNoUserScope. A calendar somebody else owns and shared is
+// deliberately out of reach here, FindByID included, so no caller can
+// hold a shared calendar without the grant that bounds it; it comes
+// back through SharingRepository instead.
 type CalendarRepository interface {
 	Create(ctx context.Context, calendar Calendar) (Calendar, error)
 	FindByID(ctx context.Context, id uuid.UUID) (Calendar, error)
 	List(ctx context.Context) ([]Calendar, error)
 	Delete(ctx context.Context, id uuid.UUID) error
+}
+
+// SharingRepository answers the three questions that cross the boundary
+// between one user and another, and it is deliberately its own
+// interface rather than three methods spread over the repositories
+// above: everything reachable through it is reachable only because a
+// grant, or the person creating one, named somebody explicitly, and
+// keeping that in one place is what makes the whole of that surface
+// readable at once.
+//
+// ListCalendarsSharedWithMe and ListGrantCounterparties must run inside
+// a context UserScope.WithUser produced; see ErrNoUserScope. Each
+// returns a shared calendar with the grant that bounds it, and the
+// address of each person on the other side of a grant this user is
+// party to, respectively. Neither takes a parameter naming whose rows
+// to read: the scope is the whole of the question.
+//
+// FindUserIDByEmail is the one method here that is not user-scoped, for
+// the same reason UserRepository.FindByEmail is not: it has to answer
+// for an address that is not the caller's own, so no scope would admit
+// the row. It answers which user id an address belongs to and nothing
+// else, so the caller that creates a grant never holds a password hash
+// or a TOTP secret it has no use for. ErrNotFound means no account has
+// that address; see internal/storage/postgres's queries/users.sql for
+// why that is said plainly rather than hidden.
+type SharingRepository interface {
+	FindUserIDByEmail(ctx context.Context, email string) (uuid.UUID, error)
+	ListCalendarsSharedWithMe(ctx context.Context) ([]SharedCalendar, error)
+	ListGrantCounterparties(ctx context.Context) ([]GrantCounterparty, error)
 }
 
 // EdgeRepository persists and queries sync edges. Every method must run
@@ -136,6 +169,9 @@ type EdgeRepository interface {
 // them and may delete a grant made to them the same way, but the
 // database itself (see that migration's WITH CHECK clause) refuses an
 // Update from any scope other than the owner's.
+//
+// A grant row names its two users by id and nothing more. Who those ids
+// are is SharingRepository's question, not this one's.
 type CalendarGrantRepository interface {
 	Create(ctx context.Context, grant CalendarGrant) (CalendarGrant, error)
 	FindByID(ctx context.Context, id uuid.UUID) (CalendarGrant, error)
