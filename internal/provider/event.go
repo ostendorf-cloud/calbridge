@@ -5,6 +5,7 @@ package provider
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -318,6 +319,42 @@ type Recurrence struct {
 	OriginalStart EventTime
 }
 
+// InstanceSeparator joins a master's Event.ID to the provider's own
+// identifier of one overridden occurrence. A provider that stores its
+// overrides inside the master's object has no id of its own to give them,
+// so the connector derives one, and this is the byte that derives it.
+//
+// Reading a derived id back is only unambiguous where no plain event id
+// in the same calendar carries the separator, and a connector does not
+// always get to choose. A CalDAV resource name is the server's, not the
+// connector's: a resource named "a%23b.ics" reaches the connector as the
+// event id "a#b.ics" and reads as an occurrence of "a". A caller may not
+// assume the separator is absent from a plain id. What it may assume is
+// the weaker thing: a collision shows as one event's copy being swept
+// with another's, never as a source event the caller stops seeing.
+// Closing it for good is issue #29, which bounds the damage in the
+// engine rather than by constraining what a server may name a resource.
+const InstanceSeparator = "#"
+
+// InstanceIDOf returns the Event.ID of one overridden occurrence of the
+// master masterID names. occurrence is whatever the provider identifies
+// the occurrence by, such as an RFC 5545 RECURRENCE-ID, and stays opaque
+// outside the connector.
+func InstanceIDOf(masterID, occurrence string) string {
+	return masterID + InstanceSeparator + occurrence
+}
+
+// IsInstanceIDOf reports whether eventID is an id derived from masterID
+// with InstanceIDOf. It is what turns one deletion of a master into the
+// deletion of the instances the provider removed with it.
+//
+// It answers on the id's shape alone, so a plain event id that happens to
+// carry the separator answers true for whatever precedes it. See
+// InstanceSeparator for what that costs and what it does not.
+func IsInstanceIDOf(eventID, masterID string) bool {
+	return strings.HasPrefix(eventID, masterID+InstanceSeparator)
+}
+
 // IsMaster reports whether the event repeats under its own rule.
 func (r Recurrence) IsMaster() bool { return len(r.Rule) > 0 }
 
@@ -351,6 +388,15 @@ func (r Recurrence) Validate() error {
 // deleted edge finds what it wrote. A connector stores both fields with
 // the event and returns them unchanged. What they mean belongs to the
 // sync engine, not here.
+//
+// It carries no detail level and no field mask, and that is deliberate.
+// The two fields here are an identity, and a connector has to store them
+// in whatever it has for an extension property. Adding what a copy was
+// made at would put a sync concept in every connector and would be a
+// second place for it to be wrong. The engine folds the mask into the
+// content hash it stores with the copy instead, so a copy made at another
+// detail level hashes differently and is rewritten, and the stored row,
+// not the provider, is what says what the copy was made at.
 type Marker struct {
 	// Edge names the sync edge that wrote the event.
 	Edge string

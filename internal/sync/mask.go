@@ -179,7 +179,17 @@ func (m FieldMask) String() string {
 // Dropping what the target cannot keep here, rather than leaving it to
 // the connector, is what keeps the content hash honest: the hash of the
 // projection has to match the hash of the event the provider gives back,
-// or every reconcile would read a difference and rewrite.
+// or every reconcile would read a difference and rewrite. A target that
+// rewrites content of its own declares it, and Binding.stored is what
+// then says what the comparison runs against.
+//
+// A projection is never an instance. The recurrence a copy carries is a
+// rule or nothing: Recurrence.MasterID and Recurrence.OriginalStart
+// describe the source's own series and mean nothing in the target. An
+// overridden occurrence the engine copies on its own is written as a
+// plain event at its own time, which is why a target declaring
+// Capabilities.InstanceWrites as false is never asked for a write it
+// would refuse.
 func (m FieldMask) project(src provider.Event, target Endpoint, marker provider.Marker) (provider.Event, error) {
 	caps := target.Connector.Capabilities()
 

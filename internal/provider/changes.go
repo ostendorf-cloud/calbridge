@@ -102,6 +102,17 @@ const (
 	// ChangeKindDelete means the event is gone from the calendar, whether
 	// it was deleted or cancelled. Change.Event is the zero Event, so
 	// Change.EventID is all the caller gets.
+	//
+	// One delete can remove several normalised events. A provider that
+	// stores a repeating master and its overridden occurrences in one
+	// object removes them in one go and has one id to report it under,
+	// the master's, so a delete of a master's id is also the delete of
+	// every instance IsInstanceIDOf matches against it. The caller applies
+	// that implication itself: the object is already gone when the
+	// deletion is read, so the connector cannot list what was inside it.
+	//
+	// A provider whose instances are events of their own reports a delete
+	// for each, and the implication finds nothing to add.
 	ChangeKindDelete
 )
 

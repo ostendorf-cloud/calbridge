@@ -181,6 +181,11 @@ func (p Profile) Validate() error {
 	if p.Capabilities.PushNotifications {
 		return fmt.Errorf("profile %q declares push notifications, which CalDAV has no mechanism for: %w", p.Name, ErrInvalidProfile)
 	}
+	if p.Capabilities.InstanceWrites {
+		return fmt.Errorf(
+			"profile %q declares instance writes, which one CalDAV resource per UID leaves no way to make: %w",
+			p.Name, ErrInvalidProfile)
+	}
 
 	return nil
 }
@@ -249,6 +254,11 @@ var ICloud = Profile{
 		// RFC 5545 section 3.3.5 form one is a date-time with no zone, and
 		// the server stores the object as written.
 		FloatingTimes: true,
+		// A CalDAV resource holds a repeating master and every override of
+		// it under one UID, so one occurrence is a VEVENT inside another
+		// resource rather than a resource of its own. There is nothing to
+		// PUT or DELETE for it.
+		InstanceWrites: false,
 	},
 	Quirks: Quirks{
 		IgnoresSyncLimit:       true,

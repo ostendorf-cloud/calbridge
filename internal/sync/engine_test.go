@@ -138,7 +138,7 @@ func TestEngine_Apply_updatesWhenTheSourceChanged(t *testing.T) {
 	h.apply(source)
 
 	source.Summary = "Jour fixe, verlegt"
-	source = h.put(source)
+	source = h.replace(source)
 
 	wantActions(t, h.apply(source), "update/source changed")
 	wantWrites(t, h.target, 1, 1, 0)
@@ -373,7 +373,7 @@ func TestEngine_Reconcile_overwritesACopyEditedByHandInTheTarget(t *testing.T) {
 	h.reconcile()
 
 	copied := h.onlyCopy()
-	h.target.edit(h.targetCal, copied.ID, func(event *provider.Event) {
+	h.target.Edit(h.targetCal, copied.ID, func(event *provider.Event) {
 		event.Summary = "Nicht stoeren"
 		event.Location = "Zuhause"
 	})
@@ -395,8 +395,7 @@ func TestEngine_Reconcile_writesACopySomebodyDeletedAgain(t *testing.T) {
 	h.reconcile()
 
 	copied := h.onlyCopy()
-	h.target.edit(h.targetCal, copied.ID, func(event *provider.Event) {})
-	if err := h.target.DeleteEvent(context.Background(), fakeCredential{connection: testConnection}, h.targetCal, copied.ID); err != nil {
+	if err := h.target.DeleteEvent(context.Background(), testCredential(), h.targetCal, copied.ID); err != nil {
 		t.Fatalf("delete the copy behind calbridge's back: %v", err)
 	}
 
@@ -413,7 +412,7 @@ func TestEngine_Reconcile_removesACopyWhoseSourceIsGone(t *testing.T) {
 	source := h.put(meeting("Jour fixe", 4, 9))
 	h.reconcile()
 
-	if err := h.source.DeleteEvent(context.Background(), fakeCredential{connection: testConnection}, h.sourceCal, source.ID); err != nil {
+	if err := h.source.DeleteEvent(context.Background(), testCredential(), h.sourceCal, source.ID); err != nil {
 		t.Fatalf("delete the source event: %v", err)
 	}
 
@@ -434,7 +433,7 @@ func TestEngine_Reconcile_removesAMarkedEventNoMappingClaims(t *testing.T) {
 	h := newHarness(t, setup{})
 	orphan := meeting("Vergessene Kopie", 6, 11)
 	orphan.Marker = provider.Marker{Edge: h.binding.Edge.ID.String(), Source: "evt-gone"}
-	h.target.put(h.targetCal, orphan)
+	h.target.Put(h.targetCal, orphan)
 
 	wantActions(t, h.reconcile(), "delete/orphan")
 	if got := len(h.copies()); got != 0 {
@@ -447,11 +446,11 @@ func TestEngine_Reconcile_leavesEventsOfAnotherEdgeAlone(t *testing.T) {
 
 	h := newHarness(t, setup{})
 	foreign := meeting("Fremder Termin", 6, 11)
-	stored := h.target.put(h.targetCal, foreign)
+	stored := h.target.Put(h.targetCal, foreign)
 
 	wantActions(t, h.reconcile())
 
-	if !h.target.holds(h.targetCal, stored.ID) {
+	if !h.target.Holds(h.targetCal, stored.ID) {
 		t.Fatal("the target lost an event this edge never wrote")
 	}
 }
@@ -467,7 +466,7 @@ func TestEngine_neverCopiesACopyOnward(t *testing.T) {
 	first.reconcile()
 
 	onward := newFakeConnector(defaultTargetCaps)
-	onwardCal := onward.addCalendar("Weiter", provider.Calendar{TimeZone: "Europe/Berlin"})
+	onwardCal := onward.AddCalendar(testConnection, provider.Calendar{Name: "Weiter", TimeZone: "Europe/Berlin"}).ID
 	onwardRow := first.store.addCalendar(first.user, onwardCal, false)
 	targetRow := first.store.addCalendar(first.user, first.targetCal, false)
 	second := sync.Binding{
@@ -478,8 +477,8 @@ func TestEngine_neverCopiesACopyOnward(t *testing.T) {
 			DetailLevel:      storage.DetailLevelFull,
 		}),
 		Mask:   mustMask(t, storage.DetailLevelFull),
-		Source: sync.Endpoint{Connector: first.target, Credential: fakeCredential{connection: testConnection}, CalendarID: first.targetCal, TimeZone: "Europe/Berlin"},
-		Target: sync.Endpoint{Connector: onward, Credential: fakeCredential{connection: testConnection}, CalendarID: onwardCal, TimeZone: "Europe/Berlin"},
+		Source: sync.Endpoint{Connector: first.target, Credential: testCredential(), CalendarID: first.targetCal, TimeZone: "Europe/Berlin"},
+		Target: sync.Endpoint{Connector: onward, Credential: testCredential(), CalendarID: onwardCal, TimeZone: "Europe/Berlin"},
 	}
 
 	report, err := first.engine.Reconcile(context.Background(), second)
@@ -499,7 +498,7 @@ func TestEngine_Teardown_givesBackEverythingTheEdgeWrote(t *testing.T) {
 	h.put(meeting("Retro", 5, 14))
 	h.reconcile()
 
-	foreign := h.target.put(h.targetCal, meeting("Fremder Termin", 6, 11))
+	foreign := h.target.Put(h.targetCal, meeting("Fremder Termin", 6, 11))
 
 	report, err := h.engine.Teardown(context.Background(), h.binding)
 	if err != nil {
@@ -513,7 +512,7 @@ func TestEngine_Teardown_givesBackEverythingTheEdgeWrote(t *testing.T) {
 	if got := len(h.store.mappingsOf(h.binding.Edge.ID)); got != 0 {
 		t.Fatalf("mapping rows: got %d, want none", got)
 	}
-	if !h.target.holds(h.targetCal, foreign.ID) {
+	if !h.target.Holds(h.targetCal, foreign.ID) {
 		t.Fatal("teardown removed an event this edge never wrote")
 	}
 	if report.CalendarDeleted {
@@ -536,7 +535,7 @@ func TestEngine_Teardown_removesACalendarCalbridgeCreated(t *testing.T) {
 	if !report.CalendarDeleted {
 		t.Fatal("teardown kept the calendar calbridge created")
 	}
-	if events := h.target.events(h.targetCal); events != nil {
+	if events := h.target.Events(h.targetCal); events != nil {
 		t.Fatalf("the managed calendar still holds %d events", len(events))
 	}
 }

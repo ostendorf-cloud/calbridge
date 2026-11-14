@@ -75,8 +75,16 @@ Selective calendar mirroring across providers, one detail level per edge.
 - A connector registers itself into a registry under a provider id, so adding one is a new package
   and one import, never an edit to a switch statement somewhere in the engine.
 - Every connector declares its capabilities (push notifications, native recurrence rules, calendar
-  creation, attendees, floating times); the engine reads that declaration and picks its strategy,
-  so a provider's gaps are known at registration rather than discovered at runtime.
+  creation, attendees, floating times, writing one overridden occurrence, and rewriting content on
+  write); the engine reads that declaration and picks its strategy, so a provider's gaps are known
+  at registration rather than discovered at runtime.
+- One connector answers once for every connection it serves. A connector standing in front of
+  several servers, as the CalDAV one does, declares the intersection, and a server too different for
+  that is a second connector under its own id rather than an answer that varies per call.
+- A connector that does not store an event exactly as written says so and answers what a write
+  turns it into. Without that the engine compares a copy against what it wrote, reads the
+  difference as a hand edit, and rewrites every mirrored event on every pass while the sync looks
+  like it is working.
 - Free/busy is deliberately not a capability: no part of the design reads it, and negotiating
   free/busy is a non goal. Floating times is one, because neither Google nor Graph can store a time
   without a zone, so anchoring a floating source time is a decision the engine must make knowingly.
@@ -171,7 +179,12 @@ Selective calendar mirroring across providers, one detail level per edge.
 ## Decisions to record as ADRs
 
 - A mirrored event edited by hand in the target is overwritten on the next reconcile, recorded in
-  `docs/adr/0001-overwrite-hand-edited-mirrored-events.md`.
+  `docs/adr/0001-overwrite-hand-edited-mirrored-events.md`. A single overridden occurrence is the
+  exception where the target keeps its overrides inside the master's own object: there is no id such
+  a provider accepts for it, so the engine reports it and leaves it. The master's next write
+  replaces the whole object and the override with it, and that write follows a changed source or a
+  hand edit of the master itself, so an override on a master nobody touches again stands until the
+  edge is deleted.
 - Apple is reached by CalDAV with an app-specific password, because no OAuth path exists.
 - Event content is stored as a minimal mapping with an encrypted details cache, not as a full event
   cache.

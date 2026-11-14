@@ -110,7 +110,7 @@ func TestEngine_Recurrence_removesAnOccurrenceTheRuleStoppedProducing(t *testing
 	h.reconcile()
 
 	source.Recurrence.Rule = []string{"RRULE:FREQ=WEEKLY;COUNT=4", "EXDATE:20260311T090000"}
-	h.put(source)
+	h.replace(source)
 
 	report := h.reconcile()
 	if got := report.Count(sync.ActionDelete); got != 1 {
@@ -218,7 +218,7 @@ func TestEngine_Recurrence_removesTheOccurrencesWhenTheEventStopsRepeating(t *te
 	}
 
 	master.Recurrence = provider.Recurrence{}
-	h.put(master)
+	h.replace(master)
 
 	report := h.reconcile()
 	if got := report.CountReason(sync.ReasonStrategyChanged); got != 3 {
@@ -254,7 +254,7 @@ func TestEngine_Recurrence_removesTheOccurrencesFromASingleChange(t *testing.T) 
 	assertCopies(t, h, 3)
 
 	master.Recurrence = provider.Recurrence{}
-	master = h.put(master)
+	master = h.replace(master)
 
 	report := h.apply(master)
 	if got := report.CountReason(sync.ReasonStrategyChanged); got != 3 {
@@ -312,7 +312,7 @@ func TestEngine_Recurrence_leavesNothingAtTheOldDetailLevel(t *testing.T) {
 			nativeTarget: true,
 			wantFirst:    1,
 			change: func(h *harness, _ provider.Event) {
-				h.target.setCapabilities(provider.Capabilities{CalendarCreation: true, Attendees: true})
+				h.target.SetCapabilities(provider.Capabilities{CalendarCreation: true, Attendees: true})
 			},
 			wantChanged: 3,
 			wantLowered: 3,
@@ -323,7 +323,7 @@ func TestEngine_Recurrence_leavesNothingAtTheOldDetailLevel(t *testing.T) {
 			wantFirst:    3,
 			change: func(h *harness, master provider.Event) {
 				master.Recurrence = provider.Recurrence{}
-				h.put(master)
+				h.replace(master)
 			},
 			wantChanged: 1,
 			wantLowered: 1,
