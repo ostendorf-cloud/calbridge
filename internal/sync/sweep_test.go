@@ -85,6 +85,49 @@ func TestEngine_Reconcile_neverAsksATargetToDeleteAnOverriddenOccurrence(t *test
 	}
 }
 
+func TestEngine_Reconcile_clearsAnOverrideOnTheMastersNextWriteAndNotBefore(t *testing.T) {
+	t.Parallel()
+
+	// ReasonCoveredByMaster rests on this: the master's object is replaced
+	// whole when it is written, so the override inside it goes. What it
+	// does not promise is that the write happens soon. A master whose
+	// source never changes again is never written again, and the override
+	// stands for as long as that lasts.
+	h := newHarness(t, setup{targetCaps: nativeTargetCaps, window: shortWindow})
+	source := h.put(weekly("RRULE:FREQ=WEEKLY;COUNT=3"))
+	h.reconcile()
+
+	master := h.onlyCopy()
+	override := putOverride(t, h, master)
+
+	// Two passes over an unchanged source. Nothing is written, so nothing
+	// clears the override: this is the indefinite half of the behaviour.
+	for pass := range 2 {
+		wantActions(t, h.reconcile(), "none/unchanged", "none/covered by master")
+		wantWrites(t, h.target, 1, 0, 0)
+		if !h.target.Holds(h.targetCal, override.ID) {
+			t.Fatalf("pass %d removed the override with no write to the master", pass+1)
+		}
+	}
+
+	// The source master changes, so the master is written, and the write
+	// replaces the object the override was in.
+	source.Summary = "Jour fixe, neuer Titel"
+	h.replace(source)
+
+	// The target was read before the write, so this pass still reports the
+	// override it found there. The write it makes is what removes it.
+	wantActions(t, h.reconcile(), "update/source changed", "none/covered by master")
+	wantWrites(t, h.target, 1, 1, 0)
+
+	if h.target.Holds(h.targetCal, override.ID) {
+		t.Error("the override survived a write of the master's own object")
+	}
+	if got := h.onlyCopy().Summary; got != source.Summary {
+		t.Errorf("the copy's title is %q, want the source's %q", got, source.Summary)
+	}
+}
+
 func TestEngine_Teardown_givesBackAnOverriddenOccurrenceThroughItsMaster(t *testing.T) {
 	t.Parallel()
 
