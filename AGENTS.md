@@ -148,6 +148,9 @@ on; every other path already exists.
   there is no `mise` inside that stage to resolve one. The pnpm version it then
   activates is still the exact version `mise.toml` resolves to, so the image and
   a local run use the same pnpm.
+- yamllint's line-length limit here is 140, not the default 120. A pinned
+  reusable workflow reference then fits on one line with its version
+  comment. This matches most of the organisation's own repositories.
 
 ## Verify before committing
 
