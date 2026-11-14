@@ -5,6 +5,7 @@ package sync_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -168,6 +169,65 @@ func newHarness(t *testing.T, cfg setup) *harness {
 		binding:   binding,
 		user:      user,
 		clock:     &clock,
+	}
+}
+
+// recordingTarget is the target connector, with the id of every delete
+// it was asked for written down.
+//
+// An object and the overridden occurrences inside it go together, so a
+// calendar read after the deletion cannot say which of the two ids the
+// engine asked for, and a test that cannot tell passes on the wrong one.
+type recordingTarget struct {
+	*fakeConnector
+
+	deleted []string
+	refuses map[string]error
+}
+
+// DeleteEvent records the id and hands the call on, unless the test asked
+// for this id to fail.
+func (c *recordingTarget) DeleteEvent(ctx context.Context, cred provider.Credential, calendarID, eventID string) error {
+	c.deleted = append(c.deleted, eventID)
+	if err, refused := c.refuses[eventID]; refused {
+		return err
+	}
+
+	return c.fakeConnector.DeleteEvent(ctx, cred, calendarID, eventID)
+}
+
+// failDelete makes a delete of this id return the error. It is for a
+// failure the provider fake has no way of its own to produce: a server
+// answering a DELETE with 500 is neither a refused credential nor an
+// event that is already gone, and the engine has to carry it to the
+// caller rather than giving up the pass.
+func (c *recordingTarget) failDelete(eventID string, err error) {
+	if c.refuses == nil {
+		c.refuses = map[string]error{}
+	}
+	c.refuses[eventID] = err
+}
+
+// recordTargetDeletes puts the recording connector in front of the
+// target, in the binding and in the binder, so a pass reached either way
+// goes through it.
+func (h *harness) recordTargetDeletes() *recordingTarget {
+	h.t.Helper()
+
+	target := &recordingTarget{fakeConnector: h.target}
+	h.binding.Target.Connector = target
+	h.binder.add(h.binding)
+
+	return target
+}
+
+// wantDeletes fails unless the target was asked to delete exactly these
+// ids, in order.
+func wantDeletes(t *testing.T, target *recordingTarget, want ...string) {
+	t.Helper()
+
+	if !slices.Equal(target.deleted, want) {
+		t.Fatalf("ids the target was asked to delete: got %v, want %v", target.deleted, want)
 	}
 }
 

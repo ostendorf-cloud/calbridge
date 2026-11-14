@@ -80,13 +80,22 @@ const (
 	// ReasonOrphan means the target held an event carrying this edge's
 	// marker that no mapping row claims, so the edge removed it.
 	ReasonOrphan
-	// ReasonInstanceUnreachable means the target holds an overridden
-	// occurrence carrying this edge's marker that nothing can remove: the
-	// target declares no instance writes, so only the master's id removes
-	// one, and no master of it is in the calendar. The event is left
-	// standing and reported rather than skipped, because a copy calbridge
-	// claims to own and never removes is worth seeing.
-	ReasonInstanceUnreachable
+	// ReasonMasterAbsent means the target held an overridden occurrence
+	// carrying this edge's marker with no master of it in the calendar,
+	// so the object holding it was removed by the master's id. A target
+	// declaring no instance writes accepts no other id for it. The
+	// operation names that object, which is what was deleted. The master
+	// was already absent when the pass read the calendar; nothing here
+	// deleted it.
+	ReasonMasterAbsent
+	// ReasonNoDeletableID means no id the target accepts names the event:
+	// its own id reads as an overridden occurrence, which a target
+	// declaring no instance writes refuses, and the event names no master
+	// whose object would remove it. A plain event id carrying
+	// provider.InstanceSeparator is what produces that pair, and issue #29
+	// is where it is closed. The event stays where it is and is reported
+	// again on every pass.
+	ReasonNoDeletableID
 	// ReasonEdgeRemoved means the edge was torn down and gave back
 	// everything it wrote.
 	ReasonEdgeRemoved
@@ -122,8 +131,10 @@ func (r Reason) String() string {
 		return "strategy changed"
 	case ReasonOrphan:
 		return "orphan"
-	case ReasonInstanceUnreachable:
-		return "instance unreachable"
+	case ReasonMasterAbsent:
+		return "master absent"
+	case ReasonNoDeletableID:
+		return "no deletable id"
 	case ReasonEdgeRemoved:
 		return "edge removed"
 	case ReasonGrantRevoked:

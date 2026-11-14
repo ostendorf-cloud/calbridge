@@ -93,11 +93,11 @@
 // stands indefinitely, reported as covered on every pass. Deleting the
 // edge removes it, because that removes the master's object.
 //
-// Where no master of it is in the calendar at all, nothing the engine can
-// name removes it, and the pass reports ReasonInstanceUnreachable rather
-// than looking like it swept a calendar it did not. That one is permanent
-// for the life of the edge, and it is the one exception to the teardown
-// promise below.
+// Where no master of it is in the calendar at all, the object holds
+// overrides and no master, and everything in it is this edge's own
+// write. Both a reconcile and a teardown remove that object by the
+// master's id and report ReasonMasterAbsent, which is the only id such a
+// target accepts for it.
 //
 // # Teardown
 //

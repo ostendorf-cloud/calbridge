@@ -207,6 +207,7 @@ func (e *Engine) tearDown(ctx context.Context, b Binding, reason Reason) (Report
 		if current.stop() {
 			break
 		}
+		current.ask(mapping.TargetEventID)
 		if err := b.Target.Connector.DeleteEvent(ctx, b.Target.Credential, b.Target.CalendarID, mapping.TargetEventID); err != nil {
 			errs = append(errs, fmt.Errorf("edge %s: delete copy %q: %w", b.Edge.ID, mapping.TargetEventID, err))
 			current.refuse(err)
@@ -257,10 +258,11 @@ func (e *Engine) tearDown(ctx context.Context, b Binding, reason Reason) (Report
 //
 // It reads the target after those deletions, so an overridden occurrence
 // inside a master's own object is normally gone with it. What is left is
-// an object this edge could not remove, and sweepInstance decides what
-// becomes of it: a target declaring no instance writes refuses the id,
-// and the teardown reports that rather than failing on an operation the
-// capability already ruled out.
+// an object no mapping row named, and sweepInstance decides what becomes
+// of it, the same way a reconcile does: the occurrence is left to a
+// master still in the calendar, and where there is none the object is
+// removed by the master's id, which is the only id a target declaring no
+// instance writes accepts.
 func (e *Engine) sweepMarked(ctx context.Context, b Binding, deleted map[string]bool, reason Reason, p *pass) (Report, error) {
 	targetState, err := snapshot(ctx, b.Target)
 	if err != nil {
@@ -277,8 +279,14 @@ func (e *Engine) sweepMarked(ctx context.Context, b Binding, deleted map[string]
 		if deleted[id] || !WrittenBy(event, b.Edge.ID) {
 			continue
 		}
-		if op, held := e.sweepInstance(b, id, event, targetState); held {
-			report.add(op)
+		swept, held, err := e.sweepInstance(ctx, b, id, event, targetState, p)
+		if err != nil {
+			errs = append(errs, err)
+
+			continue
+		}
+		if held {
+			report.merge(swept)
 
 			continue
 		}
@@ -286,6 +294,7 @@ func (e *Engine) sweepMarked(ctx context.Context, b Binding, deleted map[string]
 			continue
 		}
 
+		p.ask(id)
 		if err := b.Target.Connector.DeleteEvent(ctx, b.Target.Credential, b.Target.CalendarID, id); err != nil {
 			errs = append(errs, fmt.Errorf("edge %s: delete copy %q: %w", b.Edge.ID, id, err))
 			p.refuse(err)
