@@ -690,7 +690,7 @@ func TestSignupAndLoginAreRateLimited(t *testing.T) {
 func TestLoginRateLimitKeyHonoursTrustedProxyOnly(t *testing.T) {
 	t.Parallel()
 
-	loginAs := func(t *testing.T, baseURL, forwardedFor string) int {
+	loginAs := func(t *testing.T, client *http.Client, baseURL, forwardedFor string) int {
 		t.Helper()
 
 		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL+"/api/v1/auth/login", strings.NewReader(wrongCredentials))
@@ -702,13 +702,30 @@ func TestLoginRateLimitKeyHonoursTrustedProxyOnly(t *testing.T) {
 			req.Header.Set("X-Forwarded-For", forwardedFor)
 		}
 
-		resp, err := (&http.Client{}).Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("login: %v", err)
 		}
 		t.Cleanup(func() { _ = resp.Body.Close() })
 
 		return resp.StatusCode
+	}
+
+	// newClient gives the caller a client whose Transport is its own, never
+	// the implicit http.DefaultTransport a zero-value http.Client falls
+	// back to. httptest.Server.Close closes http.DefaultTransport's idle
+	// connections as a courtesy to callers that use it, and both subtests
+	// below run in parallel, each against its own server. Sharing that
+	// default transport would let one subtest's server teardown race the
+	// still-open keep-alive connection another subtest's own sequence of
+	// requests depends on.
+	newClient := func(t *testing.T) *http.Client {
+		t.Helper()
+
+		client := &http.Client{Transport: &http.Transport{}}
+		t.Cleanup(client.CloseIdleConnections)
+
+		return client
 	}
 
 	t.Run("no trusted proxy configured ignores a forged header", func(t *testing.T) {
@@ -719,11 +736,12 @@ func TestLoginRateLimitKeyHonoursTrustedProxyOnly(t *testing.T) {
 
 		server := httptest.NewServer(build(t, deps).Public)
 		t.Cleanup(server.Close)
+		client := newClient(t)
 
 		// The credentials are wrong on purpose: this test is about which
 		// key the limiter counts against, not about the handler's answer,
 		// and the limiter runs ahead of the handler either way.
-		if status := loginAs(t, server.URL, "203.0.113.1"); status != http.StatusUnauthorized {
+		if status := loginAs(t, client, server.URL, "203.0.113.1"); status != http.StatusUnauthorized {
 			t.Fatalf("first login status = %d, want %d", status, http.StatusUnauthorized)
 		}
 
@@ -731,7 +749,7 @@ func TestLoginRateLimitKeyHonoursTrustedProxyOnly(t *testing.T) {
 		// no trusted proxy, clientip.Resolver never reads
 		// X-Forwarded-For at all and keys this request on the same TCP
 		// peer as the one above.
-		if status := loginAs(t, server.URL, "203.0.113.2"); status != http.StatusTooManyRequests {
+		if status := loginAs(t, client, server.URL, "203.0.113.2"); status != http.StatusTooManyRequests {
 			t.Errorf("second login with a different forged address status = %d, want %d: the rate limiter must key on the TCP peer, not on an untrusted header", status, http.StatusTooManyRequests)
 		}
 	})
@@ -750,15 +768,16 @@ func TestLoginRateLimitKeyHonoursTrustedProxyOnly(t *testing.T) {
 
 		server := httptest.NewServer(build(t, deps).Public)
 		t.Cleanup(server.Close)
+		client := newClient(t)
 
 		// httptest.NewServer listens on 127.0.0.1, so every request below
 		// shares that same TCP peer; trusting that peer is what makes the
 		// resolver read X-Forwarded-For and separate them by the address
 		// it names instead.
-		if status := loginAs(t, server.URL, "203.0.113.1"); status != http.StatusUnauthorized {
+		if status := loginAs(t, client, server.URL, "203.0.113.1"); status != http.StatusUnauthorized {
 			t.Fatalf("first client login status = %d, want %d", status, http.StatusUnauthorized)
 		}
-		if status := loginAs(t, server.URL, "203.0.113.2"); status != http.StatusUnauthorized {
+		if status := loginAs(t, client, server.URL, "203.0.113.2"); status != http.StatusUnauthorized {
 			t.Errorf("second client login status = %d, want %d: a trusted proxy must give each forwarded address its own budget", status, http.StatusUnauthorized)
 		}
 
@@ -766,7 +785,7 @@ func TestLoginRateLimitKeyHonoursTrustedProxyOnly(t *testing.T) {
 		// again, proving the separation above came from the resolved
 		// client address the trusted proxy's header named, not from some
 		// other cause.
-		if status := loginAs(t, server.URL, "203.0.113.1"); status != http.StatusTooManyRequests {
+		if status := loginAs(t, client, server.URL, "203.0.113.1"); status != http.StatusTooManyRequests {
 			t.Errorf("repeated first client login status = %d, want %d: the trusted proxy's header must still be honoured on this request", status, http.StatusTooManyRequests)
 		}
 	})
