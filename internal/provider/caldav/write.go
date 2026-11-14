@@ -223,7 +223,8 @@ func (c *Connector) UpdateEvent(
 	}
 	if strings.Contains(stored.ID, instanceSeparator) {
 		return provider.Event{}, fmt.Errorf(
-			"caldav cannot write one overridden occurrence on its own: %w", provider.ErrUnsupported)
+			"caldav declares no instance writes and %q names one overridden occurrence: %w",
+			stored.ID, provider.ErrUnsupported)
 	}
 
 	held, err := c.readEvent(ctx, p, own, calendar, stored.ID)
@@ -258,7 +259,12 @@ func (c *Connector) DeleteEvent(ctx context.Context, cred provider.Credential, c
 		return err
 	}
 	if strings.Contains(eventID, instanceSeparator) {
-		return fmt.Errorf("caldav cannot remove one overridden occurrence on its own: %w", provider.ErrUnsupported)
+		// Removing the master's id removes the resource, and the override
+		// inside it with it, which is what the interface documents a
+		// connector declaring no instance writes does.
+		return fmt.Errorf(
+			"caldav declares no instance writes and %q names one overridden occurrence: %w",
+			eventID, provider.ErrUnsupported)
 	}
 	calendar, err := parseCalendarURL(p, calendarID)
 	if err != nil {
@@ -425,7 +431,7 @@ func accept(p Profile, caps provider.Capabilities, event provider.Event) (provid
 	}
 	if event.Recurrence.IsInstance() {
 		return provider.Event{}, fmt.Errorf(
-			"caldav cannot write one overridden occurrence on its own: %w", provider.ErrUnsupported)
+			"caldav profile %q declares no instance writes: %w", p.Name, provider.ErrUnsupported)
 	}
 	if event.Recurrence.IsMaster() && !caps.NativeRecurrence {
 		return provider.Event{}, fmt.Errorf("caldav profile %q: recurrence rule: %w", p.Name, provider.ErrUnsupported)
