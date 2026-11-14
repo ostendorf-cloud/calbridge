@@ -42,4 +42,30 @@ type Capabilities struct {
 	// target calendar's zone before writing, rather than letting the
 	// connector guess one.
 	FloatingTimes bool
+
+	// InstanceWrites reports that the connector writes and deletes one
+	// overridden occurrence on its own, as an Event whose Recurrence names
+	// a MasterID. A connector whose provider stores its overrides inside
+	// the master's own object reports false, and a caller then changes the
+	// master instead. See the "Overridden occurrences" section of the
+	// package documentation for what false costs.
+	InstanceWrites bool
+
+	// NormalisesContent reports that the provider does not store an event
+	// exactly as it was written: the connector rewrites some of its
+	// content on the way in, on the way out, or both. A text value whose
+	// line breaks are rewritten to one form, a markup body reduced to
+	// plain text and a zone catalogue translated in both directions are
+	// all this.
+	//
+	// A caller that compares what it wrote against what a later read hands
+	// back has to know: without this, the difference reads as somebody
+	// editing the copy by hand, and the caller rewrites the event on every
+	// pass forever while the sync looks like it is working.
+	//
+	// A connector reporting true implements ContentNormaliser, so a caller
+	// can ask what a write turns into before it compares. NormaliserOf
+	// returns that implementation and refuses a connector that declares
+	// the capability without it.
+	NormalisesContent bool
 }

@@ -312,7 +312,7 @@ func TestEngine_Recurrence_leavesNothingAtTheOldDetailLevel(t *testing.T) {
 			nativeTarget: true,
 			wantFirst:    1,
 			change: func(h *harness, _ provider.Event) {
-				h.target.setCapabilities(provider.Capabilities{CalendarCreation: true, Attendees: true})
+				h.target.SetCapabilities(provider.Capabilities{CalendarCreation: true, Attendees: true})
 			},
 			wantChanged: 3,
 			wantLowered: 3,

@@ -102,6 +102,22 @@ func EncodeCredential(cred Credential) ([]byte, error) {
 	return out, nil
 }
 
+// DecodeCredential implements provider.CredentialDecoder, which is what
+// turns the bytes stored for a connection into the credential this
+// connector authenticates with. The method is on the connector so a
+// caller holding nothing but a provider.Connector can do it, and it
+// returns the same value the package level function does.
+func (c *Connector) DecodeCredential(connection string, raw []byte) (provider.Credential, error) {
+	cred, err := DecodeCredential(connection, raw)
+	if err != nil {
+		// A typed nil behind the interface would read as a credential to
+		// every caller that checks for one, so the failure returns none.
+		return nil, err
+	}
+
+	return cred, nil
+}
+
 // DecodeCredential reads back what EncodeCredential wrote, for one
 // connection. An error names the field that is missing and never the
 // value of any of them.

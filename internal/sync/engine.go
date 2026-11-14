@@ -47,9 +47,12 @@ func (ep Endpoint) validate(side string) error {
 		return fmt.Errorf("%s endpoint has no credential: %w", side, ErrInvalidBinding)
 	case ep.CalendarID == "":
 		return fmt.Errorf("%s endpoint names no calendar: %w", side, ErrInvalidBinding)
-	default:
-		return nil
 	}
+	if _, err := provider.NormaliserOf(ep.Connector); err != nil {
+		return fmt.Errorf("%s endpoint: %w: %w", side, err, ErrInvalidBinding)
+	}
+
+	return nil
 }
 
 // Binding is one edge resolved to the two calendars it moves events
@@ -90,6 +93,30 @@ func (b Binding) marker(sourceEventID string) provider.Marker {
 	return provider.Marker{Edge: b.Edge.ID.String(), Source: sourceEventID}
 }
 
+// stored returns the event a read of the target will hand back after
+// want was written into it. The two differ for a target whose connector
+// declares that it normalises content on write: iCalendar round tripping
+// rewrites a text value's line breaks, and a provider that keeps its own
+// zone catalogue translates in both directions.
+//
+// Without this the difference reads as somebody editing the copy by hand,
+// and the engine rewrites every mirrored event on every pass, forever,
+// while the sync looks exactly like it is working. The declaration is
+// what makes the difference predictable; validate has already refused a
+// connector that declares it and answers nothing.
+func (b Binding) stored(want provider.Event) (provider.Event, error) {
+	normaliser, err := provider.NormaliserOf(b.Target.Connector)
+	if err != nil {
+		return provider.Event{}, fmt.Errorf("edge %s: %w: %w", b.Edge.ID, err, ErrInvalidBinding)
+	}
+	out, err := normaliser.NormaliseEvent(want)
+	if err != nil {
+		return provider.Event{}, fmt.Errorf("edge %s: normalise copy: %w", b.Edge.ID, err)
+	}
+
+	return out, nil
+}
+
 // nativeRecurrence reports whether a repeating source event is copied as
 // one master carrying its rule. Both halves have to agree: the target has
 // to store a rule, and the mask has to copy one.
@@ -100,6 +127,15 @@ func (b Binding) nativeRecurrence() bool {
 // Binder resolves a stored edge into the two endpoints it connects. It is
 // defined here because the engine is its only caller, and implemented by
 // the layer that holds the connections and the connector registry.
+//
+// An implementation reads the edge's two calendars, loads the connection
+// behind each, resolves the connector from the provider.Registry by the
+// connection's provider id, and turns the stored credential bytes into a
+// provider.Credential with the connector's own
+// provider.CredentialDecoder, which provider.DecoderOf returns. The
+// engine never does any of that itself: a credential is the connector's
+// concrete type, and only the layer that loaded and decrypted the bytes
+// is in a position to produce one.
 type Binder interface {
 	Bind(ctx context.Context, edge storage.Edge) (Binding, error)
 }
@@ -297,6 +333,9 @@ func (e *Engine) Reconcile(ctx context.Context, b Binding) (Report, error) {
 		report.merge(copied)
 		if err != nil {
 			errs = append(errs, err)
+			if refused(err) {
+				return report, errors.Join(errs...)
+			}
 		}
 	}
 
@@ -350,6 +389,9 @@ func (e *Engine) removeUnsourced(ctx context.Context, b Binding, sourceState map
 		op, err := e.removeCopy(ctx, b, mapping, unsourcedReason(mapping, sourceState))
 		if err != nil {
 			errs = append(errs, err)
+			if refused(err) {
+				return report, accounted, errors.Join(errs...)
+			}
 
 			continue
 		}
@@ -375,7 +417,11 @@ func (e *Engine) removeOrphans(ctx context.Context, b Binding, targetState map[s
 		}
 
 		if err := b.Target.Connector.DeleteEvent(ctx, b.Target.Credential, b.Target.CalendarID, id); err != nil {
-			errs = append(errs, fmt.Errorf("edge %s: delete orphaned copy %q: %w", b.Edge.ID, id, err))
+			wrapped := fmt.Errorf("edge %s: delete orphaned copy %q: %w", b.Edge.ID, id, err)
+			errs = append(errs, wrapped)
+			if refused(err) {
+				return report, errors.Join(errs...)
+			}
 
 			continue
 		}
@@ -568,6 +614,16 @@ func (e *Engine) write(ctx context.Context, b Binding, sourceEventID string, src
 	}
 	hash := contentHash(want, b.Mask)
 
+	// What the target will hand back is not always what is written into
+	// it. The copy is recognised against the normalised form, and the
+	// mapping row still holds the hash of the projection, so a source
+	// change is still one comparison against one stored value.
+	written, err := b.stored(want)
+	if err != nil {
+		return Operation{}, err
+	}
+	writtenHash := contentHash(written, b.Mask)
+
 	mapping, found, err := e.findMapping(ctx, b, sourceEventID)
 	if err != nil {
 		return Operation{}, err
@@ -579,7 +635,7 @@ func (e *Engine) write(ctx context.Context, b Binding, sourceEventID string, src
 	reason := ReasonSourceChanged
 	if mapping.ContentHash == hash {
 		if held, ok := p.target[mapping.TargetEventID]; ok || p.target == nil {
-			if p.target == nil || contentHash(held, b.Mask) == hash {
+			if p.target == nil || contentHash(held, b.Mask) == writtenHash {
 				return Operation{
 					SourceEventID: sourceEventID,
 					TargetEventID: mapping.TargetEventID,
@@ -663,8 +719,16 @@ func (e *Engine) create(ctx context.Context, b Binding, sourceEventID string, wa
 	}, nil
 }
 
-// applyDelete removes the copies of one source event. A master that was
-// expanded holds one copy per occurrence, and all of them go.
+// applyDelete removes the copies of one source event, and of every
+// normalised event the provider removed with it.
+//
+// One deletion can stand for several events. A master this edge expanded
+// holds one copy per occurrence. A source provider that keeps its
+// overridden occurrences inside the master's own object reports one
+// deletion naming the master, because the object is gone and there is
+// nothing left to list what was in it, and
+// provider.ChangeKindDelete makes applying that implication the caller's
+// job. Both sit under the master's id, so both go here.
 func (e *Engine) applyDelete(ctx context.Context, b Binding, sourceEventID string) (Report, error) {
 	mappings, err := e.listMappings(ctx, b)
 	if err != nil {
@@ -869,6 +933,17 @@ func instancesOf(masterID string, sourceState map[string]provider.Event) map[str
 
 	return out
 }
+
+// refused reports whether the provider turned the credential down, which
+// is what a revoked app specific password and a withdrawn refresh token
+// both reach the engine as.
+//
+// A pass stops at the first one rather than carrying on. Every later call
+// on that endpoint fails the same way, so carrying on turns one revoked
+// credential into one error per event and spends a provider request on
+// each of them. The connection needs connecting again, and no amount of
+// retrying inside this pass changes that.
+func refused(err error) bool { return errors.Is(err, provider.ErrCredentialRejected) }
 
 // maxPages bounds one calendar read, so a connector handing out pages
 // forever fails instead of running forever.

@@ -112,8 +112,8 @@ func newHarness(t *testing.T, cfg setup) *harness {
 
 	source := newFakeConnector(cfg.sourceCaps)
 	target := newFakeConnector(cfg.targetCaps)
-	sourceCal := source.addCalendar("Privat", provider.Calendar{TimeZone: "Europe/Berlin"})
-	targetCal := target.addCalendar("Arbeit", provider.Calendar{TimeZone: cfg.targetZone, Managed: cfg.managed})
+	sourceCal := source.AddCalendar(testConnection, provider.Calendar{Name: "Privat", TimeZone: "Europe/Berlin"}).ID
+	targetCal := target.AddCalendar(testConnection, provider.Calendar{Name: "Arbeit", TimeZone: cfg.targetZone, Managed: cfg.managed}).ID
 
 	store := newFakeStore()
 	user := uuid.New()
@@ -134,8 +134,8 @@ func newHarness(t *testing.T, cfg setup) *harness {
 	binding := sync.Binding{
 		Edge:   edge,
 		Mask:   mask,
-		Source: sync.Endpoint{Connector: source, Credential: fakeCredential{connection: testConnection}, CalendarID: sourceCal, TimeZone: "Europe/Berlin"},
-		Target: sync.Endpoint{Connector: target, Credential: fakeCredential{connection: testConnection}, CalendarID: targetCal, TimeZone: cfg.targetZone, Managed: cfg.managed},
+		Source: sync.Endpoint{Connector: source, Credential: testCredential(), CalendarID: sourceCal, TimeZone: "Europe/Berlin"},
+		Target: sync.Endpoint{Connector: target, Credential: testCredential(), CalendarID: targetCal, TimeZone: cfg.targetZone, Managed: cfg.managed},
 	}
 
 	binder := newFakeBinder()
@@ -176,7 +176,7 @@ func newHarness(t *testing.T, cfg setup) *harness {
 func (h *harness) put(event provider.Event) provider.Event {
 	h.t.Helper()
 
-	stored := h.source.put(h.sourceCal, event)
+	stored := h.source.Put(h.sourceCal, event)
 	if stored.ID == "" {
 		h.t.Fatal("source calendar did not store the event")
 	}
@@ -217,7 +217,7 @@ func (h *harness) copies() []provider.Event {
 	h.t.Helper()
 
 	var out []provider.Event
-	for _, event := range h.target.events(h.targetCal) {
+	for _, event := range h.target.Events(h.targetCal) {
 		if sync.WrittenBy(event, h.binding.Edge.ID) {
 			out = append(out, event)
 		}
@@ -288,7 +288,7 @@ func wantActions(t *testing.T, report sync.Report, want ...string) {
 func wantWrites(t *testing.T, c *fakeConnector, creates, updates, deletes int) {
 	t.Helper()
 
-	gotCreates, gotUpdates, gotDeletes := c.counts()
+	gotCreates, gotUpdates, gotDeletes := c.Counts()
 	if gotCreates != creates || gotUpdates != updates || gotDeletes != deletes {
 		t.Fatalf("connector calls: got %d creates, %d updates, %d deletes; want %d, %d, %d",
 			gotCreates, gotUpdates, gotDeletes, creates, updates, deletes)
