@@ -80,12 +80,14 @@ const (
 	// ReasonOrphan means the target held an event carrying this edge's
 	// marker that no mapping row claims, so the edge removed it.
 	ReasonOrphan
-	// ReasonMasterGone means the target held an overridden occurrence
+	// ReasonMasterAbsent means the target held an overridden occurrence
 	// carrying this edge's marker with no master of it in the calendar,
 	// so the object holding it was removed by the master's id. A target
 	// declaring no instance writes accepts no other id for it. The
-	// operation names that object, which is what was deleted.
-	ReasonMasterGone
+	// operation names that object, which is what was deleted. The master
+	// was already absent when the pass read the calendar; nothing here
+	// deleted it.
+	ReasonMasterAbsent
 	// ReasonNoDeletableID means no id the target accepts names the event:
 	// its own id reads as an overridden occurrence, which a target
 	// declaring no instance writes refuses, and the event names no master
@@ -129,8 +131,8 @@ func (r Reason) String() string {
 		return "strategy changed"
 	case ReasonOrphan:
 		return "orphan"
-	case ReasonMasterGone:
-		return "master gone"
+	case ReasonMasterAbsent:
+		return "master absent"
 	case ReasonNoDeletableID:
 		return "no deletable id"
 	case ReasonEdgeRemoved:

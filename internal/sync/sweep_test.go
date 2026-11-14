@@ -237,7 +237,7 @@ func TestEngine_Teardown_removesTheObjectOfAnOverrideWhoseMasterIsGone(t *testin
 	if err != nil {
 		t.Fatalf("teardown: %v", err)
 	}
-	wantActions(t, report, "delete/master gone")
+	wantActions(t, report, "delete/master absent")
 	wantDeletes(t, target, strayMasterID)
 
 	if got := report.Operations[0].TargetEventID; got != strayMasterID {
@@ -271,7 +271,7 @@ func TestEngine_Reconcile_removesTheObjectOfAnOverrideWhoseMasterIsGone(t *testi
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	wantActions(t, report, "delete/master gone")
+	wantActions(t, report, "delete/master absent")
 	wantDeletes(t, target, strayMasterID)
 
 	if got := report.Operations[0].TargetEventID; got != strayMasterID {
@@ -298,7 +298,7 @@ func TestEngine_Reconcile_removesOneObjectOnceForEveryOverrideItHolds(t *testing
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	wantActions(t, report, "delete/master gone")
+	wantActions(t, report, "delete/master absent")
 	wantDeletes(t, target, strayMasterID)
 
 	if got := len(h.target.Events(h.targetCal)); got != 0 {
@@ -412,7 +412,7 @@ func TestEngine_Reconcile_removesTheObjectOfAnOverrideWhoseMasterWasWrittenElsew
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	wantActions(t, report, "create/restored", "delete/master gone")
+	wantActions(t, report, "create/restored", "delete/master absent")
 	wantDeletes(t, target, master.ID)
 
 	if h.target.Holds(h.targetCal, override.ID) {

@@ -639,7 +639,7 @@ func (e *Engine) sweepInstance(
 		SourceEventID: event.Marker.Source,
 		TargetEventID: masterID,
 		Action:        ActionDelete,
-		Reason:        ReasonMasterGone,
+		Reason:        ReasonMasterAbsent,
 	}), true, nil
 }
 
