@@ -181,10 +181,11 @@ Selective calendar mirroring across providers, one detail level per edge.
 - A mirrored event edited by hand in the target is overwritten on the next reconcile, recorded in
   `docs/adr/0001-overwrite-hand-edited-mirrored-events.md`. A single overridden occurrence is the
   exception where the target keeps its overrides inside the master's own object: there is no id such
-  a provider accepts for it, so the engine reports it and leaves it. The master's next write
-  replaces the whole object and the override with it, and that write follows a changed source or a
-  hand edit of the master itself, so an override on a master nobody touches again stands until the
-  edge is deleted.
+  a provider accepts for it, so the engine leaves it to the master's object. The master's next write
+  replaces that object and the override with it, and that write follows a changed source or a hand
+  edit of the master itself, so an override on a master nobody touches again stands until the edge
+  is deleted. Where the object holds overrides and no master at all, everything in it is the edge's
+  own write, and both a reconcile and a teardown remove the object by the master's id.
 - Apple is reached by CalDAV with an app-specific password, because no OAuth path exists.
 - Event content is stored as a minimal mapping with an encrypted details cache, not as a full event
   cache.
