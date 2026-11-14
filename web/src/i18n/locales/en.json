@@ -39,6 +39,7 @@
       "title": "Or continue with",
       "signInWith": "Continue with {name}",
       "identityOnly": "Confirms who you are only. No calendar is connected.",
+      "placeholderEmail": "{name} does not give us a confirmed email address, so your account will show a placeholder one that you cannot change yet. Sign up with an email address and password if you need your own address shown.",
       "loadError": "Could not load the list of providers."
     }
   },

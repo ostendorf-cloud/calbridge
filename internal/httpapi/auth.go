@@ -66,9 +66,14 @@ type providersResponse struct {
 // renders the "grants identity only, connects no calendar" note from;
 // see internal/auth's ProviderInfo.
 type providerResponse struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	IdentityOnly bool   `json:"identity_only"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// IdentityOnly is what the UI renders the "grants identity only,
+	// connects no calendar" note from, and PlaceholderEmail the note
+	// about the account's address not being a real one; see
+	// internal/auth's ProviderInfo for both.
+	IdentityOnly     bool `json:"identity_only"`
+	PlaceholderEmail bool `json:"placeholder_email"`
 }
 
 // handleSignUp creates a local account and answers with its TOTP
@@ -248,9 +253,10 @@ func (a *app) handleProviders(w http.ResponseWriter, _ *http.Request) error {
 	providers := make([]providerResponse, 0, len(a.providers))
 	for _, info := range a.providers {
 		providers = append(providers, providerResponse{
-			ID:           string(info.ID),
-			Name:         info.Name,
-			IdentityOnly: info.IdentityOnly,
+			ID:               string(info.ID),
+			Name:             info.Name,
+			IdentityOnly:     info.IdentityOnly,
+			PlaceholderEmail: info.PlaceholderEmail,
 		})
 	}
 

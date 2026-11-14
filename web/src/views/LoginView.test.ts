@@ -77,12 +77,7 @@ describe('LoginView', () => {
   })
 
   it('renders a button for every provider the backend configured', async () => {
-    vi.mocked(apiClient.get).mockResolvedValue({
-      providers: [
-        { id: 'google', name: 'Google', identity_only: false },
-        { id: 'apple', name: 'Apple', identity_only: true },
-      ],
-    })
+    vi.mocked(apiClient.get).mockResolvedValue({ providers: configuredProviders })
     renderLoginView()
 
     expect(await screen.findByRole('button', { name: 'Continue with Google' })).toBeVisible()
@@ -90,15 +85,49 @@ describe('LoginView', () => {
   })
 
   it('notes that the Apple provider only confirms identity and connects no calendar', async () => {
-    vi.mocked(apiClient.get).mockResolvedValue({
-      providers: [
-        { id: 'google', name: 'Google', identity_only: false },
-        { id: 'apple', name: 'Apple', identity_only: true },
-      ],
-    })
+    vi.mocked(apiClient.get).mockResolvedValue({ providers: configuredProviders })
     renderLoginView()
 
     await screen.findByRole('button', { name: 'Continue with Apple' })
     expect(screen.getByText('Confirms who you are only. No calendar is connected.')).toBeVisible()
   })
+
+  // Microsoft and Apple hand over no address calbridge will believe, so
+  // an account created through either carries a placeholder one that
+  // nothing in this release can change. The person has to be told that
+  // before they choose, not after.
+  it('warns, before the choice is made, that a provider will leave the account without a real address', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({ providers: configuredProviders })
+    renderLoginView()
+
+    await screen.findByRole('button', { name: 'Continue with Microsoft' })
+
+    const warnings = screen.getAllByText(/does not give us a confirmed email address/)
+    expect(warnings).toHaveLength(2)
+
+    expect(
+      screen.getByText(
+        'Microsoft does not give us a confirmed email address, so your account will show a placeholder one that you cannot change yet. Sign up with an email address and password if you need your own address shown.',
+      ),
+    ).toBeVisible()
+  })
+
+  it('does not warn about an address for a provider that confirms one', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({
+      providers: [{ id: 'google', name: 'Google', identity_only: false, placeholder_email: false }],
+    })
+    renderLoginView()
+
+    await screen.findByRole('button', { name: 'Continue with Google' })
+    expect(screen.queryByText(/does not give us a confirmed email address/)).toBeNull()
+  })
 })
+
+// configuredProviders is the full set a deployment with all three
+// configured answers with, including which of them leaves the account on
+// a placeholder address.
+const configuredProviders = [
+  { id: 'google', name: 'Google', identity_only: false, placeholder_email: false },
+  { id: 'microsoft', name: 'Microsoft', identity_only: false, placeholder_email: true },
+  { id: 'apple', name: 'Apple', identity_only: true, placeholder_email: true },
+]

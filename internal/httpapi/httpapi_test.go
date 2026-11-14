@@ -489,9 +489,10 @@ type signUpResponse struct {
 
 type providersResponse struct {
 	Providers []struct {
-		ID           string `json:"id"`
-		Name         string `json:"name"`
-		IdentityOnly bool   `json:"identity_only"`
+		ID               string `json:"id"`
+		Name             string `json:"name"`
+		IdentityOnly     bool   `json:"identity_only"`
+		PlaceholderEmail bool   `json:"placeholder_email"`
 	} `json:"providers"`
 }
 

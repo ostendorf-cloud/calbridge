@@ -147,14 +147,33 @@ type ProviderInfo struct {
 	// Apple ID and an app-specific password, and signing in with Apple
 	// connects nothing.
 	IdentityOnly bool
+
+	// PlaceholderEmail marks a provider that never hands over an address
+	// this application will believe, so an account created through it is
+	// known by a placeholder instead. The UI says so before somebody
+	// picks that provider rather than after, because nothing in this
+	// release can change the address afterwards; see signInEmail for
+	// which providers these are and why.
+	PlaceholderEmail bool
+}
+
+// neverSendsAVerifiedEmail lists the providers whose accounts always end
+// up on a placeholder address. Microsoft emits no email_verified claim
+// at all and Apple is never asked for the email scope; see signInEmail
+// for both. It is a fact about each provider rather than about a
+// deployment, so it is fixed here and not configurable.
+var neverSendsAVerifiedEmail = map[storage.IdentityProvider]bool{
+	storage.IdentityProviderMicrosoft: true,
+	storage.IdentityProviderApple:     true,
 }
 
 // Info describes this provider for the UI.
 func (p *Provider) Info() ProviderInfo {
 	return ProviderInfo{
-		ID:           p.id,
-		Name:         ProviderDisplayName[p.id],
-		IdentityOnly: p.id == storage.IdentityProviderApple,
+		ID:               p.id,
+		Name:             ProviderDisplayName[p.id],
+		IdentityOnly:     p.id == storage.IdentityProviderApple,
+		PlaceholderEmail: neverSendsAVerifiedEmail[p.id],
 	}
 }
 
@@ -361,15 +380,34 @@ const PlaceholderEmailDomain = "sign-in.calbridge.invalid"
 //
 // Requiring email_verified, rather than taking the address the token
 // states, is what keeps a provider's claim from reserving somebody
-// else's address here. Microsoft is configured against the multi-tenant
-// "common" issuer, where the administrator of any Entra ID tenant
-// decides what their users' email claim says, and several providers
-// (Apple among them, which is not asked for the scope at all) send no
-// address. The linking rule already stops this from being a takeover,
-// since a first-time sign-in never adopts an existing account, but an
-// unverified claim could still create an account displaying a stranger's
-// address and block that person's own signup, which is reason enough not
-// to believe one.
+// else's address here. The linking rule already stops this from being a
+// takeover, since a first-time sign-in never adopts an existing account,
+// but an unverified claim could still create an account displaying a
+// stranger's address and block that person's own signup, which is reason
+// enough not to believe one.
+//
+// Which branch each configured provider takes, in practice:
+//
+//   - Google sends email_verified and takes the claim.
+//   - Microsoft always takes the placeholder. Entra ID emits no
+//     email_verified claim at all, in either token version; its own ID
+//     token claims reference says of email that the value "isn't
+//     guaranteed to be correct and is mutable over time" and to "never
+//     use it for authorization or to save data for a user". This is not
+//     an unusual tenant, it is every Microsoft account, and it is
+//     deliberate: the alternative is believing an address a tenant
+//     administrator controls.
+//   - Apple always takes the placeholder, because it is never asked for
+//     the email scope at all (see identityScopes).
+//
+// So two of the three configured providers land every account on a
+// placeholder address, and that is the address GET /api/v1/me reports
+// and the UI shows. There is no way to set or change an account's
+// address in this package, so there is no recovery from it either. An
+// address the person can confirm and correct is the real answer and is
+// its own issue; until it exists, charts/calbridge/README.md tells an
+// operator enabling Microsoft sign-in what to expect, and the login
+// view says so where somebody chooses a provider.
 //
 // The placeholder is derived from the subject, so it is stable across
 // that account's sign-ins and unique to it. Only a hash of the subject

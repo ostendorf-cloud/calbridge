@@ -63,6 +63,29 @@
 // Apple ID and an app-specific password, and nothing in this package
 // implies otherwise.
 //
+// # Addresses from a provider, and what they cost
+//
+// An account created by provider sign-in is known by the provider's
+// email claim only when the ID token marks that claim verified.
+// Otherwise it gets a placeholder under PlaceholderEmailDomain, derived
+// from the provider's subject.
+//
+// For two of the three configured providers that is every account, not
+// an edge case. Microsoft Entra ID emits no email_verified claim at all
+// and tells applications not to rely on its email claim; Apple is never
+// asked for the email scope, because asking for it would move the
+// callback to a POST that govue's oidc handler refuses. Only Google
+// sends a verified address.
+//
+// The consequence is worth being plain about: a Microsoft or Apple
+// account's address is a string nothing can deliver to, it is what
+// GET /api/v1/me reports and the UI shows, and nothing in this package
+// can change it. Believing an unverified claim instead would let a
+// tenant administrator name somebody else's address, which is the worse
+// of the two, so this is the trade taken knowingly rather than a gap
+// nobody noticed. Letting a person confirm and correct their own address
+// is the fix, and it is its own issue. See signInEmail.
+//
 // # The second factor
 //
 // A local account carries a password and a TOTP secret, and both are
