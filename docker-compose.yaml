@@ -151,9 +151,11 @@ services:
       - --username=calbridge_super
       - --dbname=calbridge
       - -c
-      - GRANT SELECT, INSERT, UPDATE ON users TO calbridge_app;
+      - GRANT SELECT, INSERT, UPDATE, DELETE ON users TO calbridge_app;
       - -c
       - GRANT EXECUTE ON FUNCTION users_find_by_email(text) TO calbridge_app;
+      - -c
+      - GRANT EXECUTE ON FUNCTION identities_find_by_provider_subject(text, text) TO calbridge_app;
       - -c
       - GRANT SELECT, INSERT, DELETE ON identities, calendars, calendar_grants TO calbridge_app;
       - -c

@@ -21,7 +21,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/ostendorf-cloud/govue/clientip"
@@ -125,7 +127,50 @@ type Config struct {
 	// limiter trust the header that controller appends and recover the
 	// real client address; see the chart's README for how to set it.
 	TrustedProxyCIDRs []netip.Prefix
+
+	// AuthBaseURL is this deployment's own public base URL, scheme and
+	// host, with no path. Provider sign-in redirect URLs are built from
+	// it (see AuthProvider.RedirectURL), and it has to match what is
+	// registered at the provider exactly, because the provider compares
+	// them literally. It is required only when at least one provider is
+	// configured, and empty otherwise.
+	AuthBaseURL string
+
+	// AuthProviders carries the sign-in providers this deployment
+	// configured, in the fixed order of authProviderIDs. A provider with
+	// no client id is simply not offered; internal/auth and
+	// internal/httpapi read this slice and nothing else to decide which
+	// buttons exist.
+	AuthProviders []AuthProvider
 }
+
+// AuthProvider is one sign-in provider's client registration.
+// ClientSecret follows the same _FILE convention every other secret
+// here does, has no default, and must never be logged or put into an
+// error; see this package's own doc comment and internal/auth's
+// ProviderConfig.
+type AuthProvider struct {
+	// ID is "google", "microsoft" or "apple", matching
+	// storage.IdentityProvider's own values.
+	ID string
+
+	// ClientID is this application's client at the provider. A provider
+	// whose client id is empty is left out of AuthProviders entirely.
+	ClientID string
+
+	// ClientSecret authenticates the token request.
+	ClientSecret string
+
+	// Issuer overrides internal/auth's own default issuer for this
+	// provider, which is what a deployment restricted to one Microsoft
+	// Entra ID tenant needs. Empty keeps that default.
+	Issuer string
+}
+
+// authProviderIDs is every provider a sign-in can be configured for, and
+// the order AuthProviders keeps them in, so a sign-in screen's buttons do
+// not reorder themselves between restarts.
+var authProviderIDs = [...]string{"google", "microsoft", "apple"}
 
 // Load reads every setting through getenv, collecting every problem into
 // one error so a misconfigured deployment reports all of its mistakes on
@@ -173,11 +218,93 @@ func Load(getenv func(string) string) (Config, error) {
 	fail(err)
 	cfg.TrustedProxyCIDRs = trustedProxyCIDRs
 
+	cfg.AuthBaseURL = strings.TrimSuffix(strings.TrimSpace(l.String("AUTH_BASE_URL", "")), "/")
+
+	providers, err := loadAuthProviders(l, cfg.AuthBaseURL)
+	fail(err)
+	cfg.AuthProviders = providers
+
 	if err := errors.Join(append(problems, l.Err())...); err != nil {
 		return Config{}, fmt.Errorf("config: load: %w", err)
 	}
 
 	return cfg, nil
+}
+
+// loadAuthProviders reads each provider's client registration and keeps
+// the ones a deployment actually configured, in authProviderIDs' order.
+//
+// A provider is configured by its client id: empty means the provider is
+// not offered, which is the ordinary case for a deployment that only
+// wants local accounts. A client secret without a client id, and a
+// client id without a client secret, are both deployment mistakes rather
+// than a half-configured provider to silently skip, so each is reported.
+//
+// No error here ever carries a secret's value: a message names the
+// variable, never what was in it.
+func loadAuthProviders(l *envconf.Loader, baseURL string) ([]AuthProvider, error) {
+	var (
+		providers []AuthProvider
+		problems  []error
+	)
+
+	for _, id := range authProviderIDs {
+		prefix := "AUTH_" + strings.ToUpper(id) + "_"
+
+		clientID := strings.TrimSpace(l.String(prefix+"CLIENT_ID", ""))
+		clientSecret := l.SecretOrFile(prefix + "CLIENT_SECRET")
+
+		switch {
+		case clientID == "" && clientSecret == "":
+			continue
+		case clientID == "":
+			problems = append(problems, fmt.Errorf("%sCLIENT_SECRET is set without %sCLIENT_ID", prefix, prefix))
+
+			continue
+		case clientSecret == "":
+			problems = append(problems, fmt.Errorf("%sCLIENT_SECRET is required once %sCLIENT_ID is set", prefix, prefix))
+
+			continue
+		}
+
+		providers = append(providers, AuthProvider{
+			ID:           id,
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+			Issuer:       strings.TrimSpace(l.String(prefix+"ISSUER", "")),
+		})
+	}
+
+	if len(providers) > 0 {
+		problems = append(problems, checkAuthBaseURL(baseURL))
+	}
+
+	return providers, errors.Join(problems...)
+}
+
+// checkAuthBaseURL requires an absolute http or https URL with a host and
+// no path once any provider is configured. A redirect URL built from
+// anything else is one the provider will refuse at the callback, which is
+// a failure far from its cause.
+func checkAuthBaseURL(baseURL string) error {
+	if baseURL == "" {
+		return errors.New("AUTH_BASE_URL is required once a sign-in provider is configured")
+	}
+
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("AUTH_BASE_URL: %w", err)
+	}
+
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("AUTH_BASE_URL: %q is not an absolute http or https URL", baseURL)
+	}
+
+	if parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("AUTH_BASE_URL: %q must carry scheme and host only, no path", baseURL)
+	}
+
+	return nil
 }
 
 // decodeHexKey decodes raw as hex and checks that it is exactly

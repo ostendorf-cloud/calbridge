@@ -7,6 +7,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ostendorf-cloud/calbridge/internal/storage"
@@ -115,6 +116,88 @@ func (r *userRepository) Update(ctx context.Context, user storage.User) (storage
 	}
 
 	return userFromRow(row), nil
+}
+
+// AdvanceTOTPCounter implements storage.UserRepository. It requires a
+// context storage.UserScope.WithUser produced; see
+// storage.ErrNoUserScope. Zero rows affected is returned as
+// storage.ErrNotFound, which covers both a row the scope does not reach
+// and a counter that was already at or past this one; see the query's
+// own comment in queries/users.sql for why that second case is the
+// replay check itself.
+func (r *userRepository) AdvanceTOTPCounter(ctx context.Context, id uuid.UUID, counter int64) error {
+	tx, err := txFromContext(ctx)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := sqlcgen.New(tx).AdvanceUserTOTPCounter(ctx, sqlcgen.AdvanceUserTOTPCounterParams{
+		ID:              id,
+		TotpLastCounter: pgtype.Int8{Int64: counter, Valid: true},
+	})
+	if err != nil {
+		return mapWriteError(err)
+	}
+
+	if rowsAffected == 0 {
+		return storage.ErrNotFound
+	}
+
+	return nil
+}
+
+// DeleteAccount implements storage.UserRepository. Like Create, it
+// scopes its own transaction, here to the user it is about to remove:
+// its caller is ending that user's own account and has no other scope to
+// run inside. Every statement below is bounded by that scope and by row
+// level security, so none of them can reach a row belonging to anybody
+// else even though none of them names a user id of its own.
+//
+// The order is the contract: no table in this schema carries ON DELETE
+// CASCADE, so a row only ever goes when a statement says so, leaf first.
+// queries/account_deletion.sql holds the statements in exactly this
+// order and records why.
+//
+// One case this does not resolve on its own: an edge another user built
+// against a calendar this user granted them still references that
+// calendar, and is invisible from this scope, so Postgres refuses the
+// calendar delete with a foreign key violation. Cross-user grants are
+// issue #12's to build and to clean up; until then no such edge can
+// exist, and the refusal is a loud one rather than a silent partial
+// delete, since the whole sequence runs in one transaction.
+func (r *userRepository) DeleteAccount(ctx context.Context, id uuid.UUID) error {
+	return r.scope.WithUser(ctx, id, func(ctx context.Context) error {
+		tx, err := txFromContext(ctx)
+		if err != nil {
+			return err
+		}
+
+		q := sqlcgen.New(tx)
+
+		for _, step := range []func(context.Context) (int64, error){
+			q.DeleteEventMappingsForUser,
+			q.DeleteEdgesForUser,
+			q.DeleteCalendarGrantsForUser,
+			q.DeleteCalendarsForUser,
+			q.DeleteConnectionsForUser,
+			q.DeleteIdentitiesForUser,
+		} {
+			if _, err := step(ctx); err != nil {
+				return mapWriteError(err)
+			}
+		}
+
+		rowsAffected, err := q.DeleteUser(ctx)
+		if err != nil {
+			return mapWriteError(err)
+		}
+
+		if rowsAffected == 0 {
+			return storage.ErrNotFound
+		}
+
+		return nil
+	})
 }
 
 func userFromRow(row sqlcgen.User) storage.User {

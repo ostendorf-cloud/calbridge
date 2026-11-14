@@ -119,6 +119,70 @@ key length), for example generated with `openssl rand -hex 32`: it encrypts
 `connections.credentials` and `event_mapping.encrypted_details` at rest, per
 `db/migrations`.
 
+## Provider sign-in
+
+`internal/auth` adds sign in with Google, Microsoft and Apple, each independent and off by
+default: a provider is offered only once its `config.auth.<provider>.clientId` is set.
+
+`config.authBaseUrl` is the public base URL of this deployment, for example
+`https://calbridge.example.com`. `internal/auth` builds every provider's redirect URL from it as
+`<AUTH_BASE_URL>/api/v1/auth/providers/<provider>/callback`, and this must match the redirect URL
+registered for the application at that provider's own console; a mismatch there is how the
+provider rejects the sign-in attempt, not a failure this chart can catch at render time.
+
+Each configured provider's client secret is read from the same existing `Secret` as
+`DATABASE_PASSWORD` and `ENCRYPTION_KEY` above, key by key, exactly like those two: this chart
+never offers a values-driven way to set a client secret, so none ever appears in `values.yaml`
+or in `helm template`/`helm install --set` output.
+
+| Env var | `values.yaml` key | Default key in the Secret |
+| --- | --- | --- |
+| `AUTH_GOOGLE_CLIENT_SECRET` | `existingSecret.googleClientSecretKey` | `AUTH_GOOGLE_CLIENT_SECRET` |
+| `AUTH_MICROSOFT_CLIENT_SECRET` | `existingSecret.microsoftClientSecretKey` | `AUTH_MICROSOFT_CLIENT_SECRET` |
+| `AUTH_APPLE_CLIENT_SECRET` | `existingSecret.appleClientSecretKey` | `AUTH_APPLE_CLIENT_SECRET` |
+
+`existingSecret.name` is required on every install regardless, since `DATABASE_PASSWORD` and
+`ENCRYPTION_KEY` are read from it too, so a configured provider always has a Secret to read its
+client secret from.
+
+`config.auth.<provider>.issuer` stays empty unless a deployment needs a non-default issuer:
+`internal/auth` falls back to its own documented default issuer for each provider when this is
+left unset. A deployment restricted to one Microsoft Entra ID tenant is the case this is meant
+for; the default is Microsoft's multi-tenant `common` authority.
+
+### What address a provider account gets
+
+calbridge uses a provider's email claim as the account's address only when the ID token marks
+that claim verified. Otherwise the account gets a placeholder under `sign-in.calbridge.invalid`,
+derived from the provider's subject, which is a name that can never resolve (RFC 2606).
+
+For two of the three providers that is every account, not an exception:
+
+| Provider | Address the account gets |
+| --- | --- |
+| Google | the verified email claim |
+| Microsoft | always a placeholder: Entra ID emits no `email_verified` claim in either token version, and Microsoft's own ID token claims reference says to never use `email` for authorization or to save data for a user |
+| Apple | always a placeholder: calbridge never requests the email scope, since that would move Apple's callback to a POST |
+
+That placeholder is the address `GET /api/v1/me` returns and the UI shows, and nothing in this
+release can change it. Believing an unverified claim instead would let a tenant administrator
+name somebody else's address, so this is a deliberate trade and not an oversight. If your users
+need to see their real address, Google sign-in and local accounts are the two paths that give
+them one today; letting a person confirm and correct their own address is tracked separately.
+
+Apple sign-in grants identity and nothing else: a person who signs in with Apple gets an
+account, and no calendar is connected. An iCloud calendar is connected separately over CalDAV
+with an Apple ID and an app-specific password, because Apple has no calendar API equivalent to
+Google Calendar or Microsoft Graph.
+
+Apple's client secret is not a fixed string like the other two. It is an ES256 JWT the operator
+mints from a key downloaded once from the Apple Developer portal, and Apple refuses one whose
+`exp` is more than six months out. Nothing in this chart or in calbridge can renew it, and
+nothing warns before it lapses: Apple sign-in simply starts failing. Treat the Secret key it
+lives under as something with an expiry date, re-mint it on a schedule, and roll the Secret
+before the old one runs out. Google and Microsoft client secrets have their own expiry policies
+set per application at those providers, which is worth checking when the credential is created.
+
 ## Why `config.databaseUrl` is plain here
 
 `config.databaseUrl` is a plain value, not read from `existingSecret`, because
@@ -242,6 +306,10 @@ for the full list `cmd/calbridge` reads today.
 | `migrationJob.databaseUser` | A separate role that applies `db/migrations`, distinct from `config.databaseUser`. Required; no usable default. See "Migrations run as a separate role" above. | `""` |
 | `migrationJob.image.repository` / `migrationJob.image.tag` / `migrationJob.image.digest` | The dbmate image the migration Job runs. | `ghcr.io/amacneil/dbmate` / `2.38.1` / pinned, see `values.yaml` |
 | `config.trustedProxyCIDRs` | `TRUSTED_PROXY_CIDRS`, a comma separated list of CIDRs (or bare addresses). Empty keeps the login rate limiter keyed on the TCP peer; see "The login rate limit is per client only with trusted proxies configured" above. | `""` |
+| `config.authBaseUrl` | `AUTH_BASE_URL`, the public base URL provider redirect URLs are built from. See "Provider sign-in" above. | `""` |
+| `config.auth.google.clientId` / `config.auth.microsoft.clientId` / `config.auth.apple.clientId` | `AUTH_GOOGLE_CLIENT_ID` / `AUTH_MICROSOFT_CLIENT_ID` / `AUTH_APPLE_CLIENT_ID`. Empty means that provider's sign-in is not offered. See "Provider sign-in" above. | `""` |
+| `config.auth.google.issuer` / `config.auth.microsoft.issuer` / `config.auth.apple.issuer` | `AUTH_GOOGLE_ISSUER` / `AUTH_MICROSOFT_ISSUER` / `AUTH_APPLE_ISSUER`. Empty falls back to `internal/auth`'s own documented default issuer. See "Provider sign-in" above. | `""` |
+| `existingSecret.googleClientSecretKey` / `existingSecret.microsoftClientSecretKey` / `existingSecret.appleClientSecretKey` | Keys for each provider's client secret in that Secret. See "Provider sign-in" above. | `AUTH_GOOGLE_CLIENT_SECRET` / `AUTH_MICROSOFT_CLIENT_SECRET` / `AUTH_APPLE_CLIENT_SECRET` |
 
 See `values.yaml` for the full list, including resources, startup and liveness probes, and pod
 security settings.

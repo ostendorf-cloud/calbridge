@@ -181,6 +181,54 @@
         "trustedProxyCIDRs": {
           "type": "string",
           "description": "TRUSTED_PROXY_CIDRS, a comma separated list of CIDRs (or bare addresses) the login rate limiter trusts to have appended the real client address to X-Forwarded-For. Empty keeps the limiter keyed on the TCP peer, which behind ingress.enabled or httproute.enabled is the ingress controller or Gateway data plane for every request, not the client."
+        },
+        "authBaseUrl": {
+          "type": "string",
+          "description": "AUTH_BASE_URL, the public base URL of this deployment, for example \"https://calbridge.example.com\". Provider redirect URLs are built from it and it must match the redirect URL registered at the provider. Empty by default, which leaves provider sign-in unreachable."
+        },
+        "auth": {
+          "type": "object",
+          "properties": {
+            "google": {
+              "type": "object",
+              "properties": {
+                "clientId": {
+                  "type": "string",
+                  "description": "AUTH_GOOGLE_CLIENT_ID. Empty by default; empty means Google sign-in is simply not offered."
+                },
+                "issuer": {
+                  "type": "string",
+                  "description": "AUTH_GOOGLE_ISSUER. Empty by default, which makes internal/config use its own documented default Google issuer."
+                }
+              }
+            },
+            "microsoft": {
+              "type": "object",
+              "properties": {
+                "clientId": {
+                  "type": "string",
+                  "description": "AUTH_MICROSOFT_CLIENT_ID. Empty by default; empty means Microsoft sign-in is simply not offered."
+                },
+                "issuer": {
+                  "type": "string",
+                  "description": "AUTH_MICROSOFT_ISSUER. Empty by default, which makes internal/config use its own documented default, multi-tenant Microsoft issuer. Set this only for a tenant-specific issuer."
+                }
+              }
+            },
+            "apple": {
+              "type": "object",
+              "properties": {
+                "clientId": {
+                  "type": "string",
+                  "description": "AUTH_APPLE_CLIENT_ID. Empty by default; empty means Apple sign-in is simply not offered."
+                },
+                "issuer": {
+                  "type": "string",
+                  "description": "AUTH_APPLE_ISSUER. Empty by default, which makes internal/config use its own documented default Apple issuer."
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -191,7 +239,10 @@
         "name": { "type": "string", "minLength": 1 },
         "databasePasswordKey": { "type": "string", "minLength": 1 },
         "encryptionKeyKey": { "type": "string", "minLength": 1 },
-        "migrationDatabasePasswordKey": { "type": "string" }
+        "migrationDatabasePasswordKey": { "type": "string" },
+        "googleClientSecretKey": { "type": "string", "minLength": 1 },
+        "microsoftClientSecretKey": { "type": "string", "minLength": 1 },
+        "appleClientSecretKey": { "type": "string", "minLength": 1 }
       }
     },
     "migrationJob": {

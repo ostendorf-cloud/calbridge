@@ -73,3 +73,17 @@ tests:
     asserts:
       - hasDocuments:
           count: 0
+
+  # A configured provider with no existingSecret.name to read its client
+  # secret from is refused by values.schema.json's own required and
+  # minLength constraint on that field, before this template runs at all,
+  # so there is no case for this file to add.
+  - it: renders nothing of its own when a provider is configured
+    set:
+      config:
+        auth:
+          google:
+            clientId: google-client-id
+    asserts:
+      - hasDocuments:
+          count: 0
