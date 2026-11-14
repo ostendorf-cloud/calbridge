@@ -73,9 +73,17 @@ const PasswordHashMemoryMiB = argon2MemoryKiB / 1024
 //
 //	2 * MaxConcurrentPasswordHashes * PasswordHashMemoryMiB
 //
-// 129 MiB at a cap of 1, 257 MiB at 2 and 385 MiB at 3. Resident set
-// size runs a little above each (135, 327 and 393 MiB on darwin/arm64),
-// since the Go runtime's own memory sits outside the heap.
+// 129 MiB at a cap of 1, 257 MiB at 2 and 385 MiB at 3. Two independent
+// measurements agree on those to a tenth of a MiB.
+//
+// Resident set size runs above each, since the Go runtime's own memory
+// sits outside the heap, but it is the figure that does not reproduce:
+// two measurements of the same burst read 135 and 142 MiB at a cap of 1,
+// and 327 and 270 MiB at 2, and one run in eight tailed to 205 MiB while
+// the heap stayed at 129. Treat the heap figure as the number and
+// resident size as "above it, by an amount that varies". Both
+// measurements were taken on darwin/arm64; the deployment is Linux under
+// a cgroup, which neither of them exercised.
 //
 // GOMEMLIMIT does not change this and is not a substitute for the cap.
 // It is a soft limit, and a collector cannot keep up with 64 MiB
