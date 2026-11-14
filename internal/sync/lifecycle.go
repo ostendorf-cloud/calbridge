@@ -200,11 +200,16 @@ func (e *Engine) tearDown(ctx context.Context, b Binding, reason Reason) (Report
 		report  Report
 		errs    []error
 		deleted = map[string]bool{}
+		current = e.pass()
 	)
 
 	for _, mapping := range mappings {
+		if current.stop() {
+			break
+		}
 		if err := b.Target.Connector.DeleteEvent(ctx, b.Target.Credential, b.Target.CalendarID, mapping.TargetEventID); err != nil {
 			errs = append(errs, fmt.Errorf("edge %s: delete copy %q: %w", b.Edge.ID, mapping.TargetEventID, err))
+			current.refuse(err)
 
 			continue
 		}
@@ -220,7 +225,7 @@ func (e *Engine) tearDown(ctx context.Context, b Binding, reason Reason) (Report
 	// A copy written while the mapping row was not yet recorded carries
 	// the marker and nothing else. The promise is that the edge gives back
 	// everything it wrote, so the target is swept for the marker as well.
-	swept, err := e.sweepMarked(ctx, b, deleted, reason)
+	swept, err := e.sweepMarked(ctx, b, deleted, reason, current)
 	report.merge(swept)
 	if err != nil {
 		errs = append(errs, err)
@@ -249,7 +254,14 @@ func (e *Engine) tearDown(ctx context.Context, b Binding, reason Reason) (Report
 
 // sweepMarked deletes the events in the target carrying this edge's
 // marker that the mapping rows did not already account for.
-func (e *Engine) sweepMarked(ctx context.Context, b Binding, deleted map[string]bool, reason Reason) (Report, error) {
+//
+// It reads the target after those deletions, so an overridden occurrence
+// inside a master's own object is normally gone with it. What is left is
+// an object this edge could not remove, and sweepInstance decides what
+// becomes of it: a target declaring no instance writes refuses the id,
+// and the teardown reports that rather than failing on an operation the
+// capability already ruled out.
+func (e *Engine) sweepMarked(ctx context.Context, b Binding, deleted map[string]bool, reason Reason, p *pass) (Report, error) {
 	targetState, err := snapshot(ctx, b.Target)
 	if err != nil {
 		return Report{}, fmt.Errorf("edge %s: read target calendar: %w", b.Edge.ID, err)
@@ -265,9 +277,18 @@ func (e *Engine) sweepMarked(ctx context.Context, b Binding, deleted map[string]
 		if deleted[id] || !WrittenBy(event, b.Edge.ID) {
 			continue
 		}
+		if op, held := e.sweepInstance(b, id, event, targetState); held {
+			report.add(op)
+
+			continue
+		}
+		if p.stop() {
+			continue
+		}
 
 		if err := b.Target.Connector.DeleteEvent(ctx, b.Target.Credential, b.Target.CalendarID, id); err != nil {
 			errs = append(errs, fmt.Errorf("edge %s: delete copy %q: %w", b.Edge.ID, id, err))
+			p.refuse(err)
 
 			continue
 		}

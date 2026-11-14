@@ -176,7 +176,7 @@ func (c *Connector) CreateEvent(
 		return provider.Event{}, err
 	}
 	caps := c.Capabilities()
-	stored, err := accept(p, caps, event)
+	stored, err := accept(caps, event)
 	if err != nil {
 		return provider.Event{}, err
 	}
@@ -217,11 +217,11 @@ func (c *Connector) UpdateEvent(
 		return provider.Event{}, err
 	}
 	caps := c.Capabilities()
-	stored, err := accept(p, caps, event)
+	stored, err := accept(caps, event)
 	if err != nil {
 		return provider.Event{}, err
 	}
-	if strings.Contains(stored.ID, instanceSeparator) {
+	if !caps.InstanceWrites && strings.Contains(stored.ID, instanceSeparator) {
 		return provider.Event{}, fmt.Errorf(
 			"caldav declares no instance writes and %q names one overridden occurrence: %w",
 			stored.ID, provider.ErrUnsupported)
@@ -258,7 +258,7 @@ func (c *Connector) DeleteEvent(ctx context.Context, cred provider.Credential, c
 	if err != nil {
 		return err
 	}
-	if strings.Contains(eventID, instanceSeparator) {
+	if !c.Capabilities().InstanceWrites && strings.Contains(eventID, instanceSeparator) {
 		// Removing the master's id removes the resource, and the override
 		// inside it with it, which is what the interface documents a
 		// connector declaring no instance writes does.
@@ -423,21 +423,25 @@ func (c *Connector) readEvent(
 // intersection. Gating on the profile instead would let a connector
 // declare that it writes no attendee and then write one for the server
 // that happens to allow it, which is the outcome the declaration is
-// there to rule out. The profile is still what names the server in a
-// message.
-func accept(p Profile, caps provider.Capabilities, event provider.Event) (provider.Event, error) {
+// there to rule out. No message here names a profile either, for the
+// same reason: every profile gets the same answer, so naming one would
+// read as that server's refusal rather than the connector's.
+//
+// Connector.NormaliseEvent runs this too, so what the declaration says a
+// write stores and what a write actually stores come from one place.
+func accept(caps provider.Capabilities, event provider.Event) (provider.Event, error) {
 	if err := event.Validate(); err != nil {
 		return provider.Event{}, err
 	}
-	if event.Recurrence.IsInstance() {
+	if event.Recurrence.IsInstance() && !caps.InstanceWrites {
 		return provider.Event{}, fmt.Errorf(
-			"caldav profile %q declares no instance writes: %w", p.Name, provider.ErrUnsupported)
+			"caldav declares no instance writes: %w", provider.ErrUnsupported)
 	}
 	if event.Recurrence.IsMaster() && !caps.NativeRecurrence {
-		return provider.Event{}, fmt.Errorf("caldav profile %q: recurrence rule: %w", p.Name, provider.ErrUnsupported)
+		return provider.Event{}, fmt.Errorf("caldav: recurrence rule: %w", provider.ErrUnsupported)
 	}
 	if event.Start.Kind == provider.TimeKindFloating && !caps.FloatingTimes {
-		return provider.Event{}, fmt.Errorf("caldav profile %q: floating time: %w", p.Name, provider.ErrUnsupported)
+		return provider.Event{}, fmt.Errorf("caldav: floating time: %w", provider.ErrUnsupported)
 	}
 	if !caps.Attendees {
 		event.Attendees = nil

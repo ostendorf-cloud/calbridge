@@ -138,7 +138,7 @@ func TestEngine_Apply_updatesWhenTheSourceChanged(t *testing.T) {
 	h.apply(source)
 
 	source.Summary = "Jour fixe, verlegt"
-	source = h.put(source)
+	source = h.replace(source)
 
 	wantActions(t, h.apply(source), "update/source changed")
 	wantWrites(t, h.target, 1, 1, 0)

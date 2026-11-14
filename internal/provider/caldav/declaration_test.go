@@ -159,6 +159,73 @@ func TestConnector_NormaliseEventMatchesWhatAWriteReadsBack(t *testing.T) {
 	}
 }
 
+func TestConnector_NormaliseEventRefusesWhatAWriteRefuses(t *testing.T) {
+	t.Parallel()
+
+	// The declaration answers what a write stores, so it has to refuse
+	// what a write refuses. Answering for an event the write path turns
+	// down would let a caller act on a value no write will ever produce.
+	restrictive := caldav.ICloud
+	restrictive.Capabilities.FloatingTimes = false
+	restrictive.Capabilities.NativeRecurrence = false
+
+	tests := []struct {
+		name     string
+		profiles map[string]caldav.Profile
+		event    func() provider.Event
+	}{
+		{
+			name: "one overridden occurrence",
+			event: func() provider.Event {
+				event := berlinEvent("Standup")
+				event.Recurrence = provider.Recurrence{
+					MasterID:      "standup.ics",
+					OriginalStart: provider.Zoned(time.Date(2026, time.April, 6, 9, 0, 0, 0, time.UTC), "Europe/Berlin"),
+				}
+
+				return event
+			},
+		},
+		{
+			name:     "a floating time the profile does not store",
+			profiles: map[string]caldav.Profile{restrictive.Name: restrictive},
+			event: func() provider.Event {
+				event := berlinEvent("Abstimmung")
+				event.Start = provider.Floating(time.Date(2026, time.April, 3, 9, 0, 0, 0, time.UTC))
+				event.End = provider.Floating(time.Date(2026, time.April, 3, 10, 0, 0, 0, time.UTC))
+
+				return event
+			},
+		},
+		{
+			name:     "a recurrence rule the profile does not store",
+			profiles: map[string]caldav.Profile{restrictive.Name: restrictive},
+			event: func() provider.Event {
+				event := berlinEvent("Jour fixe")
+				event.Recurrence = provider.Recurrence{Rule: []string{"RRULE:FREQ=WEEKLY;COUNT=4"}}
+
+				return event
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			opts := []caldav.Option{caldav.WithClock(func() time.Time { return fixedNow })}
+			if tc.profiles != nil {
+				opts = append(opts, caldav.WithProfiles(tc.profiles))
+			}
+			connector := caldav.New(opts...)
+
+			if _, err := connector.NormaliseEvent(tc.event()); !errors.Is(err, provider.ErrUnsupported) {
+				t.Errorf("NormaliseEvent() error = %v, want ErrUnsupported", err)
+			}
+		})
+	}
+}
+
 func TestConnector_DeclaresNoInstanceWrites(t *testing.T) {
 	t.Parallel()
 

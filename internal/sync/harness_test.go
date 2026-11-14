@@ -184,6 +184,20 @@ func (h *harness) put(event provider.Event) provider.Event {
 	return stored
 }
 
+// replace changes an event already in the source calendar, the way the
+// user edits one they already have. It refuses an event with no id, so a
+// test meaning to change a fixture cannot add a second one instead.
+func (h *harness) replace(event provider.Event) provider.Event {
+	h.t.Helper()
+
+	stored, err := h.source.Replace(h.sourceCal, event)
+	if err != nil {
+		h.t.Fatalf("replace %q in the source calendar: %v", event.ID, err)
+	}
+
+	return stored
+}
+
 // apply hands one source event to the engine as an upsert change.
 func (h *harness) apply(event provider.Event) sync.Report {
 	h.t.Helper()
