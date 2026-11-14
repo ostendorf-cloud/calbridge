@@ -207,6 +207,7 @@ func (e *Engine) tearDown(ctx context.Context, b Binding, reason Reason) (Report
 		if current.stop() {
 			break
 		}
+		current.ask(mapping.TargetEventID)
 		if err := b.Target.Connector.DeleteEvent(ctx, b.Target.Credential, b.Target.CalendarID, mapping.TargetEventID); err != nil {
 			errs = append(errs, fmt.Errorf("edge %s: delete copy %q: %w", b.Edge.ID, mapping.TargetEventID, err))
 			current.refuse(err)
@@ -278,7 +279,7 @@ func (e *Engine) sweepMarked(ctx context.Context, b Binding, deleted map[string]
 		if deleted[id] || !WrittenBy(event, b.Edge.ID) {
 			continue
 		}
-		swept, held, err := e.sweepInstance(ctx, b, id, event, targetState, deleted, p)
+		swept, held, err := e.sweepInstance(ctx, b, id, event, targetState, p)
 		if err != nil {
 			errs = append(errs, err)
 
@@ -293,6 +294,7 @@ func (e *Engine) sweepMarked(ctx context.Context, b Binding, deleted map[string]
 			continue
 		}
 
+		p.ask(id)
 		if err := b.Target.Connector.DeleteEvent(ctx, b.Target.Credential, b.Target.CalendarID, id); err != nil {
 			errs = append(errs, fmt.Errorf("edge %s: delete copy %q: %w", b.Edge.ID, id, err))
 			p.refuse(err)

@@ -406,6 +406,23 @@ func (c *Connector) Edit(calendarID, eventID string, change func(*provider.Event
 	c.record(cal, event)
 }
 
+// Forget removes exactly the event the id names and nothing else, which
+// is the one thing DeleteEvent cannot do on a provider that keeps its
+// overridden occurrences inside the master's own object: there a client
+// rewriting the object with only the overrides left in it takes the
+// master out and leaves them. It is a fixture, so it moves none of the
+// counters Counts reports.
+func (c *Connector) Forget(calendarID, eventID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	cal, ok := c.calendars[calendarID]
+	if !ok {
+		return
+	}
+	delete(cal.events, eventID)
+}
+
 // ID returns the provider id this connector is registered under.
 func (c *Connector) ID() provider.ID { return c.id }
 
@@ -748,7 +765,7 @@ func (c *Connector) DeleteEvent(ctx context.Context, cred provider.Credential, c
 	if err != nil {
 		return err
 	}
-	if _, held := cal.events[eventID]; !held {
+	if !c.holdsGroup(cal, eventID) {
 		// Deleting what is already gone succeeds, so a run interrupted
 		// after the provider acted is safe to repeat.
 		return nil
@@ -758,6 +775,11 @@ func (c *Connector) DeleteEvent(ctx context.Context, cred provider.Credential, c
 	// occurrences inside the master's own object, so removing the master
 	// removes them with it. A fake that left the overrides standing would
 	// let a caller pass a test the real provider fails.
+	//
+	// An object holding overrides and no master at all is why the check
+	// above asks about the group rather than the id: no event answers to
+	// the master's id, and a real server still has the resource to delete
+	// and still removes what is in it.
 	c.removeGroup(cal, eventID)
 
 	// One object going is one deletion, named after the master, which is
@@ -771,6 +793,27 @@ func (c *Connector) DeleteEvent(ctx context.Context, cred provider.Credential, c
 	c.deletes++
 
 	return nil
+}
+
+// holdsGroup reports whether the calendar holds anything the id names:
+// the event itself, or, where the provider keeps its overridden
+// occurrences inside the master's own object, an override inside the
+// object. The caller holds the lock.
+func (c *Connector) holdsGroup(cal *calendar, eventID string) bool {
+	if _, held := cal.events[eventID]; held {
+		return true
+	}
+	if c.caps.InstanceWrites {
+		return false
+	}
+
+	for id := range cal.events {
+		if provider.IsInstanceIDOf(id, eventID) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // removeGroup takes the event the id names out of the calendar, together

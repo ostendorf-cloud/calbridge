@@ -86,6 +86,14 @@ const (
 	// declaring no instance writes accepts no other id for it. The
 	// operation names that object, which is what was deleted.
 	ReasonMasterGone
+	// ReasonNoDeletableID means no id the target accepts names the event:
+	// its own id reads as an overridden occurrence, which a target
+	// declaring no instance writes refuses, and the event names no master
+	// whose object would remove it. A plain event id carrying
+	// provider.InstanceSeparator is what produces that pair, and issue #29
+	// is where it is closed. The event stays where it is and is reported
+	// again on every pass.
+	ReasonNoDeletableID
 	// ReasonEdgeRemoved means the edge was torn down and gave back
 	// everything it wrote.
 	ReasonEdgeRemoved
@@ -123,6 +131,8 @@ func (r Reason) String() string {
 		return "orphan"
 	case ReasonMasterGone:
 		return "master gone"
+	case ReasonNoDeletableID:
+		return "no deletable id"
 	case ReasonEdgeRemoved:
 		return "edge removed"
 	case ReasonGrantRevoked:

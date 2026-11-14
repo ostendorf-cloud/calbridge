@@ -182,13 +182,30 @@ type recordingTarget struct {
 	*fakeConnector
 
 	deleted []string
+	refuses map[string]error
 }
 
-// DeleteEvent records the id and hands the call on.
+// DeleteEvent records the id and hands the call on, unless the test asked
+// for this id to fail.
 func (c *recordingTarget) DeleteEvent(ctx context.Context, cred provider.Credential, calendarID, eventID string) error {
 	c.deleted = append(c.deleted, eventID)
+	if err, refused := c.refuses[eventID]; refused {
+		return err
+	}
 
 	return c.fakeConnector.DeleteEvent(ctx, cred, calendarID, eventID)
+}
+
+// failDelete makes a delete of this id return the error. It is for a
+// failure the provider fake has no way of its own to produce: a server
+// answering a DELETE with 500 is neither a refused credential nor an
+// event that is already gone, and the engine has to carry it to the
+// caller rather than giving up the pass.
+func (c *recordingTarget) failDelete(eventID string, err error) {
+	if c.refuses == nil {
+		c.refuses = map[string]error{}
+	}
+	c.refuses[eventID] = err
 }
 
 // recordTargetDeletes puts the recording connector in front of the
