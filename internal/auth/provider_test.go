@@ -514,6 +514,65 @@ func TestAppleIsTheProviderDocumentedAsIdentityOnly(t *testing.T) {
 	}
 }
 
+// TestTheProvidersThatNeverGiveAnAddressSaySo: Microsoft emits no
+// email_verified claim and Apple is never asked for the email scope, so
+// an account created through either is known by a placeholder address
+// that nothing in this release can change. The login screen says so
+// before somebody picks one, and it renders that from this flag.
+func TestTheProvidersThatNeverGiveAnAddressSaySo(t *testing.T) {
+	t.Parallel()
+
+	tests := map[storage.IdentityProvider]bool{
+		storage.IdentityProviderGoogle:    false,
+		storage.IdentityProviderMicrosoft: true,
+		storage.IdentityProviderApple:     true,
+	}
+
+	for id, wantPlaceholder := range tests {
+		t.Run(string(id), func(t *testing.T) {
+			t.Parallel()
+
+			provider, err := auth.NewProvider(id, auth.ProviderConfig{
+				ClientID:     "a-client-id",
+				ClientSecret: "a-client-secret",
+				RedirectURL:  "https://calbridge.example.com/callback",
+			})
+			if err != nil {
+				t.Fatalf("NewProvider() error = %v", err)
+			}
+
+			if got := provider.Info().PlaceholderEmail; got != wantPlaceholder {
+				t.Fatalf("PlaceholderEmail = %t, want %t", got, wantPlaceholder)
+			}
+		})
+	}
+}
+
+// TestAMicrosoftSignInAlwaysLandsOnAPlaceholderAddress holds the claim
+// the flag above makes: Entra ID sends no email_verified, so there is no
+// Microsoft token that gets past signInEmail with its own address.
+func TestAMicrosoftSignInAlwaysLandsOnAPlaceholderAddress(t *testing.T) {
+	t.Parallel()
+
+	payload := base64.RawURLEncoding.EncodeToString(
+		[]byte(`{"sub":"entra-subject","email":"person@contoso.com","tid":"a-tenant"}`))
+
+	identity, err := auth.SignIn(context.Background(), storagetest.NewStore(), storage.IdentityProviderMicrosoft,
+		oidc.Identity{
+			Subject: "entra-subject",
+			Email:   "person@contoso.com",
+			IDToken: "header." + payload + ".signature",
+		})
+	if err != nil {
+		t.Fatalf("SignIn() error = %v", err)
+	}
+
+	if !strings.HasSuffix(identity.Email, "@"+auth.PlaceholderEmailDomain) {
+		t.Fatalf("Email = %q, want a placeholder: a tenant administrator controls what the email "+
+			"claim says and Entra ID never marks it verified", identity.Email)
+	}
+}
+
 // TestNewProviderRefusesAnUnknownProvider keeps a typo in configuration
 // from becoming a half-built sign-in button.
 func TestNewProviderRefusesAnUnknownProvider(t *testing.T) {

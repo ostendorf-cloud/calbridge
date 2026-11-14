@@ -3,7 +3,10 @@
 
 package auth
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // ScopesFor is what a sign-in provider was actually configured to ask
 // for. It is test-only on purpose: the scope list is fixed by this
@@ -35,4 +38,19 @@ func SetDeriveKey(t *testing.T, observe func(password, salt []byte, iterations, 
 
 // MaxHashWait is how long a caller waits for a derivation slot, for a
 // test that needs to know when shedding starts.
-const MaxHashWait = maxHashWait
+func MaxHashWait() time.Duration { return maxHashWait }
+
+// SetMaxHashWait shortens the wait for a derivation slot and restores it
+// when the test ends, so the branch that sheds a caller which waited the
+// whole timeout can be exercised without a test that takes that long.
+//
+// A test using it must not call t.Parallel: maxHashWait is package
+// state. See SetDeriveKey.
+func SetMaxHashWait(t *testing.T, wait time.Duration) {
+	t.Helper()
+
+	previous := maxHashWait
+	maxHashWait = wait
+
+	t.Cleanup(func() { maxHashWait = previous })
+}

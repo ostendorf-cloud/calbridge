@@ -109,11 +109,18 @@ resources:
     #
     # This number and internal/auth's MaxConcurrentPasswordHashes are one
     # decision, not two. Argon2id holds 64 MiB for the whole of each
-    # derivation, so the two concurrent derivations that package allows
-    # are 128 MiB of this limit and the rest is everything else the
-    # process needs. internal/depsync's own test fails if either side is
-    # changed without the other, so raising this alone buys no capacity
-    # and lowering it alone is caught before it reaches a cluster.
+    # derivation, and a finished derivation's block stays resident until
+    # a later collection, so the peak is about twice the live blocks: the
+    # one derivation that package allows at a time measures roughly
+    # 128 MiB resident, half of this limit, and the other half is the Go
+    # runtime, the embedded SPA, the pgx pool and the session store.
+    #
+    # Raising this alone buys no capacity, because the application still
+    # runs one derivation at a time. Raising both together is the scaling
+    # path when logins per second becomes a constraint: keep the live
+    # blocks at a quarter of the limit, which keeps the resident peak at
+    # half. internal/depsync's own test fails if either side moves
+    # without the other, in both directions.
     memory: 256Mi
 
 # Disabled by default: cmd/calbridge has no slow startup work in front of

@@ -18,14 +18,21 @@ import (
 const chartValuesPath = "../../charts/calbridge/values.yaml"
 
 // hashBudgetShare is the largest share of the container's memory limit
-// that concurrent Argon2id derivations may account for. Half: the other
-// half is the Go runtime, the embedded SPA, the pgx pool, the session
-// store and the headroom a collector needs to not be running against
-// the limit continuously. It is the number that decides whether
-// auth.MaxConcurrentPasswordHashes and the chart's limit still agree,
-// and raising it is a decision about how close to an OOM kill this
-// deployment runs.
-const hashBudgetShare = 2
+// that the live Argon2id blocks may account for: a quarter.
+//
+// A quarter rather than the half it looks like it should be, because
+// live blocks are only half of what the process actually holds. A
+// finished derivation's block stays resident until a later collection,
+// so under load the measured peak is about twice the live-block
+// arithmetic; see auth.MaxConcurrentPasswordHashes for the measurements.
+// A quarter of the limit in live blocks is therefore about half the
+// limit resident, and the other half is the Go runtime, the embedded
+// SPA, the pgx pool, the session store and the headroom a collector
+// needs to not be running against the limit continuously.
+//
+// Changing this is a decision about how close to an OOM kill this
+// deployment runs, not a knob to turn when the test below complains.
+const hashBudgetShare = 4
 
 // containerMemoryLimit matches the memory limit of the top level
 // resources block, the one that belongs to the application container.
@@ -39,11 +46,12 @@ var containerMemoryLimit = regexp.MustCompile(`(?m)^resources:(?:\n[ \t]+.*)*?\n
 // compiler reads. This fails when either side moves without the other,
 // in both directions, which is what keeps the two a single decision.
 //
-// Changing them together is the supported move. Raising only the chart's
-// limit buys no capacity, because the code still runs the same number of
-// derivations; lowering only the chart's limit, or raising only the
-// constant, puts the process back where the burst that OOM-kills it is
-// one unauthenticated client's.
+// Changing them together is the supported move, and it is the scaling
+// path when logins per second becomes a constraint. Raising only the
+// chart's limit buys no capacity, because the code still runs the same
+// number of derivations; lowering only the chart's limit, or raising
+// only the constant, puts the process back where the burst that
+// OOM-kills it is one unauthenticated client's.
 func TestPasswordHashingFitsTheChartsMemoryLimit(t *testing.T) {
 	t.Parallel()
 
@@ -55,19 +63,21 @@ func TestPasswordHashingFitsTheChartsMemoryLimit(t *testing.T) {
 	hashMiB := auth.MaxConcurrentPasswordHashes * auth.PasswordHashMemoryMiB
 
 	if want := limitMiB / hashBudgetShare; hashMiB > want {
-		t.Errorf("%d concurrent Argon2id derivations at %d MiB hold %d MiB, more than the %d MiB "+
-			"(%s's %d MiB limit divided by %d) they may account for: lower "+
-			"auth.MaxConcurrentPasswordHashes or raise the chart's limit, and say in both places why",
+		t.Errorf("%d concurrent Argon2id derivations at %d MiB hold %d MiB of live blocks, more than the "+
+			"%d MiB (%s's %d MiB limit divided by %d) they may account for, which puts the measured "+
+			"resident peak of about %d MiB over that limit: lower auth.MaxConcurrentPasswordHashes or "+
+			"raise the chart's limit, and say in both places why",
 			auth.MaxConcurrentPasswordHashes, auth.PasswordHashMemoryMiB, hashMiB, want,
-			chartValuesPath, limitMiB, hashBudgetShare)
+			chartValuesPath, limitMiB, hashBudgetShare, 2*hashMiB)
 	}
 
 	// The other direction: a limit raised far beyond what the code will
 	// ever use is a pod reserving memory nothing claims, and more likely
-	// a constant somebody forgot to raise with it.
-	if hashMiB*4 < limitMiB {
-		t.Errorf("%s limits the container to %d MiB while at most %d MiB of it can go to password "+
-			"hashing: raise auth.MaxConcurrentPasswordHashes to use it, or lower the limit",
+	// a constant somebody forgot to raise with it. The same share, so
+	// the two guards together pin the limit to one value per cap.
+	if hashMiB*hashBudgetShare < limitMiB {
+		t.Errorf("%s limits the container to %d MiB while at most %d MiB of it can go to live Argon2id "+
+			"blocks: raise auth.MaxConcurrentPasswordHashes to use it, or lower the limit",
 			chartValuesPath, limitMiB, hashMiB)
 	}
 }

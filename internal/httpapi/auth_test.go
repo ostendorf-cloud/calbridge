@@ -101,12 +101,27 @@ func TestProvidersListsOnlyWhatIsConfigured(t *testing.T) {
 		}
 
 		byID := map[string]bool{}
+		placeholderByID := map[string]bool{}
+
 		for _, provider := range got.Providers {
 			byID[provider.ID] = provider.IdentityOnly
+			placeholderByID[provider.ID] = provider.PlaceholderEmail
 
 			if provider.Name == "" {
 				t.Errorf("provider %q has no name for its button", provider.ID)
 			}
+		}
+
+		// Apple hands over no address this application will believe, so
+		// the login screen has to say so before somebody picks it: there
+		// is no way to change the address afterwards.
+		if !placeholderByID["apple"] {
+			t.Error("apple is not flagged placeholder_email, so the login screen cannot warn that the " +
+				"account will carry an address nobody can change")
+		}
+
+		if placeholderByID["google"] {
+			t.Error("google is flagged placeholder_email although it sends a verified address")
 		}
 
 		if identityOnly, ok := byID["apple"]; !ok || !identityOnly {

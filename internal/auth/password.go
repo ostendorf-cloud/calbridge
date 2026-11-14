@@ -56,31 +56,65 @@ const (
 const PasswordHashMemoryMiB = argon2MemoryKiB / 1024
 
 // MaxConcurrentPasswordHashes is how many Argon2id derivations may run
-// at the same time in one process. It is a hard cap on memory, not a
-// rate: argon2.IDKey allocates PasswordHashMemoryMiB for the whole of
-// its run, and every concurrent call holds its own block, so nothing a
-// garbage collector does can bring the total below the number of calls
-// in flight.
+// at the same time in one process. It is a cap on memory, not a rate:
+// argon2.IDKey allocates PasswordHashMemoryMiB for the whole of its run,
+// and every concurrent call holds its own block.
 //
-// The number comes from the pod this runs in.
+// # What the resident peak actually is
+//
+// It is not MaxConcurrentPasswordHashes times PasswordHashMemoryMiB.
+// Counting live blocks undercounts by half, because a derivation's block
+// is still resident when the next caller takes the slot it just freed:
+// the slot is released when derive returns and the block is not swept
+// until a later collection, so under sustained load the process holds
+// roughly one finished block for every running one. Measured through
+// HashPassword with twenty callers queued behind the cap, peak
+// runtime.MemStats.HeapInuse comes out at about
+//
+//	2 * MaxConcurrentPasswordHashes * PasswordHashMemoryMiB
+//
+// 129 MiB at a cap of 1, 257 MiB at 2 and 385 MiB at 3. Resident set
+// size runs a little above each (135, 327 and 393 MiB on darwin/arm64),
+// since the Go runtime's own memory sits outside the heap.
+//
+// GOMEMLIMIT does not change this and is not a substitute for the cap.
+// It is a soft limit, and a collector cannot keep up with 64 MiB
+// allocations arriving back to back: the same burst peaked at 327 MiB
+// with a cap of 2 under GOMEMLIMIT of both 200 MiB and 150 MiB.
+//
+// # Why one
+//
 // charts/calbridge/values.yaml limits the container to 256Mi, and
 // internal/depsync's own test fails if that limit and this constant stop
-// agreeing, so neither can be changed alone. Two derivations is 128 MiB,
-// half the limit, leaving the other half for the Go runtime, the
-// embedded SPA, the pgx pool, the session store and the headroom a
-// collector needs to not be running against the limit continuously.
-// Three would be 192 MiB and leave 64 MiB for all of that, which is not
-// enough to be confident in; one would serialize every login behind a
-// deliberately slow function for no memory gained worth having.
+// agreeing, so neither can be changed alone. One derivation is 64 MiB of
+// live block and so about 128 MiB resident, half the limit, which leaves
+// the other half for the Go runtime, the embedded SPA, the pgx pool, the
+// session store and the headroom a collector needs to not be running
+// against the limit continuously. Two would be about 257 MiB of heap
+// alone, the whole limit before any of that, which is what this cap
+// exists to prevent rather than merely reduce.
 //
-// Without this cap the rate limiter is the only thing in front of
+// What one costs is that logins serialize, at roughly three a second.
+// At this deployment's scale that is not a constraint anybody will meet:
+// a full rate limit burst of ten clears in about three seconds, well
+// inside maxHashWait, and a caller that is waiting holds no block.
+//
+// The scaling path, when logins per second does become a constraint, is
+// to raise both together: the chart's resources.limits.memory and this
+// constant, keeping the live-block budget at a quarter of the limit (see
+// internal/depsync's hashBudgetShare) so the resident peak stays at
+// half. Raising either one alone is caught by that test.
+//
+// # Why a cap at all
+//
+// Without one the rate limiter is the only thing in front of
 // argon2.IDKey, and it bounds how often a request arrives, not how many
 // are being served: config.Config's default burst of ten lets ten
-// signups or logins into this function at once, which is 640 MiB against
-// a 256Mi limit, so one unauthenticated client ends the process in a
-// single burst and, because the session store is in memory, signs
-// everybody else out with it.
-const MaxConcurrentPasswordHashes = 2
+// signups or logins into this function at once, which measured 1161 MiB
+// resident against a 256Mi limit. One unauthenticated client ends the
+// process in a single burst and, because the session store is in
+// memory, signs everybody else out with it.
+const MaxConcurrentPasswordHashes = 1
 
 // hashSlots is that cap. A caller holds a slot only for the derivation
 // itself, never across a database call, so the queue in front of it
@@ -90,11 +124,14 @@ var hashSlots = make(chan struct{}, MaxConcurrentPasswordHashes)
 // maxHashWait is how long a caller waits for a slot before the request
 // is shed. At roughly 0.3 seconds per derivation and
 // MaxConcurrentPasswordHashes running at once, a full rate limit burst
-// of ten clears in about 1.5 seconds, so this leaves room for that and
-// then some while still being far below any sensible client timeout.
-// Waiting costs nothing: a waiting caller holds no Argon2id block, only
-// its own goroutine.
-const maxHashWait = 5 * time.Second
+// of ten clears in about three seconds, so this leaves room for that
+// while staying far below any sensible client timeout. Waiting costs
+// nothing in memory: a waiting caller holds no Argon2id block, only its
+// own goroutine.
+//
+// A variable rather than a constant so a test can shorten it; nothing
+// outside a test assigns to it.
+var maxHashWait = 5 * time.Second
 
 // ErrHashingBusy is returned when no slot came free within maxHashWait,
 // or when the request was cancelled while waiting. It is the one error

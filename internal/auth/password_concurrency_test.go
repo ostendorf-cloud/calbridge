@@ -192,6 +192,83 @@ func TestPasswordHashingShedsRatherThanQueueingForever(t *testing.T) {
 	}
 }
 
+// TestACallerThatWaitsTheWholeTimeoutIsShed covers the branch that
+// actually fires in production. The shed tests above use an already
+// cancelled request, which takes acquireHashSlot's ctx.Done path; a real
+// client under load is still there and waiting, and what sheds it is the
+// timer. maxHashWait is shortened so the test does not have to take five
+// seconds to reach it.
+//
+// Not parallel on purpose: it replaces package state.
+func TestACallerThatWaitsTheWholeTimeoutIsShed(t *testing.T) {
+	auth.SetMaxHashWait(t, 50*time.Millisecond)
+
+	probe := newConcurrencyProbe(auth.MaxConcurrentPasswordHashes)
+	auth.SetDeriveKey(t, probe.derive)
+
+	var wg sync.WaitGroup
+
+	for range auth.MaxConcurrentPasswordHashes {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			_, _ = auth.HashPassword(context.Background(), "a-long-enough-test-passphrase")
+		}()
+	}
+
+	for range auth.MaxConcurrentPasswordHashes {
+		select {
+		case <-probe.entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the derivations that fill the slots never started")
+		}
+	}
+
+	// A caller whose request is still very much alive. It waits, gets
+	// nothing, and is shed. Run from a goroutine with a bound of its
+	// own: without the timer there is nothing to end this wait, and a
+	// test that hangs to the package timeout says less than one that
+	// fails.
+	started := time.Now()
+
+	answered := make(chan error, 1)
+
+	go func() {
+		_, err := auth.HashPassword(context.Background(), "a-long-enough-test-passphrase")
+		answered <- err
+	}()
+
+	var err error
+
+	select {
+	case err = <-answered:
+	case <-time.After(20 * auth.MaxHashWait()):
+		close(probe.release)
+		wg.Wait()
+		t.Fatal("a caller that waited the whole timeout was never shed: with every slot held and no " +
+			"cancellation to end the wait, the timer is the only thing that answers it")
+	}
+
+	if !errors.Is(err, auth.ErrHashingBusy) {
+		t.Fatalf("HashPassword() error = %v, want ErrHashingBusy after waiting the whole timeout", err)
+	}
+
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("HashPassword() error = %v, want the timeout's own refusal rather than the context's: "+
+			"this caller was never cancelled", err)
+	}
+
+	if waited := time.Since(started); waited < auth.MaxHashWait() {
+		t.Errorf("shed after %v, want it to have waited at least %v for a slot first",
+			waited, auth.MaxHashWait())
+	}
+
+	close(probe.release)
+	wg.Wait()
+}
+
 // TestVerifyPasswordIsUnderTheSameCap: the login path derives too, and a
 // login is the easier of the two routes to flood, since it needs no
 // unused address.
@@ -260,7 +337,7 @@ func shedOrTimeOut(t *testing.T, call func(context.Context) error) error {
 	select {
 	case err := <-answered:
 		return err
-	case <-time.After(2 * auth.MaxHashWait):
+	case <-time.After(2 * auth.MaxHashWait()):
 		t.Fatal("the call never answered: with every derivation slot held and the request already " +
 			"cancelled, it must be shed rather than start a derivation of its own")
 

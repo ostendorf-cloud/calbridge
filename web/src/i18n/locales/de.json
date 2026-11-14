@@ -39,6 +39,7 @@
       "title": "Oder weiter mit",
       "signInWith": "Weiter mit {name}",
       "identityOnly": "Bestätigt nur Ihre Identität. Es wird kein Kalender verbunden.",
+      "placeholderEmail": "{name} übermittelt uns keine bestätigte E-Mail-Adresse. Ihr Konto zeigt deshalb eine Platzhalteradresse, die sich noch nicht ändern lässt. Registrieren Sie sich mit E-Mail-Adresse und Passwort, wenn Ihre eigene Adresse angezeigt werden soll.",
       "loadError": "Die Liste der Anbieter konnte nicht geladen werden."
     }
   },

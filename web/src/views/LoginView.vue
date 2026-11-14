@@ -54,6 +54,7 @@ interface ProviderResponse {
   id: string
   name: string
   identity_only: boolean
+  placeholder_email: boolean
 }
 
 interface ProvidersResponse {
@@ -64,6 +65,11 @@ interface Provider {
   id: string
   name: string
   identityOnly: boolean
+  // True for a provider that hands over no address this application
+  // will believe, so the account ends up on a placeholder one that
+  // cannot be changed yet. Said before the person picks the provider,
+  // not after.
+  placeholderEmail: boolean
 }
 
 const providers = ref<Provider[]>([])
@@ -76,6 +82,7 @@ onMounted(async () => {
       id: provider.id,
       name: provider.name,
       identityOnly: provider.identity_only,
+      placeholderEmail: provider.placeholder_email,
     }))
   } catch {
     providersError.value = t('login.providers.loadError')
@@ -300,6 +307,9 @@ const signUpForm = useForm<SignUpFields>({
           </GovueButton>
           <p v-if="provider.identityOnly" class="text-sm text-text-muted">
             {{ t('login.providers.identityOnly') }}
+          </p>
+          <p v-if="provider.placeholderEmail" class="text-sm text-text-muted">
+            {{ t('login.providers.placeholderEmail', { name: provider.name }) }}
           </p>
         </div>
       </div>

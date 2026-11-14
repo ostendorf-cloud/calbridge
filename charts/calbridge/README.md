@@ -150,6 +150,26 @@ client secret from.
 left unset. A deployment restricted to one Microsoft Entra ID tenant is the case this is meant
 for; the default is Microsoft's multi-tenant `common` authority.
 
+### What address a provider account gets
+
+calbridge uses a provider's email claim as the account's address only when the ID token marks
+that claim verified. Otherwise the account gets a placeholder under `sign-in.calbridge.invalid`,
+derived from the provider's subject, which is a name that can never resolve (RFC 2606).
+
+For two of the three providers that is every account, not an exception:
+
+| Provider | Address the account gets |
+| --- | --- |
+| Google | the verified email claim |
+| Microsoft | always a placeholder: Entra ID emits no `email_verified` claim in either token version, and Microsoft's own ID token claims reference says to never use `email` for authorization or to save data for a user |
+| Apple | always a placeholder: calbridge never requests the email scope, since that would move Apple's callback to a POST |
+
+That placeholder is the address `GET /api/v1/me` returns and the UI shows, and nothing in this
+release can change it. Believing an unverified claim instead would let a tenant administrator
+name somebody else's address, so this is a deliberate trade and not an oversight. If your users
+need to see their real address, Google sign-in and local accounts are the two paths that give
+them one today; letting a person confirm and correct their own address is tracked separately.
+
 Apple sign-in grants identity and nothing else: a person who signs in with Apple gets an
 account, and no calendar is connected. An iCloud calendar is connected separately over CalDAV
 with an Apple ID and an app-specific password, because Apple has no calendar API equivalent to
