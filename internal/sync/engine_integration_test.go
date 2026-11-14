@@ -217,8 +217,8 @@ func TestEngineAgainstPostgres(t *testing.T) {
 
 	source := newFakeConnector(defaultSourceCaps)
 	target := newFakeConnector(defaultTargetCaps)
-	sourceCal := source.addCalendar("Privat", provider.Calendar{TimeZone: "Europe/Berlin"})
-	targetCal := target.addCalendar("Arbeit", provider.Calendar{TimeZone: "Europe/Berlin"})
+	sourceCal := source.AddCalendar(testConnection, provider.Calendar{Name: "Privat", TimeZone: "Europe/Berlin"}).ID
+	targetCal := target.AddCalendar(testConnection, provider.Calendar{Name: "Arbeit", TimeZone: "Europe/Berlin"}).ID
 
 	sourceRow := newIntegrationCalendar(ctx, t, store, user, sourceCal, "Privat")
 	targetRow := newIntegrationCalendar(ctx, t, store, user, targetCal, "Arbeit")
@@ -244,8 +244,8 @@ func TestEngineAgainstPostgres(t *testing.T) {
 	binder.add(binding)
 	engine := newIntegrationEngine(t, store, binder)
 
-	source.put(sourceCal, meeting("Jour fixe", 4, 9))
-	source.put(sourceCal, meeting("Retro", 5, 14))
+	source.Put(sourceCal, meeting("Jour fixe", 4, 9))
+	source.Put(sourceCal, meeting("Retro", 5, 14))
 
 	first, err := engine.Reconcile(ctx, binding)
 	if err != nil {
@@ -273,7 +273,7 @@ func TestEngineAgainstPostgres(t *testing.T) {
 	if got := second.CountReason(sync.ReasonUnchanged); got != 2 {
 		t.Fatalf("unchanged: got %d, want 2 (all: %v)", got, actions(second))
 	}
-	if creates, updates, _ := target.counts(); creates != 2 || updates != 0 {
+	if creates, updates, _ := target.Counts(); creates != 2 || updates != 0 {
 		t.Fatalf("connector calls after two passes: got %d creates and %d updates, want 2 and 0", creates, updates)
 	}
 
@@ -281,7 +281,7 @@ func TestEngineAgainstPostgres(t *testing.T) {
 		t.Fatalf("delete edge: %v", err)
 	}
 
-	if left := target.events(targetCal); len(left) != 0 {
+	if left := target.Events(targetCal); len(left) != 0 {
 		t.Fatalf("the target still holds %d events", len(left))
 	}
 	if left := listMappings(ctx, t, store, user.ID, edge.ID); len(left) != 0 {
@@ -313,8 +313,8 @@ func TestEngineTearsDownAnEdgeWhoseGrantWasRevoked(t *testing.T) {
 
 	source := newFakeConnector(defaultSourceCaps)
 	target := newFakeConnector(defaultTargetCaps)
-	sourceCal := source.addCalendar("Privat", provider.Calendar{TimeZone: "Europe/Berlin"})
-	targetCal := target.addCalendar("Arbeit", provider.Calendar{TimeZone: "Europe/Berlin"})
+	sourceCal := source.AddCalendar(testConnection, provider.Calendar{Name: "Privat", TimeZone: "Europe/Berlin"}).ID
+	targetCal := target.AddCalendar(testConnection, provider.Calendar{Name: "Arbeit", TimeZone: "Europe/Berlin"}).ID
 
 	sourceRow := newIntegrationCalendar(ctx, t, store, owner, sourceCal, "Privat")
 	targetRow := newIntegrationCalendar(ctx, t, store, grantee, targetCal, "Arbeit")
@@ -358,12 +358,12 @@ func TestEngineTearsDownAnEdgeWhoseGrantWasRevoked(t *testing.T) {
 	binder.add(binding)
 	engine := newIntegrationEngine(t, store, binder)
 
-	source.put(sourceCal, meeting("Jour fixe", 4, 9))
+	source.Put(sourceCal, meeting("Jour fixe", 4, 9))
 
 	if _, err := engine.Run(ctx, grantee.ID); err != nil {
 		t.Fatalf("run while the grant stands: %v", err)
 	}
-	if got := len(target.events(targetCal)); got != 1 {
+	if got := len(target.Events(targetCal)); got != 1 {
 		t.Fatalf("copies while the grant stands: got %d, want 1", got)
 	}
 	if got := len(listMappings(ctx, t, store, grantee.ID, edge.ID)); got != 1 {
@@ -384,7 +384,7 @@ func TestEngineTearsDownAnEdgeWhoseGrantWasRevoked(t *testing.T) {
 	if got := report.CountReason(sync.ReasonGrantRevoked); got != 1 {
 		t.Fatalf("deletions reported as a revoked grant: got %d, want 1 (all: %v)", got, actions(report))
 	}
-	if got := len(target.events(targetCal)); got != 0 {
+	if got := len(target.Events(targetCal)); got != 0 {
 		t.Fatalf("copies after the revocation: got %d, want none", got)
 	}
 	if got := len(listMappings(ctx, t, store, grantee.ID, edge.ID)); got != 0 {
@@ -410,7 +410,7 @@ func integrationBinding(t *testing.T, edge storage.Edge, source *fakeConnector, 
 		t.Fatalf("mask for %q: %v", edge.DetailLevel, err)
 	}
 
-	credential := fakeCredential{connection: testConnection}
+	credential := testCredential()
 
 	return sync.Binding{
 		Edge:   edge,

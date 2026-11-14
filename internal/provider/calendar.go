@@ -23,7 +23,14 @@ type Calendar struct {
 	// write it, so it can be an edge's source and never its target.
 	ReadOnly bool
 	// Primary reports the account's main calendar, which is the one a
-	// user means when they name no calendar.
+	// user means when they name no calendar. It is advisory: a provider
+	// that has no notion of a main calendar reports false on every
+	// calendar it returns, and a provider that does may still return
+	// several or none for an account shared in an unusual way.
+	//
+	// A caller uses it to order a list or to preselect an entry, and never
+	// as an identity. Nothing resolves a calendar by it, nothing requires
+	// exactly one to be true, and an edge always names a calendar by ID.
 	Primary bool
 	// Managed reports that calbridge created the calendar and owns it, so
 	// deleting the edge that fills it may remove it entirely.

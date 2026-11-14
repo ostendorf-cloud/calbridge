@@ -63,7 +63,7 @@ func TestConnectorCredential(t *testing.T) {
 		t.Parallel()
 
 		connector := newFakeConnector(fullCapabilities())
-		other := fakeCredential{provider: "google", connection: "conn-1"}
+		other := foreignCredential{provider: "google", connection: "conn-1"}
 
 		_, err := connector.Calendars(t.Context(), other)
 		if !errors.Is(err, provider.ErrCredentialMismatch) {
@@ -104,7 +104,7 @@ func TestConnectorCalendars(t *testing.T) {
 
 		connector := newFakeConnector(fullCapabilities())
 		cred := credentialFor(defaultConnection)
-		shared := connector.addCalendar(defaultConnection, provider.Calendar{Name: "Shared", ReadOnly: true})
+		shared := connector.AddCalendar(defaultConnection, provider.Calendar{Name: "Shared", ReadOnly: true})
 
 		page, err := connector.Changes(t.Context(), cred, shared.ID, provider.SyncToken{})
 		if err != nil {
@@ -120,7 +120,7 @@ func TestConnectorCalendars(t *testing.T) {
 
 		connector := newFakeConnector(fullCapabilities())
 		cred := credentialFor(defaultConnection)
-		shared := connector.addCalendar(defaultConnection, provider.Calendar{Name: "Shared", ReadOnly: true})
+		shared := connector.AddCalendar(defaultConnection, provider.Calendar{Name: "Shared", ReadOnly: true})
 
 		_, err := connector.CreateEvent(t.Context(), cred, shared.ID, sprintReview())
 		if !errors.Is(err, provider.ErrUnsupported) {
@@ -132,7 +132,7 @@ func TestConnectorCalendars(t *testing.T) {
 		t.Parallel()
 
 		connector := newFakeConnector(fullCapabilities())
-		second := connector.addCalendar("conn-2", provider.Calendar{Name: "Work"})
+		second := connector.AddCalendar("conn-2", provider.Calendar{Name: "Work"})
 
 		first := primaryOf(t, connector, credentialFor(defaultConnection))
 		if first.Name != "Primary" {
@@ -149,7 +149,7 @@ func TestConnectorCalendars(t *testing.T) {
 		t.Parallel()
 
 		connector := newFakeConnector(fullCapabilities())
-		theirs := connector.addCalendar("conn-2", provider.Calendar{Name: "Work"})
+		theirs := connector.AddCalendar("conn-2", provider.Calendar{Name: "Work"})
 
 		_, err := connector.Changes(t.Context(), credentialFor(defaultConnection), theirs.ID, provider.SyncToken{})
 		if !errors.Is(err, provider.ErrUnknownCalendar) {
@@ -649,7 +649,7 @@ func TestConnectorChanges(t *testing.T) {
 			t.Fatalf("Changes() error = %v", err)
 		}
 
-		connector.invalidate(position.Token)
+		connector.Invalidate(position.Token)
 
 		_, err = connector.Changes(t.Context(), cred, primary.ID, position.Token)
 		if !errors.Is(err, provider.ErrSyncTokenInvalid) {
@@ -730,7 +730,7 @@ func TestConnectorChangePaging(t *testing.T) {
 		t.Parallel()
 
 		connector := newFakeConnector(fullCapabilities())
-		connector.pageSize = 2
+		connector.SetPageSize(2)
 		cred := credentialFor("conn-1")
 		primary := primaryOf(t, connector, cred)
 		fill(t, connector, cred, primary.ID, 5)
@@ -748,7 +748,7 @@ func TestConnectorChangePaging(t *testing.T) {
 		t.Parallel()
 
 		connector := newFakeConnector(fullCapabilities())
-		connector.pageSize = 2
+		connector.SetPageSize(2)
 		cred := credentialFor("conn-1")
 		primary := primaryOf(t, connector, cred)
 		fill(t, connector, cred, primary.ID, 5)
@@ -781,8 +781,8 @@ func TestConnectorChangePaging(t *testing.T) {
 			t.Fatalf("Changes() error = %v", err)
 		}
 
-		connector.pageSize = 2
-		connector.incrementalState = provider.PageStateResumable
+		connector.SetPageSize(2)
+		connector.SetIncrementalState(provider.PageStateResumable)
 		fill(t, connector, cred, primary.ID, 5)
 
 		first, err := connector.Changes(t.Context(), cred, primary.ID, position.Token)
@@ -819,8 +819,8 @@ func TestConnectorChangePaging(t *testing.T) {
 			t.Fatalf("Changes() error = %v", err)
 		}
 
-		connector.pageSize = 2
-		connector.incrementalState = provider.PageStateContinued
+		connector.SetPageSize(2)
+		connector.SetIncrementalState(provider.PageStateContinued)
 		fill(t, connector, cred, primary.ID, 5)
 
 		all, last := drain(t, connector, cred, primary.ID, position.Token)

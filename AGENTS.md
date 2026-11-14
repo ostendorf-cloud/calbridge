@@ -58,8 +58,18 @@ on; every other path already exists.
   Microsoft Graph or a CalDAV profile is a new package and one line of
   wiring, never an edit to a switch statement in the engine. Connectors
   speak one normalised event type and never leak a provider's own model;
-  everything provider-shaped stays inside its package. No connector exists
-  yet: the interface, the registry and a fake are what is there.
+  everything provider-shaped stays inside its package. A connector also
+  declares whether it writes one overridden occurrence and whether it
+  rewrites content on write, and answers what a write turns an event into
+  where it does.
+- `internal/provider/caldav` is the generic CalDAV connector, driven by
+  one profile per server with iCloud as the first. It is the only
+  connector so far.
+- `internal/providertest` holds the in-memory connector every consumer of
+  `internal/provider` tests against. It is not a test file: both
+  `internal/provider`'s own tests and `internal/sync`'s import it, because
+  a fake written once per consumer is one contract read twice, and the
+  readings drift.
 - `internal/sync` turns a source change into target operations by applying
   an edge's field mask, and is the only package meant to know what a detail
   level means. It owns the mapping table (edge id, source event id, target
@@ -71,7 +81,12 @@ on; every other path already exists.
   teardown of an edge, including one whose grant was revoked, removes every
   event it wrote, the edge row included. A mirrored event edited by hand
   in the target is overwritten on the next reconcile, and a revoked grant
-  takes the edge with it; see `docs/adr/`.
+  takes the edge with it; see `docs/adr/`. The one edit not overwritten,
+  and the one exception to that teardown, is a single overridden
+  occurrence in a target keeping its overrides inside the master's own
+  object: no id such a provider accepts names it, so the pass reports the
+  occurrence instead of asking for a write the declared capabilities
+  already ruled out.
 - `docs/adr/` holds the decisions worth remembering, in the MADR shape, one
   per numbered file.
 - `internal/storage` defines the domain types and the repository

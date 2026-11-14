@@ -81,6 +81,24 @@
 // would quietly stop matching the calendar it claims to mirror. The
 // reasoning is recorded in docs/adr/0001-overwrite-hand-edited-mirrored-events.md.
 //
+// One edit it does not overwrite is a single occurrence of a mirrored
+// repeating event, where the target provider keeps the override inside
+// the master's own object. There is no id such a provider accepts for it,
+// so the engine never asks: it reports the occurrence as
+// ReasonCoveredByMaster and leaves it standing.
+//
+// What removes it is the master's next write, which replaces the whole
+// object. A changed source leads to that write, and so does a hand edit
+// of the master's own copy; an override on a master nobody touches again
+// stands indefinitely, reported as covered on every pass. Deleting the
+// edge removes it, because that removes the master's object.
+//
+// Where no master of it is in the calendar at all, nothing the engine can
+// name removes it, and the pass reports ReasonInstanceUnreachable rather
+// than looking like it swept a calendar it did not. That one is permanent
+// for the life of the edge, and it is the one exception to the teardown
+// promise below.
+//
 // # Teardown
 //
 // Deleting an edge deletes every event it wrote, every mapping row it

@@ -22,10 +22,14 @@ const (
 )
 
 // instanceSeparator joins a resource name and a RECURRENCE-ID into the
-// id of one overridden occurrence. It is a character no path segment of
+// id of one overridden occurrence. It is provider.InstanceSeparator,
+// because internal/provider's eleventh normalisation rule is what makes
+// such an id readable above this package: one deletion of the resource
+// stands for the master and every override in it, and the caller finds
+// the overrides by that rule. It is also a character no path segment of
 // a CalDAV resource carries unescaped, so splitting an id is
 // unambiguous.
-const instanceSeparator = "#"
+const instanceSeparator = provider.InstanceSeparator
 
 // productID is the PRODID every object this connector writes carries,
 // as RFC 5545 section 3.7.3 requires.
@@ -122,7 +126,7 @@ func decodeEvent(resourceName string, component *icalComponent) (provider.Event,
 		if err != nil {
 			return provider.Event{}, err
 		}
-		event.ID = resourceName + instanceSeparator + recurrenceID.Value
+		event.ID = provider.InstanceIDOf(resourceName, recurrenceID.Value)
 		event.Recurrence.MasterID = resourceName
 		event.Recurrence.OriginalStart = original
 	} else {
