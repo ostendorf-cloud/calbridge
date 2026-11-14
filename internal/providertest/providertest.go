@@ -337,11 +337,10 @@ func (c *Connector) Holds(calendarID, eventID string) bool {
 // needs in place before the caller under test ever runs. It counts as no
 // write, so Counts still reports only what the caller asked for.
 //
-// An event carrying no id is given one, the same as a create would. A
-// test meaning to change an event it already put there has to pass that
-// event's id back, or it silently adds a second event and a probe that
-// counts nothing notices nothing. Assert the calendar's cardinality
-// before and after a probe that changes a fixture.
+// An event carrying no id is given one, the same as a create would, so
+// Put always adds. Changing an event already in the calendar is Replace,
+// which refuses an event with no id: passing one to Put instead silently
+// adds a second event, and a probe that counts nothing notices nothing.
 func (c *Connector) Put(calendarID string, event provider.Event) provider.Event {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -357,6 +356,35 @@ func (c *Connector) Put(calendarID string, event provider.Event) provider.Event 
 	c.record(cal, event)
 
 	return event
+}
+
+// Replace overwrites an event already in a calendar, for a test that
+// changes a fixture between two passes. It counts as no write, the same
+// as Put.
+//
+// It refuses an event carrying no id, and one the calendar does not
+// hold, so a test meaning to change a fixture cannot quietly add a second
+// event instead. That mistake is invisible otherwise: the pass under test
+// still runs, the probe still passes, and the calendar holds one event
+// more than the test believes.
+func (c *Connector) Replace(calendarID string, event provider.Event) (provider.Event, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	cal, ok := c.calendars[calendarID]
+	if !ok {
+		return provider.Event{}, fmt.Errorf("provider %q: calendar %q: %w", c.id, calendarID, provider.ErrUnknownCalendar)
+	}
+	// An empty id needs no check of its own: no event is stored under one,
+	// so the lookup below is what refuses it.
+	if _, held := cal.events[event.ID]; !held {
+		return provider.Event{}, fmt.Errorf(
+			"provider %q: calendar %q holds no event %q to replace: %w",
+			c.id, calendarID, event.ID, provider.ErrUnknownEvent)
+	}
+	c.record(cal, event)
+
+	return event, nil
 }
 
 // Edit changes an event the way a person changes it in their own calendar
@@ -391,11 +419,30 @@ func (c *Connector) Capabilities() provider.Capabilities {
 
 // NormaliseEvent implements provider.ContentNormaliser: it answers what a
 // write turns an event into, without making one.
+//
+// It answers for everything a write changes, not only for the rewriting.
+// A capability that drops a field drops it here too, because a caller
+// comparing a copy against what it wrote meets the dropped field and the
+// rewritten one the same way, and a normaliser that covers one and not
+// the other is the bug this whole interface exists to kill.
 func (c *Connector) NormaliseEvent(event provider.Event) (provider.Event, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.rewrite(event), nil
+	return c.rewrite(c.drop(event)), nil
+}
+
+// drop takes away what the capabilities say the provider does not store.
+// The caller holds the lock.
+func (c *Connector) drop(event provider.Event) provider.Event {
+	if !c.caps.Attendees {
+		event.Attendees = nil
+	}
+	// Every provider names the organiser after the writing account, so a
+	// connector drops what it was handed rather than pretending it stuck.
+	event.Organizer = nil
+
+	return event
 }
 
 // rewrite applies the connector's normalisation. A connector that
@@ -407,6 +454,13 @@ func (c *Connector) rewrite(event provider.Event) provider.Event {
 	}
 
 	return c.normalise(event)
+}
+
+// namesAnInstance reports whether an event id is one an overridden
+// occurrence carries. The ids this connector issues hold no separator, so
+// one that does was derived from a master's.
+func namesAnInstance(eventID string) bool {
+	return strings.Contains(eventID, provider.InstanceSeparator)
 }
 
 // DecodeCredential implements provider.CredentialDecoder. The stored form
@@ -628,6 +682,11 @@ func (c *Connector) UpdateEvent(ctx context.Context, cred provider.Credential, c
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if !c.caps.InstanceWrites && namesAnInstance(event.ID) {
+		return provider.Event{}, fmt.Errorf(
+			"provider %q declares no instance writes and %q names one overridden occurrence: %w",
+			c.id, event.ID, provider.ErrUnsupported)
+	}
 	if err := c.writable(); err != nil {
 		return provider.Event{}, err
 	}
@@ -662,6 +721,14 @@ func (c *Connector) DeleteEvent(ctx context.Context, cred provider.Credential, c
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if !c.caps.InstanceWrites && namesAnInstance(eventID) {
+		// Deleting the master's id removes the occurrence with it, which
+		// is what the interface documents a connector declaring no
+		// instance writes does.
+		return fmt.Errorf(
+			"provider %q declares no instance writes and %q names one overridden occurrence: %w",
+			c.id, eventID, provider.ErrUnsupported)
+	}
 	if err := c.writable(); err != nil {
 		return err
 	}
@@ -675,11 +742,39 @@ func (c *Connector) DeleteEvent(ctx context.Context, cred provider.Credential, c
 		return nil
 	}
 
-	delete(cal.events, eventID)
-	cal.log = append(cal.log, provider.Change{Kind: provider.ChangeKindDelete, EventID: eventID})
+	// A provider that declares no instance writes keeps its overridden
+	// occurrences inside the master's own object, so removing the master
+	// removes them with it and there is one deletion to report. That is
+	// what provider.ChangeKindDelete documents, and a fake that left the
+	// overrides standing would let a caller pass a test the real provider
+	// fails.
+	for _, id := range c.removedWith(cal, eventID) {
+		delete(cal.events, id)
+		cal.log = append(cal.log, provider.Change{Kind: provider.ChangeKindDelete, EventID: id})
+	}
 	c.deletes++
 
 	return nil
+}
+
+// removedWith returns every event id one deletion takes, which is the id
+// itself and, for a provider that stores its overrides inside the
+// master's object, the occurrences derived from it. The caller holds the
+// lock.
+func (c *Connector) removedWith(cal *calendar, eventID string) []string {
+	out := []string{eventID}
+	if c.caps.InstanceWrites {
+		return out
+	}
+
+	for id := range cal.events {
+		if provider.IsInstanceIDOf(id, eventID) {
+			out = append(out, id)
+		}
+	}
+	slices.Sort(out)
+
+	return out
 }
 
 // stamp is the moment a write records. It advances by a minute per write,
@@ -756,14 +851,8 @@ func (c *Connector) accept(event provider.Event) (provider.Event, error) {
 	if event.Start.Kind == provider.TimeKindFloating && !c.caps.FloatingTimes {
 		return provider.Event{}, fmt.Errorf("provider %q: floating time: %w", c.id, provider.ErrUnsupported)
 	}
-	if !c.caps.Attendees {
-		event.Attendees = nil
-	}
-	// Every provider names the organiser after the writing account, so a
-	// connector drops what it was handed rather than pretending it stuck.
-	event.Organizer = nil
 
-	return c.rewrite(event), nil
+	return c.rewrite(c.drop(event)), nil
 }
 
 // record stores the event and appends the change. The caller holds the

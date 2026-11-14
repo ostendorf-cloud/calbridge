@@ -6,6 +6,7 @@ package provider_test
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/ostendorf-cloud/calbridge/internal/provider"
 )
@@ -143,6 +144,116 @@ type declaresOnly struct {
 
 func (d declaresOnly) Capabilities() provider.Capabilities {
 	return provider.Capabilities{NormalisesContent: true}
+}
+
+func TestNormaliserOf_answersForEverythingAWriteChanges(t *testing.T) {
+	t.Parallel()
+
+	// A caller comparing a copy against what it wrote meets a field the
+	// capabilities dropped and a field the format rewrote the same way. A
+	// normaliser answering for one and not the other leaves the other
+	// rewriting on every pass, which is the whole failure this interface
+	// exists to prevent.
+	connector := newFakeConnector(provider.Capabilities{NormalisesContent: true, Attendees: false})
+
+	normaliser, err := provider.NormaliserOf(connector)
+	if err != nil {
+		t.Fatalf("NormaliserOf() error = %v", err)
+	}
+
+	event := provider.Event{
+		Summary:   "Jour fixe",
+		Start:     provider.Zoned(time.Date(2026, time.March, 4, 9, 0, 0, 0, time.UTC), "Europe/Berlin"),
+		End:       provider.Zoned(time.Date(2026, time.March, 4, 10, 0, 0, 0, time.UTC), "Europe/Berlin"),
+		Attendees: []provider.Attendee{{Email: "lena@example.com"}},
+		Organizer: &provider.Attendee{Email: "anna@example.com"},
+	}
+
+	declared, err := normaliser.NormaliseEvent(event)
+	if err != nil {
+		t.Fatalf("NormaliseEvent() error = %v", err)
+	}
+
+	stored, err := connector.CreateEvent(t.Context(), credentialFor(defaultConnection), primaryID(t, connector), event)
+	if err != nil {
+		t.Fatalf("CreateEvent() error = %v", err)
+	}
+
+	if len(declared.Attendees) != len(stored.Attendees) {
+		t.Errorf("the declaration reports %d attendees and the write stored %d",
+			len(declared.Attendees), len(stored.Attendees))
+	}
+	if (declared.Organizer == nil) != (stored.Organizer == nil) {
+		t.Errorf("the declaration reports organizer %v and the write stored %v", declared.Organizer, stored.Organizer)
+	}
+}
+
+// primaryID returns the id of the calendar newFakeConnector builds.
+func primaryID(t *testing.T, c *fakeConnector) string {
+	t.Helper()
+
+	calendars, err := c.Calendars(t.Context(), credentialFor(defaultConnection))
+	if err != nil {
+		t.Fatalf("Calendars() error = %v", err)
+	}
+	if len(calendars) == 0 {
+		t.Fatal("the connector holds no calendar")
+	}
+
+	return calendars[0].ID
+}
+
+func TestConnector_RefusesEveryWriteOfAnInstanceId(t *testing.T) {
+	t.Parallel()
+
+	// The interface says a connector declaring no instance writes returns
+	// ErrUnsupported for an id IsInstanceIDOf matches. A fake that takes
+	// one lets a caller pass a test the real connector fails, which is how
+	// a capability check missing from a sweep stays invisible.
+	connector := newFakeConnector(provider.Capabilities{})
+	cred := credentialFor(defaultConnection)
+	calendarID := primaryID(t, connector)
+	instance := provider.InstanceIDOf("evt-1", "20260304T090000")
+
+	t.Run("update", func(t *testing.T) {
+		t.Parallel()
+
+		event := provider.Event{
+			ID:    instance,
+			Start: provider.Zoned(time.Date(2026, time.March, 4, 9, 0, 0, 0, time.UTC), "Europe/Berlin"),
+			End:   provider.Zoned(time.Date(2026, time.March, 4, 10, 0, 0, 0, time.UTC), "Europe/Berlin"),
+		}
+
+		_, err := connector.UpdateEvent(t.Context(), cred, calendarID, event)
+		if !errors.Is(err, provider.ErrUnsupported) {
+			t.Errorf("UpdateEvent() error = %v, want ErrUnsupported", err)
+		}
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		t.Parallel()
+
+		err := connector.DeleteEvent(t.Context(), cred, calendarID, instance)
+		if !errors.Is(err, provider.ErrUnsupported) {
+			t.Errorf("DeleteEvent() error = %v, want ErrUnsupported", err)
+		}
+	})
+}
+
+func TestConnector_ReplaceRefusesAnEventWithNoId(t *testing.T) {
+	t.Parallel()
+
+	// Putting such an event adds a second one instead of changing the
+	// first, and a probe that counts nothing still passes.
+	connector := newFakeConnector(provider.Capabilities{})
+	calendarID := primaryID(t, connector)
+
+	if _, err := connector.Replace(calendarID, provider.Event{Summary: "Jour fixe"}); !errors.Is(err, provider.ErrUnknownEvent) {
+		t.Errorf("Replace() error = %v, want ErrUnknownEvent", err)
+	}
+	if got := len(connector.Events(calendarID)); got != 0 {
+		t.Errorf("the refused replace stored %d events", got)
+	}
 }
 
 func TestDecoderOf(t *testing.T) {

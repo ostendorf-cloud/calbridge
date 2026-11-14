@@ -81,7 +81,12 @@ on; every other path already exists.
   teardown of an edge, including one whose grant was revoked, removes every
   event it wrote, the edge row included. A mirrored event edited by hand
   in the target is overwritten on the next reconcile, and a revoked grant
-  takes the edge with it; see `docs/adr/`.
+  takes the edge with it; see `docs/adr/`. The one edit not overwritten,
+  and the one exception to that teardown, is a single overridden
+  occurrence in a target keeping its overrides inside the master's own
+  object: no id such a provider accepts names it, so the pass reports the
+  occurrence instead of asking for a write the declared capabilities
+  already ruled out.
 - `docs/adr/` holds the decisions worth remembering, in the MADR shape, one
   per numbered file.
 - `internal/storage` defines the domain types and the repository

@@ -284,17 +284,29 @@ func (c *Connector) Capabilities() provider.Capabilities {
 // every difference above reads as somebody editing the copy by hand, and
 // the copy is rewritten on every pass for as long as the edge exists.
 //
-// The round trip is the connector's own encode and decode, not a
-// description of them, so the two cannot drift apart. The fields the
-// server owns are restored afterwards: the object carries no resource
-// name and no entity tag, and a write is what fills those in.
+// The answer is the write path itself, not a description of it: the same
+// accept, the same encode and the same decode, so the declaration cannot
+// drift away from what a write does. It therefore refuses what a write
+// refuses, and drops what the declared capabilities drop.
+//
+// What it does not model is the server. It answers for this connector's
+// mapping between provider.Event and an iCalendar object, and a server
+// that rewrites a value of its own, in any field the caller hashes, is
+// still a difference the caller reads as a hand edit. No CalDAV server
+// calbridge targets is known to do that, and the measurement that would
+// settle it belongs to the profile rather than here.
+//
+// The fields the server owns are restored afterwards: the object carries
+// no resource name and no entity tag, and a write is what fills those
+// in.
 func (c *Connector) NormaliseEvent(event provider.Event) (provider.Event, error) {
-	if event.Recurrence.IsInstance() {
-		return provider.Event{}, fmt.Errorf(
-			"caldav cannot write one overridden occurrence on its own: %w", provider.ErrUnsupported)
+	caps := c.Capabilities()
+	accepted, err := accept(caps, event)
+	if err != nil {
+		return provider.Event{}, err
 	}
 
-	object, err := encodeResource(event, c.now().UTC(), c.Capabilities())
+	object, err := encodeResource(accepted, c.now().UTC(), caps)
 	if err != nil {
 		return provider.Event{}, err
 	}

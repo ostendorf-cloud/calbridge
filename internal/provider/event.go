@@ -324,9 +324,16 @@ type Recurrence struct {
 // overrides inside the master's object has no id of its own to give them,
 // so the connector derives one, and this is the byte that derives it.
 //
-// It may not appear in any other event id, which holds because a
-// connector that derives an instance id is the same connector that issues
-// every other id in that calendar.
+// Reading a derived id back is only unambiguous where no plain event id
+// in the same calendar carries the separator, and a connector does not
+// always get to choose. A CalDAV resource name is the server's, not the
+// connector's: a resource named "a%23b.ics" reaches the connector as the
+// event id "a#b.ics" and reads as an occurrence of "a". A caller may not
+// assume the separator is absent from a plain id. What it may assume is
+// the weaker thing: a collision shows as one event's copy being swept
+// with another's, never as a source event the caller stops seeing.
+// Closing it for good is issue #29, which bounds the damage in the
+// engine rather than by constraining what a server may name a resource.
 const InstanceSeparator = "#"
 
 // InstanceIDOf returns the Event.ID of one overridden occurrence of the
@@ -340,6 +347,10 @@ func InstanceIDOf(masterID, occurrence string) string {
 // IsInstanceIDOf reports whether eventID is an id derived from masterID
 // with InstanceIDOf. It is what turns one deletion of a master into the
 // deletion of the instances the provider removed with it.
+//
+// It answers on the id's shape alone, so a plain event id that happens to
+// carry the separator answers true for whatever precedes it. See
+// InstanceSeparator for what that costs and what it does not.
 func IsInstanceIDOf(eventID, masterID string) bool {
 	return strings.HasPrefix(eventID, masterID+InstanceSeparator)
 }

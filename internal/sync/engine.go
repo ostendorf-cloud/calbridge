@@ -102,8 +102,14 @@ func (b Binding) marker(sourceEventID string) provider.Marker {
 // Without this the difference reads as somebody editing the copy by hand,
 // and the engine rewrites every mirrored event on every pass, forever,
 // while the sync looks exactly like it is working. The declaration is
-// what makes the difference predictable; validate has already refused a
-// connector that declares it and answers nothing.
+// what makes the difference predictable.
+//
+// The NormaliserOf branch below is defensive depth rather than a
+// reachable path. Every entry point calls validate first, and validate
+// refuses a connector that declares the capability and answers nothing,
+// so no test can reach it. It stays because a later entry point that
+// forgot validate would otherwise fall back to comparing against the
+// projection, which is the forever-rewrite bug coming back silently.
 func (b Binding) stored(want provider.Event) (provider.Event, error) {
 	normaliser, err := provider.NormaliserOf(b.Target.Connector)
 	if err != nil {
@@ -248,11 +254,11 @@ func (e *Engine) Apply(ctx context.Context, b Binding, change provider.Change) (
 		return Report{}, fmt.Errorf("edge %s: %w", b.Edge.ID, err)
 	}
 
+	current := e.pass()
 	if change.Kind == provider.ChangeKindDelete {
-		return e.applyDelete(ctx, b, change.EventID)
+		return e.applyDelete(ctx, b, change.EventID, current)
 	}
 
-	current := e.pass()
 	if !change.Event.Recurrence.IsInstance() {
 		// A single change has to know what this edge already wrote,
 		// because which key space the copies sit in depends on a strategy
@@ -284,6 +290,26 @@ type pass struct {
 	mappings []storage.EventMapping
 	from     time.Time
 	to       time.Time
+	// refused records that the provider turned the credential down. It
+	// sits on the call rather than at each loop because a pass writes from
+	// several places, and a guard per loop stops that loop while the next
+	// stage spends another request on a credential already known refused.
+	refused bool
+}
+
+// stop reports whether the call has given up, which it does the moment a
+// provider refuses the credential. Every loop that writes checks it, so
+// one revoked password costs one request and one error rather than one of
+// each per event.
+func (p *pass) stop() bool { return p != nil && p.refused }
+
+// refuse records a provider error on the call, so every later loop in it
+// stops rather than spending another request on a credential already
+// known refused. An error of any other kind leaves the call running.
+func (p *pass) refuse(err error) {
+	if p != nil && refused(err) {
+		p.refused = true
+	}
 }
 
 // pass starts a call, fixing the rolling window for its whole duration so
@@ -333,13 +359,17 @@ func (e *Engine) Reconcile(ctx context.Context, b Binding) (Report, error) {
 		report.merge(copied)
 		if err != nil {
 			errs = append(errs, err)
-			if refused(err) {
-				return report, errors.Join(errs...)
-			}
+		}
+		if current.stop() {
+			// The remaining source events would each cost a mapping read
+			// and a write the provider has already refused. The stages
+			// after this one stop on the same flag, inside the loops that
+			// would make the request.
+			return report, errors.Join(errs...)
 		}
 	}
 
-	removed, accounted, err := e.removeUnsourced(ctx, b, current.source)
+	removed, accounted, err := e.removeUnsourced(ctx, b, current)
 	report.merge(removed)
 	if err != nil {
 		errs = append(errs, err)
@@ -354,7 +384,7 @@ func (e *Engine) Reconcile(ctx context.Context, b Binding) (Report, error) {
 		}
 	}
 
-	orphans, err := e.removeOrphans(ctx, b, current.target, accounted)
+	orphans, err := e.removeOrphans(ctx, b, current, accounted)
 	report.merge(orphans)
 	if err != nil {
 		errs = append(errs, err)
@@ -367,7 +397,12 @@ func (e *Engine) Reconcile(ctx context.Context, b Binding) (Report, error) {
 // returns every target event a mapping row accounted for, the ones it
 // just deleted included: the target was read before those deletions, so
 // the orphan sweep would otherwise see them again.
-func (e *Engine) removeUnsourced(ctx context.Context, b Binding, sourceState map[string]provider.Event) (Report, map[string]bool, error) {
+//
+// A refused credential stops the deletions and not the walk. Every
+// mapping row still reaches accounted, because a half-filled accounted
+// would read as a target full of orphans and the sweep after it would
+// delete copies this edge is still writing to.
+func (e *Engine) removeUnsourced(ctx context.Context, b Binding, p *pass) (Report, map[string]bool, error) {
 	mappings, err := e.listMappings(ctx, b)
 	if err != nil {
 		return Report{}, nil, err
@@ -382,16 +417,13 @@ func (e *Engine) removeUnsourced(ctx context.Context, b Binding, sourceState map
 	for _, mapping := range mappings {
 		accounted[mapping.TargetEventID] = true
 
-		if sourced(b, mapping, sourceState) {
+		if p.stop() || sourced(b, mapping, p.source) {
 			continue
 		}
 
-		op, err := e.removeCopy(ctx, b, mapping, unsourcedReason(mapping, sourceState))
+		op, err := e.removeCopy(ctx, b, mapping, unsourcedReason(mapping, p.source), p)
 		if err != nil {
 			errs = append(errs, err)
-			if refused(err) {
-				return report, accounted, errors.Join(errs...)
-			}
 
 			continue
 		}
@@ -404,24 +436,29 @@ func (e *Engine) removeUnsourced(ctx context.Context, b Binding, sourceState map
 // removeOrphans deletes the events in the target that carry this edge's
 // marker but no mapping row accounts for. That is what an interrupted
 // run leaves behind: the copy was written and the mapping row was not.
-func (e *Engine) removeOrphans(ctx context.Context, b Binding, targetState map[string]provider.Event, accounted map[string]bool) (Report, error) {
+func (e *Engine) removeOrphans(ctx context.Context, b Binding, p *pass, accounted map[string]bool) (Report, error) {
 	var (
 		report Report
 		errs   []error
 	)
 
-	for _, id := range sortedKeys(targetState) {
-		event := targetState[id]
+	for _, id := range sortedKeys(p.target) {
+		event := p.target[id]
 		if accounted[id] || !WrittenBy(event, b.Edge.ID) {
+			continue
+		}
+		if op, held := e.sweepInstance(b, id, event, p.target); held {
+			report.add(op)
+
+			continue
+		}
+		if p.stop() {
 			continue
 		}
 
 		if err := b.Target.Connector.DeleteEvent(ctx, b.Target.Credential, b.Target.CalendarID, id); err != nil {
-			wrapped := fmt.Errorf("edge %s: delete orphaned copy %q: %w", b.Edge.ID, id, err)
-			errs = append(errs, wrapped)
-			if refused(err) {
-				return report, errors.Join(errs...)
-			}
+			errs = append(errs, fmt.Errorf("edge %s: delete orphaned copy %q: %w", b.Edge.ID, id, err))
+			p.refuse(err)
 
 			continue
 		}
@@ -429,6 +466,47 @@ func (e *Engine) removeOrphans(ctx context.Context, b Binding, targetState map[s
 	}
 
 	return report, errors.Join(errs...)
+}
+
+// sweepInstance decides what a marked target event becomes when the
+// target cannot be asked to delete it on its own, and reports whether
+// that case applies at all.
+//
+// A connector declaring no instance writes keeps an overridden
+// occurrence inside its master's own object, so the only id that removes
+// either is the master's. Handing such an id to DeleteEvent is
+// ErrUnsupported, which is exactly what reading Capabilities first is
+// supposed to make impossible, and the live case is a user overriding
+// one occurrence of a master this edge mirrors into iCloud.
+//
+// Neither answer is a silent skip. Where the master is still in the
+// calendar, removing it removes this with it, and the master's next
+// write replaces the whole object: the occurrence is accounted for by
+// something the edge owns, and the pass says so. Where the master is
+// gone, which is a resource holding overrides and no master at all,
+// nothing this edge can name removes it, and the pass says that instead
+// of looking like it swept a calendar it did not.
+func (e *Engine) sweepInstance(b Binding, eventID string, event provider.Event, targetState map[string]provider.Event) (Operation, bool) {
+	if b.Target.Connector.Capabilities().InstanceWrites {
+		return Operation{}, false
+	}
+	masterID, _, derived := strings.Cut(eventID, provider.InstanceSeparator)
+	if !derived {
+		return Operation{}, false
+	}
+
+	op := Operation{SourceEventID: event.Marker.Source, TargetEventID: eventID, Action: ActionNone}
+	if _, held := targetState[masterID]; held {
+		op.Reason = ReasonCoveredByMaster
+
+		return op, true
+	}
+
+	e.log.Warn("a marked overridden occurrence cannot be removed on its own and its master is not in the calendar",
+		"edge", b.Edge.ID, "user", b.Edge.UserID, "calendar", b.Target.CalendarID, "event", eventID)
+	op.Reason = ReasonInstanceUnreachable
+
+	return op, true
 }
 
 // upsert copies one source event, expanding it first where it repeats and
@@ -466,7 +544,7 @@ func (e *Engine) upsert(ctx context.Context, b Binding, src provider.Event, p *p
 		// Every such row belongs to the strategy that is not in use, so
 		// the window bounds decide nothing here and are passed as the
 		// pass read them.
-		stale, err := e.removeStaleCopies(ctx, b, src.ID, map[string]bool{src.ID: true}, p.mappings, p.from, p.to)
+		stale, err := e.removeStaleCopies(ctx, b, src.ID, map[string]bool{src.ID: true}, p, p.from, p.to)
 		report.merge(stale)
 		if err != nil {
 			return report, err
@@ -507,6 +585,13 @@ func (e *Engine) expand(ctx context.Context, b Binding, master provider.Event, p
 		id := occurrenceID(master.ID, start)
 		produced[id] = true
 
+		if p.stop() {
+			// produced still gets every key this strategy writes, so the
+			// sweep below leaves the occurrences the pass never reached
+			// alone rather than deleting them on a refused credential.
+			continue
+		}
+
 		occurrence, ok := exceptions[stampKey(start.Wall)]
 		if !ok {
 			occurrence = master
@@ -524,7 +609,7 @@ func (e *Engine) expand(ctx context.Context, b Binding, master provider.Event, p
 		report.add(op)
 	}
 
-	dropped, err := e.removeStaleCopies(ctx, b, master.ID, produced, p.mappings, from, to)
+	dropped, err := e.removeStaleCopies(ctx, b, master.ID, produced, p, from, to)
 	report.merge(dropped)
 	if err != nil {
 		errs = append(errs, err)
@@ -555,7 +640,7 @@ func (e *Engine) expand(ctx context.Context, b Binding, master provider.Event, p
 // where it is expanded. from and to are the rolling window as wall clock
 // readings in the series' own zone, which only the expansion path has
 // and only it reads.
-func (e *Engine) removeStaleCopies(ctx context.Context, b Binding, masterID string, produced map[string]bool, mappings []storage.EventMapping, from, to time.Time) (Report, error) {
+func (e *Engine) removeStaleCopies(ctx context.Context, b Binding, masterID string, produced map[string]bool, p *pass, from, to time.Time) (Report, error) {
 	expanded := !produced[masterID]
 
 	var (
@@ -563,15 +648,15 @@ func (e *Engine) removeStaleCopies(ctx context.Context, b Binding, masterID stri
 		errs   []error
 	)
 
-	for _, mapping := range mappings {
-		if produced[mapping.SourceEventID] {
+	for _, mapping := range p.mappings {
+		if p.stop() || produced[mapping.SourceEventID] {
 			continue
 		}
 		if mapping.SourceEventID != masterID && !isOccurrenceOf(mapping.SourceEventID, masterID) {
 			continue
 		}
 
-		op, err := e.removeCopy(ctx, b, mapping, staleReason(mapping.SourceEventID, masterID, expanded, from, to))
+		op, err := e.removeCopy(ctx, b, mapping, staleReason(mapping.SourceEventID, masterID, expanded, from, to), p)
 		if err != nil {
 			errs = append(errs, err)
 
@@ -614,34 +699,52 @@ func (e *Engine) write(ctx context.Context, b Binding, sourceEventID string, src
 	}
 	hash := contentHash(want, b.Mask)
 
-	// What the target will hand back is not always what is written into
-	// it. The copy is recognised against the normalised form, and the
-	// mapping row still holds the hash of the projection, so a source
-	// change is still one comparison against one stored value.
-	written, err := b.stored(want)
-	if err != nil {
-		return Operation{}, err
-	}
-	writtenHash := contentHash(written, b.Mask)
-
 	mapping, found, err := e.findMapping(ctx, b, sourceEventID)
 	if err != nil {
 		return Operation{}, err
 	}
 	if !found {
-		return e.create(ctx, b, sourceEventID, want, hash, storage.EventMapping{}, ReasonNone)
+		return e.create(ctx, b, sourceEventID, want, hash, storage.EventMapping{}, ReasonNone, p)
+	}
+
+	unchanged := Operation{
+		SourceEventID: sourceEventID,
+		TargetEventID: mapping.TargetEventID,
+		Action:        ActionNone,
+		Reason:        ReasonUnchanged,
 	}
 
 	reason := ReasonSourceChanged
 	if mapping.ContentHash == hash {
-		if held, ok := p.target[mapping.TargetEventID]; ok || p.target == nil {
-			if p.target == nil || contentHash(held, b.Mask) == writtenHash {
-				return Operation{
-					SourceEventID: sourceEventID,
-					TargetEventID: mapping.TargetEventID,
-					Action:        ActionNone,
-					Reason:        ReasonUnchanged,
-				}, nil
+		held, inTarget := p.target[mapping.TargetEventID]
+		switch {
+		case p.target == nil:
+			// A single change reads no calendar, so there is nothing to
+			// compare the copy against. A hand edit is repaired on the next
+			// full pass instead.
+			return unchanged, nil
+
+		case !inTarget:
+			// The copy is gone from the target and the write below puts it
+			// back.
+
+		default:
+			// What the target hands back is not always what was written
+			// into it, so the copy is recognised against the normalised
+			// form. The mapping row still holds the hash of the projection,
+			// so a source change stays one comparison against one stored
+			// value.
+			//
+			// Normalising is a full provider mapping, which for CalDAV is
+			// an iCalendar encode and decode with a VTIMEZONE build, so it
+			// is paid in the one branch that compares against the target
+			// rather than on every event of every pass.
+			written, err := b.stored(want)
+			if err != nil {
+				return Operation{}, err
+			}
+			if contentHash(held, b.Mask) == contentHash(written, b.Mask) {
+				return unchanged, nil
 			}
 			reason = ReasonHandEdited
 		}
@@ -654,9 +757,11 @@ func (e *Engine) write(ctx context.Context, b Binding, sourceEventID string, src
 		// not make. Writing it again is what a reconcile is for.
 		want.ID = ""
 
-		return e.create(ctx, b, sourceEventID, want, hash, mapping, ReasonRestored)
+		return e.create(ctx, b, sourceEventID, want, hash, mapping, ReasonRestored, p)
 	}
 	if err != nil {
+		p.refuse(err)
+
 		return Operation{}, fmt.Errorf("edge %s: update copy of %q: %w", b.Edge.ID, sourceEventID, err)
 	}
 
@@ -684,9 +789,11 @@ func (e *Engine) write(ctx context.Context, b Binding, sourceEventID string, src
 // create writes a new copy into the target and records it. existing is
 // the mapping row to point at the new copy, or the zero value where this
 // source event has none yet.
-func (e *Engine) create(ctx context.Context, b Binding, sourceEventID string, want provider.Event, hash string, existing storage.EventMapping, reason Reason) (Operation, error) {
+func (e *Engine) create(ctx context.Context, b Binding, sourceEventID string, want provider.Event, hash string, existing storage.EventMapping, reason Reason, p *pass) (Operation, error) {
 	stored, err := b.Target.Connector.CreateEvent(ctx, b.Target.Credential, b.Target.CalendarID, want)
 	if err != nil {
+		p.refuse(err)
+
 		return Operation{}, fmt.Errorf("edge %s: create copy of %q: %w", b.Edge.ID, sourceEventID, err)
 	}
 
@@ -729,7 +836,7 @@ func (e *Engine) create(ctx context.Context, b Binding, sourceEventID string, wa
 // nothing left to list what was in it, and
 // provider.ChangeKindDelete makes applying that implication the caller's
 // job. Both sit under the master's id, so both go here.
-func (e *Engine) applyDelete(ctx context.Context, b Binding, sourceEventID string) (Report, error) {
+func (e *Engine) applyDelete(ctx context.Context, b Binding, sourceEventID string, p *pass) (Report, error) {
 	mappings, err := e.listMappings(ctx, b)
 	if err != nil {
 		return Report{}, err
@@ -741,11 +848,14 @@ func (e *Engine) applyDelete(ctx context.Context, b Binding, sourceEventID strin
 	)
 
 	for _, mapping := range mappings {
+		if p.stop() {
+			break
+		}
 		if mapping.SourceEventID != sourceEventID && !isOccurrenceOf(mapping.SourceEventID, sourceEventID) {
 			continue
 		}
 
-		op, err := e.removeCopy(ctx, b, mapping, ReasonSourceGone)
+		op, err := e.removeCopy(ctx, b, mapping, ReasonSourceGone, p)
 		if err != nil {
 			errs = append(errs, err)
 
@@ -764,8 +874,10 @@ func (e *Engine) applyDelete(ctx context.Context, b Binding, sourceEventID strin
 // removeCopy deletes one copy from the target and forgets its mapping
 // row. Deleting an event that is already gone succeeds at the connector,
 // so an interrupted run is safe to repeat.
-func (e *Engine) removeCopy(ctx context.Context, b Binding, mapping storage.EventMapping, reason Reason) (Operation, error) {
+func (e *Engine) removeCopy(ctx context.Context, b Binding, mapping storage.EventMapping, reason Reason, p *pass) (Operation, error) {
 	if err := b.Target.Connector.DeleteEvent(ctx, b.Target.Credential, b.Target.CalendarID, mapping.TargetEventID); err != nil {
+		p.refuse(err)
+
 		return Operation{}, fmt.Errorf("edge %s: delete copy %q: %w", b.Edge.ID, mapping.TargetEventID, err)
 	}
 
