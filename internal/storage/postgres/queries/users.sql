@@ -26,6 +26,24 @@ WHERE id = $1;
 SELECT *
 FROM users_find_by_email(sqlc.arg(email));
 
+-- GetUserIDByEmail resolves the address a grant names into the user id
+-- the grant row stores. It goes through the same users_find_by_email
+-- the login lookup does, rather than through a second SECURITY DEFINER
+-- function: the question is the same question, and the projection to id
+-- alone means password_hash and totp_secret stay inside the database
+-- rather than travelling to Go for a grant to be created.
+--
+-- That an unknown address can be told apart from a known one here is
+-- deliberate and discloses nothing new: signup already answers "an
+-- account already exists for this email address" (see internal/httpapi's
+-- signUpError), so whether an address has an account is already known to
+-- anyone who can reach the signup route. Closing it here and leaving it
+-- open there would buy nothing and would leave a person unable to tell a
+-- mistyped address from a successful share.
+-- name: GetUserIDByEmail :one
+SELECT id
+FROM users_find_by_email(sqlc.arg(email));
+
 -- AdvanceUserTOTPCounter is what a successful login writes, and the only
 -- thing it writes. It is deliberately not UpdateUser below: a login
 -- holds a snapshot of the row taken before a roughly 0.3 second Argon2id

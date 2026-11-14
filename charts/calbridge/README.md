@@ -67,11 +67,15 @@ not just read another user's rows through a live connection, but could also swit
 protection off for every user at once, by virtue of owning the tables. This chart therefore
 never renders with the two equal.
 
-`migrationJob.databaseUser` additionally needs `EXECUTE` on `users_find_by_email`
-(`db/migrations`'s own pre-login email lookup) granted to `config.databaseUser`, the same way
-`docker-compose.yaml`'s own `grant-app-role` service grants it to `calbridge_app`: provisioning
-that grant, like every other table-level grant `config.databaseUser` needs on a database this
-chart does not itself own, is the cluster operator's responsibility; see "Database" below.
+`migrationJob.databaseUser` additionally needs `EXECUTE` on each of `db/migrations`'s own
+`SECURITY DEFINER` functions granted to `config.databaseUser`, the same way
+`docker-compose.yaml`'s own `grant-app-role` service grants them to `calbridge_app`:
+`users_find_by_email` (the pre-login email lookup, also what resolves the address a grant
+names), `identities_find_by_provider_subject` (the provider sign-in lookup) and
+`grant_counterparties` (the addresses on the other side of a grant). Each is revoked from
+`PUBLIC` in `db/migrations`, so these grants are what actually decide who may call them.
+Provisioning them, like every other table-level grant `config.databaseUser` needs on a database
+this chart does not itself own, is the cluster operator's responsibility; see "Database" below.
 
 ## Migrations
 

@@ -52,5 +52,117 @@
     "logout": "Log out",
     "loggingOut": "Logging out",
     "logoutError": "Logging out failed."
+  },
+  "nav": {
+    "ariaLabel": "Navigation",
+    "home": "Overview",
+    "canvas": "Calendar canvas",
+    "grants": "Grants"
+  },
+  "canvas": {
+    "title": "Calendar canvas",
+    "lead": "Connect calendars across accounts and choose how much detail each connection copies.",
+    "loading": "Loading the canvas",
+    "loadError": "Could not load the canvas.",
+    "unexpectedError": "Something went wrong. Please try again.",
+    "sharedGroup": {
+      "title": "Shared with you"
+    },
+    "badge": {
+      "managed": "Created by calbridge",
+      "sharedBy": "Shared by {email}",
+      "maxDetail": "At most: {level}"
+    },
+    "connectFromHere": "Connect from here",
+    "connectFromHereFor": "Connect from here: {name}",
+    "connectAnnouncement": "Connecting from {name}. Choose a target below.",
+    "form": {
+      "title": "Create a connection",
+      "source": "Source",
+      "target": "Target",
+      "targetCalendar": "Target calendar",
+      "targetMode": {
+        "existing": "Use an existing calendar",
+        "new": "Let calbridge create a new calendar"
+      },
+      "newTargetAccount": "Account for the new calendar",
+      "newTargetName": "Name of the new calendar",
+      "detailLevel": "Detail level",
+      "selectPlaceholder": "Please choose",
+      "cappedHint": "A grant on one of the calendars involved limits the possible detail levels. Wider ones are not selectable for that reason.",
+      "submit": "Create connection",
+      "validation": {
+        "source": "Please choose a source.",
+        "target": "Please choose a target.",
+        "newTargetAccount": "Please choose an account.",
+        "newTargetName": "Please enter a name.",
+        "detailLevel": "Please choose a detail level.",
+        "targetNotOwned": "Only a calendar you own can be a target."
+      }
+    },
+    "edges": {
+      "title": "Connections",
+      "emptyTitle": "No connections yet",
+      "emptyDescription": "Create a connection between two calendars above.",
+      "edit": "Edit",
+      "delete": "Delete"
+    },
+    "editor": {
+      "title": "Edit connection",
+      "fieldsDisclosure": "Which fields does this detail level copy?",
+      "cancel": "Cancel",
+      "save": "Save"
+    },
+    "detailLevel": {
+      "full": "Full",
+      "title_time": "Title and time",
+      "busy_block": "Busy or free only"
+    },
+    "field": {
+      "summary": "Title",
+      "description": "Description",
+      "location": "Location",
+      "attendees": "Attendees",
+      "status": "Status",
+      "transparency": "Availability",
+      "visibility": "Visibility",
+      "recurrence": "Recurrence"
+    }
+  },
+  "grants": {
+    "title": "Grants",
+    "lead": "Give someone else access to a calendar you own, and see what others have shared with you.",
+    "loading": "Loading grants",
+    "loadError": "Could not load the grants.",
+    "unexpectedError": "Something went wrong. Please try again.",
+    "revoke": "Revoke",
+    "form": {
+      "title": "Grant access",
+      "calendar": "Your calendar",
+      "email": "The person's email address",
+      "maxDetailLevel": "Maximum detail level",
+      "submit": "Grant access",
+      "validation": {
+        "calendar": "Please choose a calendar.",
+        "email": "Please enter an email address.",
+        "maxDetailLevel": "Please choose a detail level."
+      }
+    },
+    "given": {
+      "title": "Granted by you",
+      "emptyTitle": "No grants yet",
+      "emptyDescription": "Grants you give appear here."
+    },
+    "received": {
+      "title": "Granted to you",
+      "emptyTitle": "Nothing shared yet",
+      "emptyDescription": "Grants others give you appear here."
+    },
+    "revokeDialog": {
+      "title": "Revoke this grant?",
+      "message": "Revoking tears down every connection that uses this grant, and deletes the events those connections wrote into their target.",
+      "confirm": "Revoke the grant",
+      "cancel": "Cancel"
+    }
   }
 }

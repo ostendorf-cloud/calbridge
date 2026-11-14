@@ -45,6 +45,17 @@ type Store struct {
 	users       map[uuid.UUID]storage.User
 	identities  map[uuid.UUID]storage.Identity
 	connections map[uuid.UUID]storage.Connection
+	calendars   map[uuid.UUID]storage.Calendar
+	edges       map[uuid.UUID]storage.Edge
+	grants      map[uuid.UUID]storage.CalendarGrant
+
+	// The three slices below keep insertion order, so a List here comes
+	// back in the order the real queries' own "ORDER BY created_at"
+	// gives. A map alone would hand a test a different order on every
+	// run, which turns a real ordering bug into a flake and back again.
+	calendarOrder []uuid.UUID
+	edgeOrder     []uuid.UUID
+	grantOrder    []uuid.UUID
 
 	// ConnectionReads counts every read through the connection
 	// repository. See the package doc.
@@ -86,6 +97,9 @@ func NewStore() *Store {
 		users:       map[uuid.UUID]storage.User{},
 		identities:  map[uuid.UUID]storage.Identity{},
 		connections: map[uuid.UUID]storage.Connection{},
+		calendars:   map[uuid.UUID]storage.Calendar{},
+		edges:       map[uuid.UUID]storage.Edge{},
+		grants:      map[uuid.UUID]storage.CalendarGrant{},
 	}
 }
 
@@ -291,6 +305,26 @@ func (r *users) DeleteAccount(_ context.Context, id uuid.UUID) error {
 	for identityID, identity := range r.store.identities {
 		if identity.UserID == id {
 			delete(r.store.identities, identityID)
+		}
+	}
+
+	for edgeID, edge := range r.store.edges {
+		if edge.UserID == id {
+			delete(r.store.edges, edgeID)
+		}
+	}
+
+	// Both sides, matching queries/account_deletion.sql: a grant this
+	// user received from somebody else names this user too.
+	for grantID, grant := range r.store.grants {
+		if grant.OwnerUserID == id || grant.GranteeUserID == id {
+			delete(r.store.grants, grantID)
+		}
+	}
+
+	for calendarID, calendar := range r.store.calendars {
+		if calendar.UserID == id {
+			delete(r.store.calendars, calendarID)
 		}
 	}
 

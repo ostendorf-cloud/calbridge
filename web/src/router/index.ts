@@ -16,6 +16,16 @@ const routes = [
     component: () => import('../views/LoginView.vue'),
   },
   {
+    path: '/canvas',
+    name: 'canvas',
+    component: () => import('../views/CanvasView.vue'),
+  },
+  {
+    path: '/grants',
+    name: 'grants',
+    component: () => import('../views/GrantsView.vue'),
+  },
+  {
     path: '/:pathMatch(.*)*',
     redirect: { name: 'home' },
   },

@@ -118,6 +118,37 @@ type Calendar struct {
 	UpdatedAt    time.Time
 }
 
+// SharedCalendar is a calendar somebody else owns and shared with this
+// user, read back together with the grant that shares it. The two travel
+// as one value because a shared calendar is only ever usable up to the
+// level its grant allows, and holding the calendar without the bound is
+// how a caller ends up offering more detail than the owner permitted.
+//
+// UserID on the embedded Calendar is the owner's, not the reader's: this
+// is the one place in this package where a Calendar comes back under a
+// user id other than the scope it was read in.
+type SharedCalendar struct {
+	Calendar
+
+	// GrantID is the calendar_grants row that shares it, so revoking the
+	// share needs no second lookup.
+	GrantID uuid.UUID
+	// MaxDetailLevel is the most an edge over this calendar may copy.
+	// internal/sync is what enforces it; nothing here interprets it.
+	MaxDetailLevel DetailLevel
+}
+
+// GrantCounterparty is the person on the other side of a grant this user
+// is party to: the grantee of a grant they made, or the owner of one
+// made to them. It carries the address and nothing else, because the
+// address is the whole of what a sharing screen needs and the rest of a
+// users row is not this user's to read; see db/migrations's own
+// grant_counterparties.
+type GrantCounterparty struct {
+	UserID uuid.UUID
+	Email  string
+}
+
 // DetailLevel is a sync edge's or a grant's detail level preset; see
 // docs/concepts/calbridge.md. A per-field override for a case a preset
 // misses is internal/sync's concern, a later step.
