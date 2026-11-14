@@ -40,16 +40,18 @@ import (
 // or truncate.
 const encryptionKeyBytes = 32
 
-// defaultRateLimitBurst and defaultRateLimitPer throttle the one route a
-// request needs no session to reach: POST /api/v1/auth/login starts a
-// session for any email with no account to check it against (see
-// internal/httpapi's package doc), so without a limit a single client
-// could force session.MemoryStore's eviction of an arbitrary tracked
-// session, repeatedly, in seconds. Ten starts a minute for one resolved
-// client address is generous for a browser and tight for a script, the
-// same budget solobill's own local login uses for the same reason. That
-// resolved address is the TCP peer unless TrustedProxyCIDRs below names
-// the deployment's own proxy: behind charts/calbridge's Ingress or
+// defaultRateLimitBurst and defaultRateLimitPer throttle the routes a
+// request reaches with no session at all: signup, login and the two
+// provider sign-in routes. POST /api/v1/auth/login starts a session for
+// any email with no account to check it against (see internal/httpapi's
+// package doc), so without a limit a single client could force
+// session.MemoryStore's eviction of an arbitrary tracked session,
+// repeatedly, in seconds. Ten starts a minute for one resolved client
+// address is generous for a browser and tight for a script, the same
+// budget solobill's own local login uses for the same reason.
+//
+// That resolved address is the TCP peer unless TrustedProxyCIDRs below
+// names the deployment's own proxy: behind charts/calbridge's Ingress or
 // HTTPRoute with no proxy configured, the TCP peer is the ingress
 // controller for every request, so the budget is shared by every client
 // instead of kept one per client. See TrustedProxyCIDRs's own doc
@@ -57,6 +59,30 @@ const encryptionKeyBytes = 32
 const (
 	defaultRateLimitBurst = 10
 	defaultRateLimitPer   = time.Minute
+)
+
+// defaultGrantRateLimitBurst and defaultGrantRateLimitPer throttle
+// POST /api/v1/grants, which needs a session and is limited anyway: it
+// names the account to share with by email address and answers "no
+// account exists for this email address" when there is none, so without
+// a limit one account could enumerate the user base by address. See
+// internal/httpapi's handleCreateGrant for why that answer is the right
+// one and what it rests on.
+//
+// It is a budget of its own rather than the one above, because the two
+// bound unrelated things and sharing one makes each the other's denial
+// of service: on a shared bucket, eleven calendars shared in a minute
+// stops a login. Behind an Ingress with no trusted proxy configured
+// that bucket is keyed on the ingress controller for every request, so
+// it would stop logins for everybody, not only for the person sharing.
+//
+// The number matches signup's deliberately. The disclosure argument for
+// this route is that it says nothing signup does not already say, and
+// that argument holds only while the two are bounded alike: a budget
+// looser than signup's here would make this the cheaper way to ask.
+const (
+	defaultGrantRateLimitBurst = 10
+	defaultGrantRateLimitPer   = time.Minute
 )
 
 // Config is every setting calbridge reads from the environment, loaded
@@ -109,22 +135,30 @@ type Config struct {
 	SessionAllowPlainHTTP bool
 
 	// RateLimitBurst and RateLimitPer configure the token bucket
-	// internal/httpapi applies to the login route.
+	// internal/httpapi applies to the routes a request reaches with no
+	// session: signup, login and the two provider sign-in routes.
 	RateLimitBurst int
 	RateLimitPer   time.Duration
 
-	// TrustedProxyCIDRs lists the addresses internal/httpapi's login rate
-	// limiter trusts to have appended the real client address to
+	// GrantRateLimitBurst and GrantRateLimitPer configure the separate
+	// token bucket internal/httpapi applies to POST /api/v1/grants. See
+	// defaultGrantRateLimitBurst for what it bounds and why it is not the
+	// bucket above.
+	GrantRateLimitBurst int
+	GrantRateLimitPer   time.Duration
+
+	// TrustedProxyCIDRs lists the addresses internal/httpapi's rate
+	// limiters trust to have appended the real client address to
 	// X-Forwarded-For, parsed by govue's clientip.ParseCIDRs. Empty by
-	// default: the limiter then keys every request on its TCP peer, the
+	// default: the limiters then key every request on its TCP peer, the
 	// secure choice, since trusting the header from an unconfigured proxy
 	// would let a request forge its own rate limit key. charts/calbridge
 	// routes every request through its own Ingress or HTTPRoute, so
 	// without this set the TCP peer calbridge sees is the ingress
-	// controller, not the client, and the limiter's budget ends up shared
+	// controller, not the client, and each limiter's budget ends up shared
 	// by every client instead of kept one per client. Setting this to the
 	// ingress controller's (or Gateway data plane's) address lets the
-	// limiter trust the header that controller appends and recover the
+	// limiters trust the header that controller appends and recover the
 	// real client address; see the chart's README for how to set it.
 	TrustedProxyCIDRs []netip.Prefix
 
@@ -213,6 +247,10 @@ func Load(getenv func(string) string) (Config, error) {
 
 	cfg.RateLimitBurst = l.Int("RATE_LIMIT_BURST", defaultRateLimitBurst, 0, 100_000)
 	cfg.RateLimitPer = l.Duration("RATE_LIMIT_PER", defaultRateLimitPer, time.Second, time.Hour)
+
+	cfg.GrantRateLimitBurst = l.Int("GRANT_RATE_LIMIT_BURST", defaultGrantRateLimitBurst, 0, 100_000)
+	cfg.GrantRateLimitPer = l.Duration(
+		"GRANT_RATE_LIMIT_PER", defaultGrantRateLimitPer, time.Second, time.Hour)
 
 	trustedProxyCIDRs, err := clientip.ParseCIDRs(l.String("TRUSTED_PROXY_CIDRS", ""))
 	fail(err)

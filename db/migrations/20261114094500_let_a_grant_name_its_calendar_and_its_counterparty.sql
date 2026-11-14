@@ -26,16 +26,26 @@
 --
 -- The disclosure is bounded by the grant and by nothing else: there is
 -- no way to reach a calendar no grant names, so this opens no existence
--- oracle over calendars in general. What it does disclose, for a
--- calendar the owner deliberately shared, is its name, its connection id
--- and whether calbridge manages it. That is strictly less than what the
--- grant already shares, which is the calendar's events at a bounded
--- detail level.
+-- oracle over calendars in general.
 --
--- The grantee's own SELECT still goes through ListCalendarsSharedWithMe
--- (see internal/storage/postgres/queries/calendars.sql), which names the
--- join to calendar_grants explicitly, so the two layers agree the way
--- every other query in that directory and its policy already do.
+-- Row level security is row level, so what this admits, for a calendar
+-- the owner deliberately shared, is every column of that row: id,
+-- user_id, connection_id, external_id, name, managed, created_at and
+-- updated_at. external_id is the one of those a grantee has no business
+-- with. For a Google or Microsoft primary calendar it is the owner's
+-- provider mailbox address, which is not necessarily the calbridge
+-- account address the grant already tells the grantee. Everything else
+-- on the row is strictly less than what the grant itself shares, which
+-- is the calendar's events at a bounded detail level.
+--
+-- A policy cannot withhold one column, so the projection is what keeps
+-- external_id in: ListCalendarsSharedWithMe (see
+-- internal/storage/postgres/queries/calendars.sql) names the columns it
+-- reads and leaves external_id out, and storage.SharedCalendar has no
+-- field to put it in. That query also names the join to
+-- calendar_grants explicitly, the same test this policy's own USING
+-- clause makes, so the two layers agree the way every other query in
+-- that directory and its policy already do.
 CREATE POLICY calendars_grantee_read ON calendars
     FOR SELECT
     USING (
@@ -59,11 +69,24 @@ CREATE POLICY calendars_grantee_read ON calendars
 -- narrower row type, because sqlc resolves a function's columns from
 -- the table a SETOF names and cannot resolve them from a RETURNS TABLE
 -- list at all (verified by running task generate:sqlc against both
--- spellings). What the caller actually reads back is the projection its
--- own query makes: ListGrantCounterparties selects id and email and
--- nothing else, so no hash and no TOTP secret leaves the database for a
--- sharing screen. That is the same shape GetUserByEmail already has,
--- and narrower, since that one selects the whole row.
+-- spellings).
+--
+-- The rowtype being the whole of users does not mean the whole of a
+-- users row leaves the table. The body below names every column
+-- explicitly and substitutes NULL for the three credential columns, so
+-- password_hash, totp_secret and totp_last_counter are not merely
+-- unprojected by the caller's own query, they carry no value to
+-- project. A query in internal/storage/postgres/queries that selected
+-- them anyway would read NULL. users_find_by_email keeps the wide shape
+-- legitimately, because checking a password needs the hash; this
+-- function never does, so the columns stay empty rather than relying on
+-- a projection one directory away to keep them in.
+--
+-- The column list and the casts have to match users exactly, in order:
+-- a SETOF function's result is the table's composite type, so a missing
+-- column or a type the composite does not accept fails at CREATE
+-- FUNCTION time. See 20261113155247_create_users.sql for the shape the
+-- list below mirrors.
 --
 -- SECURITY DEFINER means the body runs as this migration's owner and so
 -- bypasses row level security on both tables it reads. The WHERE clause
@@ -93,7 +116,14 @@ LANGUAGE sql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
-    SELECT u.*
+    SELECT u.id,
+           u.email,
+           NULL::text AS password_hash,
+           NULL::text AS totp_secret,
+           NULL::bigint AS totp_last_counter,
+           u.status,
+           u.created_at,
+           u.updated_at
     FROM users u
     WHERE NULLIF(current_setting('app.user_id', true), '') IS NOT NULL
       AND EXISTS (

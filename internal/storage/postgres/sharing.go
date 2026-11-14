@@ -56,16 +56,13 @@ func (r *sharingRepository) ListCalendarsSharedWithMe(
 	shared := make([]storage.SharedCalendar, len(rows))
 	for i, row := range rows {
 		shared[i] = storage.SharedCalendar{
-			Calendar: storage.Calendar{
-				ID:           row.ID,
-				UserID:       row.UserID,
-				ConnectionID: row.ConnectionID,
-				ExternalID:   row.ExternalID,
-				Name:         row.Name,
-				Managed:      row.Managed,
-				CreatedAt:    timeFromTimestamptz(row.CreatedAt),
-				UpdatedAt:    timeFromTimestamptz(row.UpdatedAt),
-			},
+			ID:             row.ID,
+			UserID:         row.UserID,
+			ConnectionID:   row.ConnectionID,
+			Name:           row.Name,
+			Managed:        row.Managed,
+			CreatedAt:      timeFromTimestamptz(row.CreatedAt),
+			UpdatedAt:      timeFromTimestamptz(row.UpdatedAt),
 			GrantID:        row.GrantID,
 			MaxDetailLevel: storage.DetailLevel(row.MaxDetailLevel),
 		}

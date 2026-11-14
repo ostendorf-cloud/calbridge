@@ -108,6 +108,14 @@
 // sized against. Signup and the provider callback both create rows, so
 // the same limit is what keeps a script from filling the users table.
 //
+// POST /api/v1/grants is throttled too, although it needs a session,
+// because it answers whether an account exists for an address. It
+// spends a second limiter with its own budget rather than that one:
+// sharing a calendar is an ordinary authenticated action, and on one
+// bucket a person sharing eleven calendars in a minute would refuse a
+// login. See limitedRoute in NewHandler and config.Config's
+// GrantRateLimitBurst.
+//
 // The session store is an in-memory session.MemoryStore, and the CSRF
 // signing key and the session.Codec that signs the provider login in
 // flight are both generated fresh on every start with crypto/rand, all
@@ -278,13 +286,20 @@ type Deps struct {
 	AllowPlainHTTP bool
 
 	// RateLimitBurst and RateLimitPer configure the token bucket the
-	// login route is rate limited with. See maxSessions's own doc
-	// comment for why that route specifically needs one.
+	// unauthenticated routes are rate limited with. See maxSessions's own
+	// doc comment for why those routes specifically need one.
 	RateLimitBurst int
 	RateLimitPer   time.Duration
 
+	// GrantRateLimitBurst and GrantRateLimitPer configure the second
+	// token bucket, the one POST /api/v1/grants spends. It is separate
+	// from the bucket above on purpose; see limitedRoute in NewHandler
+	// and config.Config's own GrantRateLimitBurst.
+	GrantRateLimitBurst int
+	GrantRateLimitPer   time.Duration
+
 	// TrustedProxyCIDRs mirrors config.Config.TrustedProxyCIDRs: the
-	// addresses the login rate limiter's clientip.Resolver trusts to have
+	// addresses both rate limiters' clientip.Resolver trusts to have
 	// appended the real client address to X-Forwarded-For. Left empty,
 	// the resolver keys every request on its TCP peer; see
 	// config.Config.TrustedProxyCIDRs's own doc comment for what that
@@ -361,6 +376,17 @@ func NewHandler(d Deps) (Handlers, error) {
 		// config.Config.TrustedProxyCIDRs's own doc comment for why
 		// that is the safe default and what it costs behind this
 		// application's Ingress or HTTPRoute.
+		ClientIP: clientip.NewResolver(d.TrustedProxyCIDRs),
+	})
+	fail(err)
+
+	// A second limiter, with its own ratelimit.New and so its own
+	// buckets, for the one authenticated route that still has to be
+	// throttled. Both resolve the client the same way; what they must not
+	// share is the budget. See limitedRoute below.
+	grantLimiter := ratelimit.New(d.GrantRateLimitBurst, d.GrantRateLimitPer, maxRateLimitKeys)
+	grantRateLimit, err := middleware.NewRateLimit(middleware.RateLimitConfig{
+		Limiter:  grantLimiter,
 		ClientIP: clientip.NewResolver(d.TrustedProxyCIDRs),
 	})
 	fail(err)
@@ -477,22 +503,32 @@ func NewHandler(d Deps) (Handlers, error) {
 		return middleware.Chain(h, rateLimit.Middleware, protector.Middleware)
 	}
 
-	// limitedRoute is the same chain as openRoute, for a route that does
-	// need a session and still has to be throttled. There is exactly one:
-	// POST /api/v1/grants, which names the account to share with by email
-	// address and answers "no account exists for this email address" when
-	// there is none.
+	// limitedRoute is openRoute's shape with the other limiter, for a
+	// route that does need a session and still has to be throttled. There
+	// is exactly one: POST /api/v1/grants, which names the account to
+	// share with by email address and answers "no account exists for this
+	// email address" when there is none.
 	//
 	// That answer is deliberate and is argued in graph.go's
 	// handleCreateGrant: it discloses nothing signup does not already,
 	// since signup answers "an account already exists for this email
 	// address". The argument only holds while the two are bounded the
-	// same way, though. Signup carries this limiter; without it here, a
-	// caller with one account could enumerate the whole user base by
-	// address far faster than through signup, and the disclosure would
-	// stop being equivalent and start being the cheaper path.
+	// same way, though. Without a limiter here, a caller with one account
+	// could enumerate the whole user base by address far faster than
+	// through signup, and the disclosure would stop being equivalent and
+	// start being the cheaper path. grantRateLimit's default budget is
+	// signup's own for that reason.
+	//
+	// It is a separate limiter, not the one above, because the two bound
+	// unrelated things and a shared budget makes each the other's denial
+	// of service: sharing a calendar is an ordinary authenticated action
+	// a person may repeat, and on one bucket the eleventh share in a
+	// minute would refuse a login instead. Behind an Ingress with no
+	// TrustedProxyCIDRs set every request resolves to the ingress
+	// controller, so that refusal would reach every account at once; see
+	// config.Config.TrustedProxyCIDRs.
 	limitedRoute := func(h http.Handler) http.Handler {
-		return middleware.Chain(h, rateLimit.Middleware, protector.Middleware)
+		return middleware.Chain(h, grantRateLimit.Middleware, protector.Middleware)
 	}
 
 	mux := http.NewServeMux()

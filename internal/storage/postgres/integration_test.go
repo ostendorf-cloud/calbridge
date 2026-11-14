@@ -1593,9 +1593,18 @@ $$;`
 	// Mirrors docker-compose.yaml's "grant-app-role" service: every table
 	// gets exactly the privileges its own repository in
 	// internal/storage/postgres actually uses. users gets DELETE because
-	// userRepository.DeleteAccount removes the row itself, and the two
-	// SECURITY DEFINER lookup functions get EXECUTE because the two
-	// pre-login lookups go through them.
+	// userRepository.DeleteAccount removes the row itself, and the three
+	// SECURITY DEFINER lookup functions get EXECUTE because the lookups
+	// that cannot run under the asking user's own scope go through them.
+	//
+	// The ALTER DEFAULT PRIVILEGES line is the standing rule for a table
+	// a later migration adds, and it is here for the same reason the
+	// explicit grants are: without it, the first such table would arrive
+	// with UPDATE in the deployment and without it on this role, and an
+	// assertion about what this role may not do would hold for a reason
+	// production does not have. internal/depsync's
+	// TestTheApplicationRoleAndTheTestRoleHoldTheSameGrants compares this
+	// statement with the deployment's and the chart's.
 	grant := `
 GRANT USAGE ON SCHEMA public TO ` + testAppRole + `;
 GRANT SELECT, INSERT, UPDATE, DELETE ON users TO ` + testAppRole + `;
@@ -1603,7 +1612,8 @@ GRANT EXECUTE ON FUNCTION users_find_by_email(text) TO ` + testAppRole + `;
 GRANT EXECUTE ON FUNCTION identities_find_by_provider_subject(text, text) TO ` + testAppRole + `;
 GRANT EXECUTE ON FUNCTION grant_counterparties() TO ` + testAppRole + `;
 GRANT SELECT, INSERT, DELETE ON identities, calendars, calendar_grants TO ` + testAppRole + `;
-GRANT SELECT, INSERT, UPDATE, DELETE ON connections, edges, event_mapping TO ` + testAppRole + `;`
+GRANT SELECT, INSERT, UPDATE, DELETE ON connections, edges, event_mapping TO ` + testAppRole + `;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ` + testAppRole + `;`
 
 	if _, err := adminPool.Exec(ctx, grant); err != nil {
 		t.Fatalf("grant %s privileges: %v", testAppRole, err)
@@ -2157,6 +2167,191 @@ func TestGrantCounterpartiesDisclosesOnlyThePeopleAGrantAlreadyNames(t *testing.
 				t.Errorf("email = %q, want %q", counterparties[0].Email, testCase.wantEmail)
 			}
 		})
+	}
+}
+
+// TestGrantCounterpartiesCarriesNoCredentialAtAll is the other half of
+// the function above: not what rows it returns, but what is in them.
+//
+// It returns SETOF users, because sqlc resolves a function's columns
+// from the table a SETOF names and from nothing else, so the rowtype is
+// the whole of users, password_hash and totp_secret included. The body
+// substitutes NULL for the three credential columns, which is what makes
+// the wide rowtype harmless: a query one directory away that projected
+// them would read NULL rather than a hash. This asserts that directly,
+// from the restricted role, against a counterparty whose real row does
+// hold all three.
+func TestGrantCounterpartiesCarriesNoCredentialAtAll(t *testing.T) {
+	adminURL := requireDatabaseURL(t)
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	store := restrictedStore(ctx, t, adminPool, adminURL)
+	fixture := seedSharing(ctx, t, store)
+
+	// The owner is the grantee's counterparty, so the owner's row is
+	// what the grantee's call returns. Writing the credentials through
+	// the admin pool keeps this test independent of whether any
+	// repository method sets them yet.
+	const (
+		seededHash   = "$argon2id$v=19$m=65536,t=3,p=4$not-a-real-salt$not-a-real-hash"
+		seededSecret = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+		seededCount  = int64(12345)
+	)
+
+	if _, err := adminPool.Exec(ctx,
+		`UPDATE users SET password_hash = $2, totp_secret = $3, totp_last_counter = $4 WHERE id = $1`,
+		fixture.owner.ID, seededHash, seededSecret, seededCount); err != nil {
+		t.Fatalf("seed the owner's credentials: %v", err)
+	}
+
+	// The control: the columns really do hold those values, read through
+	// a connection that bypasses row level security. Without this the
+	// assertions below would pass against three empty columns.
+	var (
+		storedHash   *string
+		storedSecret *string
+		storedCount  *int64
+	)
+
+	if err := adminPool.QueryRow(ctx,
+		`SELECT password_hash, totp_secret, totp_last_counter FROM users WHERE id = $1`,
+		fixture.owner.ID).Scan(&storedHash, &storedSecret, &storedCount); err != nil {
+		t.Fatalf("admin read of the owner's credentials: %v", err)
+	}
+
+	if storedHash == nil || *storedHash != seededHash {
+		t.Fatalf("the owner's stored password_hash is %v, want the seeded hash; the assertion below "+
+			"proves nothing against an empty column", storedHash)
+	}
+
+	if storedSecret == nil || storedCount == nil {
+		t.Fatalf("the owner's stored totp_secret is %v and totp_last_counter is %v, want both seeded",
+			storedSecret, storedCount)
+	}
+
+	restrictedPool, err := postgres.NewPool(ctx, setUpTestAppRole(ctx, t, adminPool, adminURL))
+	if err != nil {
+		t.Fatalf("open restricted pool as %s: %v", testAppRole, err)
+	}
+	t.Cleanup(restrictedPool.Close)
+
+	// Every column of the counterparty row, asked for by name, as the
+	// restricted role the application connects as.
+	var (
+		gotID     uuid.UUID
+		gotEmail  string
+		gotHash   *string
+		gotSecret *string
+		gotCount  *int64
+	)
+
+	if err := granteeTx(ctx, t, restrictedPool, fixture.grantee.ID).QueryRow(ctx,
+		`SELECT id, email, password_hash, totp_secret, totp_last_counter FROM grant_counterparties()`,
+	).Scan(&gotID, &gotEmail, &gotHash, &gotSecret, &gotCount); err != nil {
+		t.Fatalf("read the counterparty's columns as the grantee: %v", err)
+	}
+
+	if gotID != fixture.owner.ID {
+		t.Fatalf("counterparty = %v, want the owner %v", gotID, fixture.owner.ID)
+	}
+
+	if gotEmail != fixture.owner.Email {
+		t.Errorf("email = %q, want %q; the address is what the function exists to disclose",
+			gotEmail, fixture.owner.Email)
+	}
+
+	for _, column := range []struct {
+		name  string
+		value any
+	}{
+		{"password_hash", gotHash},
+		{"totp_secret", gotSecret},
+		{"totp_last_counter", gotCount},
+	} {
+		switch value := column.value.(type) {
+		case *string:
+			if value != nil {
+				t.Errorf("%s came back as %q, want NULL: the function's body nulls it, so no "+
+					"projection above the database can read it", column.name, *value)
+			}
+		case *int64:
+			if value != nil {
+				t.Errorf("%s came back as %d, want NULL: the function's body nulls it, so no "+
+					"projection above the database can read it", column.name, *value)
+			}
+		}
+	}
+}
+
+// TestTheProjectionIsWhatWithholdsASharedCalendarsProviderIdentifier
+// records which layer keeps external_id from a grantee.
+//
+// calendars_grantee_read is a row level policy, so it admits every
+// column of a shared row, and this asserts that it does: a grantee
+// asking for external_id by name gets it. That is why the projection in
+// queries/calendars.sql leaves the column out and
+// storage.SharedCalendar has no field for it, which
+// internal/storage/postgres's own TestASharedCalendarCarriesNoProviderIdentifier
+// is what holds down. If this test ever starts failing because the
+// policy withholds the column, the Go-side defence has become belt
+// without braces rather than the only thing in the way.
+func TestTheProjectionIsWhatWithholdsASharedCalendarsProviderIdentifier(t *testing.T) {
+	adminURL := requireDatabaseURL(t)
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	store := restrictedStore(ctx, t, adminPool, adminURL)
+	fixture := seedSharing(ctx, t, store)
+
+	restrictedPool, err := postgres.NewPool(ctx, setUpTestAppRole(ctx, t, adminPool, adminURL))
+	if err != nil {
+		t.Fatalf("open restricted pool as %s: %v", testAppRole, err)
+	}
+	t.Cleanup(restrictedPool.Close)
+
+	var admitted string
+
+	if err := granteeTx(ctx, t, restrictedPool, fixture.grantee.ID).QueryRow(ctx,
+		`SELECT external_id FROM calendars WHERE id = $1`, fixture.ownerCalendar.ID).Scan(&admitted); err != nil {
+		t.Fatalf("read the shared calendar's external_id as the grantee: %v", err)
+	}
+
+	if admitted != fixture.ownerCalendar.ExternalID {
+		t.Errorf("external_id = %q, want %q", admitted, fixture.ownerCalendar.ExternalID)
+	}
+
+	// And what the repository hands back carries no such value, which is
+	// the whole of the defence this records.
+	var shared []storage.SharedCalendar
+
+	if err := store.WithUser(ctx, fixture.grantee.ID, func(ctx context.Context) error {
+		var err error
+		shared, err = store.Sharing().ListCalendarsSharedWithMe(ctx)
+
+		return err
+	}); err != nil {
+		t.Fatalf("list the calendars shared with the grantee: %v", err)
+	}
+
+	if len(shared) != 1 {
+		t.Fatalf("the grantee sees %d shared calendars, want exactly the one the grant names", len(shared))
+	}
+
+	if shared[0].Name != fixture.ownerCalendar.Name {
+		t.Errorf("shared calendar name = %q, want %q", shared[0].Name, fixture.ownerCalendar.Name)
 	}
 }
 

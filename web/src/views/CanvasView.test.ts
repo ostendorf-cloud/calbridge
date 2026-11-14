@@ -1,5 +1,5 @@
 import { ApiError, ErrorCode } from '@ostendorf-cloud/govue'
-import { fireEvent, render, screen, waitFor } from '@testing-library/vue'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/vue'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createI18n } from 'vue-i18n'
@@ -99,6 +99,33 @@ async function chooseOption(comboboxName: string, optionName: string): Promise<v
   option.focus()
   await fireEvent.keyDown(option, { key: 'Enter' })
   await waitFor(() => expect(screen.queryByRole('option', { name: optionName })).toBeNull())
+}
+
+/** sourceHandleFor and targetHandleFor find a calendar node's own Vue Flow
+ *  handle, the element a pointer drag starts or ends on. Vue Flow also
+ *  completes a connection on two clicks, one per handle, with no drag
+ *  involved: jsdom has no layout engine, so it always answers
+ *  elementFromPoint with null, and Vue Flow's own click path falls back
+ *  to the clicked handle's identity rather than its screen position for
+ *  that reason. Driving that path through these two elements therefore
+ *  exercises the same onConnect callback a real drag would, without
+ *  reaching for a pointer-coordinate simulation jsdom cannot support. */
+function sourceHandleFor(calendarName: string): HTMLElement {
+  const group = screen.getByRole('group', { name: calendarName })
+  const handle = group.querySelector<HTMLElement>('.vue-flow__handle.source')
+  if (!handle) {
+    throw new Error(`no source handle rendered for ${calendarName}`)
+  }
+  return handle
+}
+
+function targetHandleFor(calendarName: string): HTMLElement {
+  const group = screen.getByRole('group', { name: calendarName })
+  const handle = group.querySelector<HTMLElement>('.vue-flow__handle.target')
+  if (!handle) {
+    throw new Error(`no target handle rendered for ${calendarName}`)
+  }
+  return handle
 }
 
 describe('CanvasView', () => {
@@ -269,6 +296,127 @@ describe('CanvasView', () => {
         detail_level: 'full',
       }),
     )
+  })
+
+  it('connects two calendars through their own handles, the pointerless equivalent of a drag', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({
+      accounts,
+      calendars: ownCalendars,
+      edges: [],
+      grants: { given: [], received: [] },
+      detail_levels: detailLevels,
+    })
+    vi.mocked(apiClient.post).mockResolvedValue({
+      id: 'edge-1',
+      source_calendar_id: 'cal-work',
+      target_calendar_id: 'cal-personal',
+      detail_level: 'busy_block',
+    })
+    renderCanvasView()
+    // Waits for visibility, not just presence: Vue Flow keeps every node
+    // hidden until it has measured it, and a hidden node's handle has no
+    // accessible role yet for sourceHandleFor/targetHandleFor to find.
+    await screen.findByRole('button', { name: 'Connect from here: Work' })
+
+    await fireEvent.click(sourceHandleFor('Work'))
+    await fireEvent.click(targetHandleFor('Personal'))
+
+    await waitFor(() =>
+      expect(apiClient.post).toHaveBeenCalledWith('/edges', {
+        source_calendar_id: 'cal-work',
+        target_calendar_id: 'cal-personal',
+        detail_level: 'busy_block',
+      }),
+    )
+  })
+
+  it('refuses a connection into a calendar it does not own, from the same handle-to-handle path', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({
+      accounts,
+      calendars: [ownCalendars[0], sharedCalendar],
+      edges: [],
+      grants: { given: [], received: [] },
+      detail_levels: detailLevels,
+    })
+    renderCanvasView()
+    await screen.findByRole('button', { name: 'Connect from here: Work' })
+
+    await fireEvent.click(sourceHandleFor('Work'))
+    await fireEvent.click(targetHandleFor("Anna's team calendar"))
+
+    expect(screen.getByText('Only a calendar you own can be a target.')).toBeVisible()
+    expect(apiClient.post).not.toHaveBeenCalled()
+  })
+
+  it('saves a new detail level through a PATCH when the edge editor is confirmed', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({
+      accounts,
+      calendars: ownCalendars,
+      edges: [
+        {
+          id: 'edge-1',
+          source_calendar_id: 'cal-work',
+          target_calendar_id: 'cal-personal',
+          detail_level: 'title_time',
+        },
+      ],
+      grants: { given: [], received: [] },
+      detail_levels: detailLevels,
+    })
+    vi.mocked(apiClient.patch).mockResolvedValue({
+      id: 'edge-1',
+      source_calendar_id: 'cal-work',
+      target_calendar_id: 'cal-personal',
+      detail_level: 'busy_block',
+    })
+    const user = userEvent.setup()
+    renderCanvasView()
+    await screen.findByText('Work')
+
+    await user.click(screen.getByRole('button', { name: 'Edit' }))
+    const dialog = screen.getByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(apiClient.patch).toHaveBeenCalledWith('/edges/edge-1', { detail_level: 'title_time' }),
+    )
+    // Scoped to the edge's own row: the edge label on the canvas itself
+    // shows the same text, and a plain getByText would be ambiguous.
+    const edgeRow = screen.getByText('Work → Personal').closest('li')
+    expect(edgeRow).not.toBeNull()
+    expect(within(edgeRow as HTMLElement).getByText('Busy or free only')).toBeVisible()
+  })
+
+  it('states the deletion consequence and sends a DELETE once the user confirms', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({
+      accounts,
+      calendars: ownCalendars,
+      edges: [
+        {
+          id: 'edge-1',
+          source_calendar_id: 'cal-work',
+          target_calendar_id: 'cal-personal',
+          detail_level: 'title_time',
+        },
+      ],
+      grants: { given: [], received: [] },
+      detail_levels: detailLevels,
+    })
+    vi.mocked(apiClient.del).mockResolvedValue(undefined)
+    const user = userEvent.setup()
+    renderCanvasView()
+    await screen.findByText('Work → Personal')
+
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+
+    expect(screen.getByRole('dialog')).toHaveAccessibleDescription(
+      'Deleting removes every event this connection wrote into its target.',
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Delete the connection' }))
+
+    expect(apiClient.del).toHaveBeenCalledWith('/edges/edge-1')
+    await waitFor(() => expect(screen.queryByText('Work → Personal')).toBeNull())
   })
 
   it('redirects to login when the session is not authenticated', async () => {

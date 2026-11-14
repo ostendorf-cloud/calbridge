@@ -76,6 +76,11 @@
     "connectFromHere": "Connect from here",
     "connectFromHereFor": "Connect from here: {name}",
     "connectAnnouncement": "Connecting from {name}. Choose a target below.",
+    "controls": {
+      "zoomIn": "Zoom in",
+      "zoomOut": "Zoom out",
+      "fitView": "Fit to view"
+    },
     "form": {
       "title": "Create a connection",
       "source": "Source",
@@ -112,6 +117,12 @@
       "fieldsDisclosure": "Which fields does this detail level copy?",
       "cancel": "Cancel",
       "save": "Save"
+    },
+    "deleteDialog": {
+      "title": "Delete this connection?",
+      "message": "Deleting removes every event this connection wrote into its target.",
+      "confirm": "Delete the connection",
+      "cancel": "Cancel"
     },
     "detailLevel": {
       "full": "Full",

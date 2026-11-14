@@ -40,8 +40,13 @@ import (
 // the grant and edge cases have their own assertions there.
 
 // testOtherEmail is the second account every cross-user test needs. The
-// first is testEmail, from httpapi_test.go.
-const testOtherEmail = "other-person@example.com"
+// first is testEmail, from httpapi_test.go. testThirdEmail is the third,
+// needed where a row has to exist between two accounts the caller is on
+// neither side of.
+const (
+	testOtherEmail = "other-person@example.com"
+	testThirdEmail = "third-person@example.com"
+)
 
 // serial is called where t.Parallel() would otherwise be, by every test
 // in this file that signs an account in or shares one store with another
@@ -398,9 +403,20 @@ func TestARefusalNeverSaysWhetherTheEdgeOrGrantExists(t *testing.T) {
 
 	owner := signIn(t, store, baseURL, testEmail)
 	other := signIn(t, store, baseURL, testOtherEmail)
+	// A third account, so the grant below runs between two accounts the
+	// caller is on neither side of. Without it the grant case could only
+	// compare two ids that are both absent, which passes however the
+	// route words its refusal.
+	third := signIn(t, store, baseURL, testThirdEmail)
 
 	_, otherSource := seedAccountCalendar(t, store, other.userID, "Private Google", "Private")
 	_, otherTarget := seedAccountCalendar(t, store, other.userID, "Private Google 2", "Mirror")
+
+	// A real grant, created over the real route by its real owner, that
+	// the caller is neither the owner nor the grantee of. Its id is a row
+	// that exists and that the caller may not see, which is the whole of
+	// what the grant case has to be given.
+	othersGrant := grantCalendar(t, other, baseURL, otherSource.ID, third, storage.DetailLevelBusyBlock)
 
 	var othersEdge storage.Edge
 
@@ -445,7 +461,7 @@ func TestARefusalNeverSaysWhetherTheEdgeOrGrantExists(t *testing.T) {
 			name:          "revoking a grant",
 			method:        http.MethodDelete,
 			path:          "/api/v1/grants/",
-			existingID:    uuid.NewString(),
+			existingID:    othersGrant.ID,
 			nonexistentID: uuid.NewString(),
 		},
 	}
@@ -958,7 +974,7 @@ func TestTheGrantRouteIsRateLimited(t *testing.T) {
 	serial(t)
 
 	deps := testDeps(t)
-	deps.RateLimitBurst = 2
+	deps.GrantRateLimitBurst = 1
 
 	store := testStore(t, deps)
 	_, baseURL := testClient(t, build(t, deps))
@@ -967,9 +983,8 @@ func TestTheGrantRouteIsRateLimited(t *testing.T) {
 	_, calendar := seedAccountCalendar(t, store, owner.userID, "Work Google", "Work")
 
 	// Each attempt names an address no account has, so it spends a token
-	// and creates nothing. The login that signed this session in spent
-	// one of the burst already, which is why only one attempt is left
-	// inside it.
+	// and creates nothing. The sign-in spent nothing of this budget: the
+	// login route carries the other limiter.
 	attempt := func() int {
 		body := fmt.Sprintf(
 			`{"grantee_email":%q,"calendar_id":%q,"max_detail_level":"busy_block"}`,
@@ -986,6 +1001,97 @@ func TestTheGrantRouteIsRateLimited(t *testing.T) {
 		t.Errorf("the attempt after the burst answered %d, want %d: the limiter is what refuses this",
 			status, http.StatusTooManyRequests)
 	}
+}
+
+// TestTheGrantRouteAndTheLoginRouteSpendSeparateBudgets is why the grant
+// route has a limiter of its own rather than the one signup and login
+// carry.
+//
+// Sharing a calendar is an ordinary authenticated action a person
+// repeats, and the enumeration bound on it has nothing to do with the
+// session eviction bound on login. On one bucket each becomes the
+// other's denial of service, and behind an Ingress with no trusted proxy
+// configured every request resolves to the ingress controller, so
+// refusing one client refuses all of them.
+func TestTheGrantRouteAndTheLoginRouteSpendSeparateBudgets(t *testing.T) {
+	t.Run("spending the grant budget leaves a login possible", func(t *testing.T) {
+		serial(t)
+
+		deps := testDeps(t)
+		deps.GrantRateLimitBurst = 1
+
+		store := testStore(t, deps)
+		_, baseURL := testClient(t, build(t, deps))
+
+		owner := signIn(t, store, baseURL, testEmail)
+		_, calendar := seedAccountCalendar(t, store, owner.userID, "Work Google", "Work")
+
+		share := func() int {
+			body := fmt.Sprintf(
+				`{"grantee_email":%q,"calendar_id":%q,"max_detail_level":"busy_block"}`,
+				"nobody-"+uuid.NewString()+"@example.com", calendar.ID)
+
+			return do(t, owner.client, http.MethodPost, baseURL+"/api/v1/grants", body, owner.csrf).StatusCode
+		}
+
+		if status := share(); status != http.StatusNotFound {
+			t.Fatalf("the first share answered %d, want %d", status, http.StatusNotFound)
+		}
+
+		if status := share(); status != http.StatusTooManyRequests {
+			t.Fatalf("the share after the burst answered %d, want %d", status, http.StatusTooManyRequests)
+		}
+
+		// The grant budget is gone. A login must still be answered on its
+		// merits, which for these credentials is 401.
+		status := do(t, cookielessClient(t), http.MethodPost,
+			baseURL+"/api/v1/auth/login", wrongCredentials, "").StatusCode
+
+		if status == http.StatusTooManyRequests {
+			t.Errorf("a login after the grant budget ran out answered %d: the two routes share a "+
+				"bucket, so sharing calendars locks everybody out of logging in", status)
+		}
+
+		if status != http.StatusUnauthorized {
+			t.Errorf("the login answered %d, want %d", status, http.StatusUnauthorized)
+		}
+	})
+
+	t.Run("spending the login budget leaves a calendar shareable", func(t *testing.T) {
+		serial(t)
+
+		deps := testDeps(t)
+		deps.RateLimitBurst = 1
+
+		store := testStore(t, deps)
+		_, baseURL := testClient(t, build(t, deps))
+
+		// signIn logs in over the real route, which spends the only
+		// token that budget has.
+		owner := signIn(t, store, baseURL, testEmail)
+		_, calendar := seedAccountCalendar(t, store, owner.userID, "Work Google", "Work")
+
+		if status := do(t, cookielessClient(t), http.MethodPost,
+			baseURL+"/api/v1/auth/login", wrongCredentials, "").StatusCode; status != http.StatusTooManyRequests {
+			t.Fatalf("a second login answered %d, want %d; the login budget has to be spent for this "+
+				"to prove anything", status, http.StatusTooManyRequests)
+		}
+
+		body := fmt.Sprintf(
+			`{"grantee_email":%q,"calendar_id":%q,"max_detail_level":"busy_block"}`,
+			"nobody-"+uuid.NewString()+"@example.com", calendar.ID)
+
+		status := do(t, owner.client, http.MethodPost, baseURL+"/api/v1/grants", body, owner.csrf).StatusCode
+
+		if status == http.StatusTooManyRequests {
+			t.Errorf("sharing a calendar after the login budget ran out answered %d: the grant route "+
+				"draws on the login bucket", status)
+		}
+
+		if status != http.StatusNotFound {
+			t.Errorf("the share answered %d, want %d", status, http.StatusNotFound)
+		}
+	})
 }
 
 // cookielessClient is a client with no session at all, for the routes

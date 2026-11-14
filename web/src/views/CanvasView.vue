@@ -18,7 +18,9 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import {
   Handle,
+  Panel,
   Position,
+  useVueFlow,
   VueFlow,
   type Connection,
   type Edge as FlowEdge,
@@ -30,6 +32,7 @@ import {
   GovueBadge,
   GovueButton,
   GovueCard,
+  GovueConfirmDialog,
   GovueDialog,
   GovueEmptyState,
   GovueField,
@@ -40,7 +43,11 @@ import {
 } from '@ostendorf-cloud/govue'
 import type { FieldErrors } from '@ostendorf-cloud/govue'
 
-import { apiClient } from '../api'
+import { apiClient, csrfToken } from '../api'
+
+interface MeResponse {
+  csrf_token: string
+}
 
 /* ---- the GET /graph shape, the parts this view needs ---- */
 interface AccountDto {
@@ -86,6 +93,23 @@ const i18n = useI18n()
 const { t } = i18n
 const router = useRouter()
 
+/** Created before the VueFlow component below mounts, so the store it
+ *  provides is the one that component injects instead of creating its
+ *  own: the zoom and fit controls need to act on that same instance. */
+const { zoomIn, zoomOut, fitView } = useVueFlow()
+
+function handleZoomIn(): void {
+  void zoomIn()
+}
+
+function handleZoomOut(): void {
+  void zoomOut()
+}
+
+function handleFitView(): void {
+  void fitView()
+}
+
 const loading = ref(true)
 const loadError = ref('')
 const canvasError = ref('')
@@ -97,10 +121,16 @@ const detailLevels = ref<DetailLevelDto[]>([])
 
 onMounted(load)
 
+/** load obtains the session's CSRF token the same way HomeView does, from
+ *  GET /api/v1/me, before the graph itself: CanvasView is reachable by a
+ *  bookmark or a reload, never only by following HomeView's link, so it
+ *  cannot rely on HomeView having filled the token already. */
 async function load(): Promise<void> {
   loading.value = true
   loadError.value = ''
   try {
+    const me = await apiClient.get<MeResponse>('/me')
+    csrfToken.value = me.csrf_token
     const graph = await apiClient.get<GraphResponse>('/graph')
     accounts.value = graph.accounts
     calendars.value = graph.calendars
@@ -505,13 +535,43 @@ async function saveEditor(): Promise<void> {
   }
 }
 
-async function deleteEdge(edgeId: string): Promise<void> {
+/* ---- deleting an edge: a teardown removes every event it wrote in the
+   target, so it asks first, the same way GrantsView asks before a
+   revocation ---- */
+const deleteDialogOpen = ref(false)
+const deleteTargetId = ref('')
+const deleteLoading = ref(false)
+
+const deleteTargetLabel = computed(() => {
+  const edge = edges.value.find((candidate) => candidate.id === deleteTargetId.value)
+  if (!edge) {
+    return ''
+  }
+  const source = calendarById(edge.source_calendar_id)?.name ?? ''
+  const target = calendarById(edge.target_calendar_id)?.name ?? ''
+  return `${source} → ${target}`
+})
+
+function askDeleteEdge(edgeId: string): void {
+  canvasError.value = ''
+  deleteTargetId.value = edgeId
+  deleteDialogOpen.value = true
+}
+
+async function confirmDeleteEdge(): Promise<void> {
+  if (!deleteTargetId.value) {
+    return
+  }
+  deleteLoading.value = true
   canvasError.value = ''
   try {
-    await apiClient.del(`/edges/${edgeId}`)
-    edges.value = edges.value.filter((edge) => edge.id !== edgeId)
+    await apiClient.del(`/edges/${deleteTargetId.value}`)
+    edges.value = edges.value.filter((edge) => edge.id !== deleteTargetId.value)
+    deleteDialogOpen.value = false
   } catch (error) {
     canvasError.value = isApiError(error) ? error.message : t('canvas.unexpectedError')
+  } finally {
+    deleteLoading.value = false
   }
 }
 </script>
@@ -526,14 +586,27 @@ async function deleteEdge(edgeId: string): Promise<void> {
       <p v-if="canvasError" role="alert" class="text-sm text-danger-text">{{ canvasError }}</p>
 
       <div
-        class="h-[420px] w-full overflow-hidden rounded-lg border border-border bg-bg-subtle sm:h-[520px]"
+        class="h-[70vh] min-h-[420px] w-full overflow-hidden rounded-lg border border-border bg-bg-subtle sm:h-[520px]"
       >
         <VueFlow
           :nodes="flowNodes"
           :edges="flowEdges"
+          :fit-view-on-init="true"
           @connect="onConnect"
           @edge-click="onEdgeClick"
         >
+          <Panel position="top-right" class="flex gap-2 p-2">
+            <GovueButton type="button" variant="secondary" @click="handleZoomOut">
+              {{ t('canvas.controls.zoomOut') }}
+            </GovueButton>
+            <GovueButton type="button" variant="secondary" @click="handleZoomIn">
+              {{ t('canvas.controls.zoomIn') }}
+            </GovueButton>
+            <GovueButton type="button" variant="secondary" @click="handleFitView">
+              {{ t('canvas.controls.fitView') }}
+            </GovueButton>
+          </Panel>
+
           <template #node-group="{ id }">
             <div
               class="flex h-full w-full flex-col rounded-lg border border-dashed border-border-strong bg-bg-subtle/70 p-3"
@@ -703,7 +776,7 @@ async function deleteEdge(edgeId: string): Promise<void> {
               <GovueButton type="button" variant="secondary" @click="openEditor(edge.id)">
                 {{ t('canvas.edges.edit') }}
               </GovueButton>
-              <GovueButton type="button" variant="danger" @click="deleteEdge(edge.id)">
+              <GovueButton type="button" variant="danger" @click="askDeleteEdge(edge.id)">
                 {{ t('canvas.edges.delete') }}
               </GovueButton>
             </div>
@@ -743,5 +816,16 @@ async function deleteEdge(edgeId: string): Promise<void> {
         </GovueButton>
       </template>
     </GovueDialog>
+
+    <GovueConfirmDialog
+      v-model:open="deleteDialogOpen"
+      :title="t('canvas.deleteDialog.title')"
+      :message="t('canvas.deleteDialog.message')"
+      :subject="deleteTargetLabel"
+      :confirm-label="t('canvas.deleteDialog.confirm')"
+      :cancel-label="t('canvas.deleteDialog.cancel')"
+      :loading="deleteLoading"
+      @confirm="confirmDeleteEdge"
+    />
   </GovuePage>
 </template>

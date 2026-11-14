@@ -76,6 +76,11 @@
     "connectFromHere": "Verbindung von hier aus starten",
     "connectFromHereFor": "Verbindung von hier aus starten: {name}",
     "connectAnnouncement": "Verbindung von {name} wird vorbereitet. Wählen Sie unten ein Ziel.",
+    "controls": {
+      "zoomIn": "Vergrößern",
+      "zoomOut": "Verkleinern",
+      "fitView": "Ganze Ansicht einpassen"
+    },
     "form": {
       "title": "Verbindung erstellen",
       "source": "Quelle",
@@ -112,6 +117,12 @@
       "fieldsDisclosure": "Welche Felder kopiert dieser Detailgrad?",
       "cancel": "Abbrechen",
       "save": "Speichern"
+    },
+    "deleteDialog": {
+      "title": "Verbindung löschen?",
+      "message": "Das Löschen entfernt jeden Termin, den diese Verbindung in ihr Ziel geschrieben hat.",
+      "confirm": "Verbindung löschen",
+      "cancel": "Abbrechen"
     },
     "detailLevel": {
       "full": "Vollständig",

@@ -74,8 +74,11 @@ responsibility. The list is not left to the operator to work out, though, becaus
 granted here that is not granted elsewhere makes
 `internal/storage/postgres`'s own row level security tests prove less than they claim. It is
 exactly what `docker-compose.yaml`'s `grant-app-role` service applies, and
-`internal/depsync`'s `TestTheApplicationRoleAndTheTestRoleHoldTheSameGrants` is what keeps that
-service and the integration test's own role from drifting apart:
+`internal/depsync`'s `TestTheApplicationRoleAndTheTestRoleHoldTheSameGrants` is what keeps the
+three copies from drifting apart. It reads the block below as one of its three sources, with
+`<config.databaseUser>` standing in for the role name, and compares the privileges each list
+grants per object rather than the statement text, so reordering or rewrapping a statement here
+is not drift and adding a privilege is:
 
 ```sql
 GRANT USAGE ON SCHEMA public TO <config.databaseUser>;
@@ -104,7 +107,10 @@ Three things about that list are deliberate rather than incidental:
   who may call them.
 - `ALTER DEFAULT PRIVILEGES` covers a table a later migration adds, and only one added after it
   runs, by the role that ran it. It cannot retroactively cover the tables above, which is why
-  each of them is still named explicitly.
+  each of them is still named explicitly. It is compared like every other statement here, and
+  the integration test's own role carries the same rule: without that, the first table a
+  migration adds would arrive with `UPDATE` in a deployment and without it in the test, and an
+  assertion about what the role may not do would hold there for a reason no deployment has.
 
 ## Migrations
 
@@ -273,21 +279,25 @@ full period before it closes the listener. `terminationGracePeriodSeconds` in tu
 never kills the container before that shutdown sequence gets to finish on its own. The three
 defaults already satisfy both orderings; changing one means checking the other two.
 
-## The login rate limit is per client only with trusted proxies configured
+## The rate limits are per client only with trusted proxies configured
 
-`cmd/calbridge` rate limits `POST /api/v1/auth/login` by the client address
-its login rate limiter resolves, through govue's `clientip` package.
-`config.trustedProxyCIDRs` is empty by default, which is the secure choice:
-with nothing configured, the resolver trusts no proxy and keys every
-request on its TCP peer.
+`cmd/calbridge` rate limits two sets of routes by the client address its
+limiters resolve, through govue's `clientip` package: the ones a request
+reaches with no session (`POST /api/v1/auth/signup`,
+`POST /api/v1/auth/login` and the two provider sign-in routes) and
+`POST /api/v1/grants`, which answers whether an account exists for an
+address. The two have separate budgets, so sharing calendars cannot use
+up what a login needs. `config.trustedProxyCIDRs` is empty by default,
+which is the secure choice: with nothing configured, the resolver trusts
+no proxy and keys every request on its TCP peer.
 
 `templates/ingress.yaml` and `templates/httproute.yaml` both route every
 request through the chosen `Ingress` controller or Gateway data plane
 before it reaches this Service, so with `config.trustedProxyCIDRs` left
 empty, the TCP peer calbridge sees is that controller or data plane for
-every request alike, not the client. The login budget then ends up shared
-by every client instead of kept one per client, and one client exhausting
-it trips the limit for everyone else too.
+every request alike, not the client. Each budget then ends up shared by
+every client instead of kept one per client, and one client exhausting
+one trips that limit for everyone else too.
 
 Set `config.trustedProxyCIDRs` to the address or CIDR range the ingress
 controller's or Gateway data plane's pods send traffic from, as a comma
@@ -338,7 +348,7 @@ for the full list `cmd/calbridge` reads today.
 | `migrationJob.enabled` | Run `db/migrations` as a pre-install,pre-upgrade hook Job. See "Migrations" above. | `true` |
 | `migrationJob.databaseUser` | A separate role that applies `db/migrations`, distinct from `config.databaseUser`. Required; no usable default. See "Migrations run as a separate role" above. | `""` |
 | `migrationJob.image.repository` / `migrationJob.image.tag` / `migrationJob.image.digest` | The dbmate image the migration Job runs. | `ghcr.io/amacneil/dbmate` / `2.38.1` / pinned, see `values.yaml` |
-| `config.trustedProxyCIDRs` | `TRUSTED_PROXY_CIDRS`, a comma separated list of CIDRs (or bare addresses). Empty keeps the login rate limiter keyed on the TCP peer; see "The login rate limit is per client only with trusted proxies configured" above. | `""` |
+| `config.trustedProxyCIDRs` | `TRUSTED_PROXY_CIDRS`, a comma separated list of CIDRs (or bare addresses). Empty keeps the rate limiters keyed on the TCP peer; see "The rate limits are per client only with trusted proxies configured" above. | `""` |
 | `config.authBaseUrl` | `AUTH_BASE_URL`, the public base URL provider redirect URLs are built from. See "Provider sign-in" above. | `""` |
 | `config.auth.google.clientId` / `config.auth.microsoft.clientId` / `config.auth.apple.clientId` | `AUTH_GOOGLE_CLIENT_ID` / `AUTH_MICROSOFT_CLIENT_ID` / `AUTH_APPLE_CLIENT_ID`. Empty means that provider's sign-in is not offered. See "Provider sign-in" above. | `""` |
 | `config.auth.google.issuer` / `config.auth.microsoft.issuer` / `config.auth.apple.issuer` | `AUTH_GOOGLE_ISSUER` / `AUTH_MICROSOFT_ISSUER` / `AUTH_APPLE_ISSUER`. Empty falls back to `internal/auth`'s own documented default issuer. See "Provider sign-in" above. | `""` |

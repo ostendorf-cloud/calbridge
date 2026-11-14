@@ -115,7 +115,7 @@ tests:
           path: data["20261113155247_create_users.sql"]
           pattern: "CREATE TABLE users"
 
-  - it: trusts no proxy for the login rate limiter by default
+  - it: trusts no proxy for the rate limiters by default
     template: templates/deployment.yaml
     asserts:
       - contains:
@@ -124,7 +124,7 @@ tests:
             name: TRUSTED_PROXY_CIDRS
             value: ""
 
-  - it: passes a configured trusted proxy CIDR through to the login rate limiter
+  - it: passes a configured trusted proxy CIDR through to the rate limiters
     template: templates/deployment.yaml
     set:
       config.trustedProxyCIDRs: "10.0.0.0/8"

@@ -24,7 +24,11 @@ import {
 } from '@ostendorf-cloud/govue'
 import type { FieldErrors } from '@ostendorf-cloud/govue'
 
-import { apiClient } from '../api'
+import { apiClient, csrfToken } from '../api'
+
+interface MeResponse {
+  csrf_token: string
+}
 
 interface CalendarDto {
   id: string
@@ -68,10 +72,16 @@ const received = ref<GrantDto[]>([])
 
 onMounted(load)
 
+/** load obtains the session's CSRF token the same way HomeView does, from
+ *  GET /api/v1/me, before the graph itself: GrantsView is reachable by a
+ *  bookmark or a reload, never only by following HomeView's link, so it
+ *  cannot rely on HomeView having filled the token already. */
 async function load(): Promise<void> {
   loading.value = true
   loadError.value = ''
   try {
+    const me = await apiClient.get<MeResponse>('/me')
+    csrfToken.value = me.csrf_token
     const graph = await apiClient.get<GraphResponse>('/graph')
     calendars.value = graph.calendars
     detailLevels.value = graph.detail_levels

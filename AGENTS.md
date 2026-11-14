@@ -23,8 +23,11 @@ on; every other path already exists.
   once, at startup, through govue's `envconf`. The database connection,
   the encryption key and each sign-in provider's client secret follow
   `envconf`'s `SecretOrFile`/`RequiredSecretOrFile` `_FILE`-suffix
-  convention; the rest is server, logging, session, login rate limit and
-  provider sign-in configuration.
+  convention; the rest is server, logging, session, rate limit and
+  provider sign-in configuration. There are two rate limit budgets, not
+  one: the routes a request reaches with no session carry one, and
+  `POST /api/v1/grants` carries its own, so an ordinary share cannot
+  spend what a login needs.
 - `internal/httpapi` builds the HTTP handler: liveness, readiness and
   metrics on the admin listener, and on the public one signup, login,
   logout, `GET` and `DELETE /api/v1/me`, the sign-in provider list and a
@@ -117,11 +120,18 @@ on; every other path already exists.
   and the addresses on the other side of a grant
   (`grant_counterparties`). Each is revoked from `PUBLIC` in
   `db/migrations`, so the explicit grant to the application role is what
-  decides who may call it. `sharing.go` is the one file holding
-  everything that reaches across from one user to another, so that whole
-  surface reads at once: the calendars a grant shares with this user,
-  the people a grant names, and the address-to-id lookup that creates
-  one.
+  decides who may call it. Each one also nulls in its own body whatever
+  its callers have no business with: `grant_counterparties` returns
+  `SETOF users`, because that is the only shape sqlc can resolve, and
+  returns no password hash and no TOTP secret in it. `sharing.go` is the
+  one file holding everything that reaches across from one user to
+  another, so that whole surface reads at once: the calendars a grant
+  shares with this user, the people a grant names, and the address-to-id
+  lookup that creates one. A calendar read across a grant comes back as
+  `storage.SharedCalendar`, which deliberately does not embed
+  `storage.Calendar`: the policy admits the owner's `external_id`, the
+  provider's own identifier, and nothing above the database is to have a
+  field to put it in.
 - `internal/storage/storagetest` is an in-memory implementation of the
   same repository interfaces, for a test of a package above the storage
   layer. It imitates the scoping row level security enforces, so a

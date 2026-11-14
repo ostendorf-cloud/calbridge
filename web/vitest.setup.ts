@@ -62,6 +62,18 @@ HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement): DOMR
   return rectOf(this.offsetWidth, this.offsetHeight)
 }
 
+// Vue Flow's click-to-connect path (completing a connection with two clicks
+// on two handles rather than a drag) asks the document what sits under the
+// pointer with elementFromPoint, to tell a handle from empty canvas. jsdom
+// has no layout engine and does not implement the method at all, so without
+// this stub every click on a handle throws instead of completing the
+// connection. Returning null is correct for this app regardless, since a
+// click's own target element (read from the event instead) is what every
+// handle lookup here actually falls back to.
+if (typeof Document.prototype.elementFromPoint === 'undefined') {
+  Document.prototype.elementFromPoint = (): Element | null => null
+}
+
 // Vue Flow's edge label measures its own <text> node with getBBox.
 // jsdom's SVGElement does not carry it at all, and typing it here through
 // global augmentation is what makes the assignment below honest rather

@@ -44,7 +44,16 @@ func (r *sharing) ListCalendarsSharedWithMe(_ context.Context) ([]storage.Shared
 		}
 
 		found = append(found, storage.SharedCalendar{
-			Calendar:       calendar,
+			ID:           calendar.ID,
+			UserID:       calendar.UserID,
+			ConnectionID: calendar.ConnectionID,
+			Name:         calendar.Name,
+			Managed:      calendar.Managed,
+			CreatedAt:    calendar.CreatedAt,
+			UpdatedAt:    calendar.UpdatedAt,
+			// ExternalID is deliberately absent from
+			// storage.SharedCalendar, so the fake has nothing to copy it
+			// into either; see that type's own doc comment.
 			GrantID:        grant.ID,
 			MaxDetailLevel: grant.MaxDetailLevel,
 		})
