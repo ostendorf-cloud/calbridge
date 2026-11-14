@@ -155,62 +155,102 @@ func TestEngine_Teardown_givesBackAnOverriddenOccurrenceThroughItsMaster(t *test
 	}
 }
 
-func TestEngine_Teardown_reportsAnOverriddenOccurrenceNothingCanRemove(t *testing.T) {
+// strayMasterID is the object a strayOverride sits in. Nothing in the
+// calendar answers to that id on its own, so the fake takes a delete of
+// it as one already done and keeps the override it holds. The id the
+// engine asked for is what says whether the object was removed.
+const strayMasterID = "evt-never-written"
+
+// strayOverride is an object in the target holding one override of this
+// edge's own making and no master: an id derived from a master that is
+// not in the calendar, carrying this edge's marker. It is the shape a
+// user leaves behind by deleting the master's own copy out of the object
+// the override sits in.
+func strayOverride(t *testing.T, h *harness, occurrence string) provider.Event {
+	t.Helper()
+
+	stray := meeting("Standup", 4, 9)
+	stray.ID = provider.InstanceIDOf(strayMasterID, occurrence)
+	stray.Marker = provider.Marker{Edge: h.binding.Edge.ID.String(), Source: "evt-gone"}
+
+	stored := h.target.Put(h.targetCal, stray)
+	if stored.ID != stray.ID {
+		t.Fatalf("the target stored the override as %q, want %q", stored.ID, stray.ID)
+	}
+
+	return stored
+}
+
+func TestEngine_Teardown_removesTheObjectOfAnOverrideWhoseMasterIsGone(t *testing.T) {
 	t.Parallel()
 
 	// The teardown sweeps the target for the marker after it has removed
-	// the mapped copies, and meets the same refusal there: an override
-	// whose master is not in the calendar is an id the target will not
-	// take. The teardown reports it rather than failing on an operation
-	// the capability already ruled out.
+	// the mapped copies, and an object holding overrides and no master is
+	// what can be left there. Everything in such an object is this edge's
+	// own write, so the teardown gives it back by the one id the target
+	// accepts, the master's, and the edge leaves nothing behind.
 	h := newHarness(t, setup{targetCaps: nativeTargetCaps, window: shortWindow})
-
-	stray := meeting("Standup", 4, 9)
-	stray.ID = provider.InstanceIDOf("evt-never-written", "20260304T090000")
-	stray.Marker = provider.Marker{Edge: h.binding.Edge.ID.String(), Source: "evt-gone"}
-
-	if stored := h.target.Put(h.targetCal, stray); stored.ID != stray.ID {
-		t.Fatalf("the target stored the override as %q, want %q", stored.ID, stray.ID)
-	}
+	target := h.recordTargetDeletes()
+	stray := strayOverride(t, h, "20260304T090000")
 
 	report, err := h.engine.Teardown(context.Background(), h.binding)
 	if err != nil {
 		t.Fatalf("teardown: %v", err)
 	}
-	wantActions(t, report, "none/instance unreachable")
+	wantActions(t, report, "delete/master gone")
+	wantDeletes(t, target, strayMasterID)
 
-	if !h.target.Holds(h.targetCal, stray.ID) {
-		t.Error("the teardown removed an event it reported as unreachable")
+	if got := report.Operations[0].TargetEventID; got != strayMasterID {
+		t.Errorf("the operation names %q, want the object the delete asked for", got)
+	}
+	if got := report.Operations[0].SourceEventID; got != stray.Marker.Source {
+		t.Errorf("the operation names source %q, want the one the override's marker carries, %q", got, stray.Marker.Source)
 	}
 }
 
-func TestEngine_Reconcile_reportsAnOverriddenOccurrenceNothingCanRemove(t *testing.T) {
+func TestEngine_Reconcile_removesTheObjectOfAnOverrideWhoseMasterIsGone(t *testing.T) {
 	t.Parallel()
 
-	// A resource holding overrides and no master at all leaves an event
-	// carrying this edge's marker that no id the target accepts removes.
-	// Skipping it silently would leave a copy calbridge claims to own
-	// standing in somebody's calendar with nothing to say so.
+	// A reconcile meets the same object, and has to answer the same way:
+	// an occurrence left standing here was removed by no pass and no
+	// teardown, and was reported again on every pass for the life of the
+	// edge. The master's id is what removes the object, and the target was
+	// read in full before the sweep, so a master missing from that read is
+	// missing from the calendar.
 	h := newHarness(t, setup{targetCaps: nativeTargetCaps, window: shortWindow})
-
-	stray := meeting("Standup", 4, 9)
-	stray.ID = provider.InstanceIDOf("evt-never-written", "20260304T090000")
-	stray.Marker = provider.Marker{Edge: h.binding.Edge.ID.String(), Source: "evt-gone"}
-
-	if stored := h.target.Put(h.targetCal, stray); stored.ID != stray.ID {
-		t.Fatalf("the target stored the override as %q, want %q", stored.ID, stray.ID)
-	}
+	target := h.recordTargetDeletes()
+	strayOverride(t, h, "20260304T090000")
 
 	report, err := h.engine.Reconcile(context.Background(), h.binding)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	wantActions(t, report, "none/instance unreachable")
-	wantWrites(t, h.target, 0, 0, 0)
+	wantActions(t, report, "delete/master gone")
+	wantDeletes(t, target, strayMasterID)
 
-	if !h.target.Holds(h.targetCal, stray.ID) {
-		t.Error("the pass removed an event it reported as unreachable")
+	if got := report.Operations[0].TargetEventID; got != strayMasterID {
+		t.Errorf("the operation names %q, want the object the delete asked for", got)
 	}
+}
+
+func TestEngine_Reconcile_removesOneObjectOnceForEveryOverrideItHolds(t *testing.T) {
+	t.Parallel()
+
+	// One object holds every override of one master, and the read that
+	// found them was taken before the deletion. Asking per occurrence
+	// would spend one request per override on an object already gone and
+	// report the same deletion twice.
+	h := newHarness(t, setup{targetCaps: nativeTargetCaps, window: shortWindow})
+	target := h.recordTargetDeletes()
+	strayOverride(t, h, "20260304T090000")
+	strayOverride(t, h, "20260311T090000")
+
+	report, err := h.engine.Reconcile(context.Background(), h.binding)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	wantActions(t, report, "delete/master gone")
+	wantDeletes(t, target, strayMasterID)
 }
 
 func TestEngine_Reconcile_spendsOneRequestOnARefusedCredentialAcrossStages(t *testing.T) {

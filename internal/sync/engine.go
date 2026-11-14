@@ -295,6 +295,12 @@ type pass struct {
 	// several places, and a guard per loop stops that loop while the next
 	// stage spends another request on a credential already known refused.
 	refused bool
+	// sweptObjects are the master objects the call removed to clear an
+	// overridden occurrence left inside one. One object can hold several
+	// overrides, and the read that found them was taken before the
+	// deletion, so without this each of them would lead to its own
+	// delete and its own line in the report for one object.
+	sweptObjects map[string]bool
 }
 
 // stop reports whether the call has given up, which it does the moment a
@@ -447,8 +453,14 @@ func (e *Engine) removeOrphans(ctx context.Context, b Binding, p *pass, accounte
 		if accounted[id] || !WrittenBy(event, b.Edge.ID) {
 			continue
 		}
-		if op, held := e.sweepInstance(b, id, event, p.target); held {
-			report.add(op)
+		swept, held, err := e.sweepInstance(ctx, b, id, event, p.target, accounted, p)
+		if err != nil {
+			errs = append(errs, err)
+
+			continue
+		}
+		if held {
+			report.merge(swept)
 
 			continue
 		}
@@ -470,7 +482,9 @@ func (e *Engine) removeOrphans(ctx context.Context, b Binding, p *pass, accounte
 
 // sweepInstance decides what a marked target event becomes when the
 // target cannot be asked to delete it on its own, and reports whether
-// that case applies at all.
+// that case applies at all. Both sweeps call it and neither decides
+// anything itself, so a reconcile and a teardown cannot disagree about
+// one occurrence.
 //
 // A connector declaring no instance writes keeps an overridden
 // occurrence inside its master's own object, so the only id that removes
@@ -479,8 +493,7 @@ func (e *Engine) removeOrphans(ctx context.Context, b Binding, p *pass, accounte
 // supposed to make impossible, and the live case is a user overriding
 // one occurrence of a master this edge mirrors into iCloud.
 //
-// Neither answer is a silent skip, and neither is a cleanup that has
-// already happened.
+// No answer here is a silent skip.
 //
 // Where the master is still in the calendar, the occurrence sits inside
 // an object this edge owns, so removing the master removes it and
@@ -493,30 +506,77 @@ func (e *Engine) removeOrphans(ctx context.Context, b Binding, p *pass, accounte
 // and turn an unchanged source into a write, which is the failure this
 // package's content hash exists to prevent.
 //
-// Where the master is gone, which is an object holding overrides and no
-// master at all, nothing this edge can name removes it at all. The pass
-// says so rather than looking like it swept a calendar it did not.
-func (e *Engine) sweepInstance(b Binding, eventID string, event provider.Event, targetState map[string]provider.Event) (Operation, bool) {
+// Where the master is gone, the object holds overrides and no master at
+// all, and the edge deletes it by the master's id. Everything in such an
+// object is this edge's own write: the caller reached this only for an
+// event WrittenBy matched, and the overrides of one master share its
+// object. Two reads make that safe to act on. The target was read in
+// full from the zero sync token, and snapshot fails rather than handing
+// back a short one, so a master absent from it is absent from the
+// calendar and not merely from a page that never arrived. And handled
+// carries the ids this pass already wrote or removed, so a master the
+// pass itself put back under its old id is not deleted again on the
+// strength of a read taken before that write.
+//
+// No mapping row is left pointing at the object either. An occurrence
+// never has a row of its own, because no id a row holds names one, and a
+// row naming the master's object puts that id in handled, which is the
+// branch above. On a teardown the rows are gone a moment later anyway.
+func (e *Engine) sweepInstance(
+	ctx context.Context,
+	b Binding,
+	eventID string,
+	event provider.Event,
+	targetState map[string]provider.Event,
+	handled map[string]bool,
+	p *pass,
+) (Report, bool, error) {
 	if b.Target.Connector.Capabilities().InstanceWrites {
-		return Operation{}, false
+		return Report{}, false, nil
 	}
 	masterID, _, derived := strings.Cut(eventID, provider.InstanceSeparator)
 	if !derived {
-		return Operation{}, false
+		return Report{}, false, nil
 	}
 
-	op := Operation{SourceEventID: event.Marker.Source, TargetEventID: eventID, Action: ActionNone}
-	if _, held := targetState[masterID]; held {
-		op.Reason = ReasonCoveredByMaster
-
-		return op, true
+	if _, inCalendar := targetState[masterID]; inCalendar || handled[masterID] {
+		return reportOf(Operation{
+			SourceEventID: event.Marker.Source,
+			TargetEventID: eventID,
+			Action:        ActionNone,
+			Reason:        ReasonCoveredByMaster,
+		}), true, nil
+	}
+	if p.sweptObjects[masterID] {
+		// The object went with the delete another occurrence of the same
+		// master already led to, and that delete is in the report.
+		return Report{}, true, nil
+	}
+	if p.stop() {
+		return Report{}, true, nil
 	}
 
-	e.log.Warn("a marked overridden occurrence cannot be removed on its own and its master is not in the calendar",
-		"edge", b.Edge.ID, "user", b.Edge.UserID, "calendar", b.Target.CalendarID, "event", eventID)
-	op.Reason = ReasonInstanceUnreachable
+	e.log.Warn("removing a master's object to clear an overridden occurrence it is the only thing left in",
+		"edge", b.Edge.ID, "user", b.Edge.UserID, "calendar", b.Target.CalendarID, "event", eventID, "object", masterID)
 
-	return op, true
+	if err := b.Target.Connector.DeleteEvent(ctx, b.Target.Credential, b.Target.CalendarID, masterID); err != nil {
+		p.refuse(err)
+
+		return Report{}, true, fmt.Errorf("edge %s: delete the object holding overridden occurrence %q: %w", b.Edge.ID, eventID, err)
+	}
+	if p.sweptObjects == nil {
+		p.sweptObjects = map[string]bool{}
+	}
+	p.sweptObjects[masterID] = true
+
+	// The operation names the id the delete asked for, the master's
+	// object, rather than the occurrence no provider accepts an id for.
+	return reportOf(Operation{
+		SourceEventID: event.Marker.Source,
+		TargetEventID: masterID,
+		Action:        ActionDelete,
+		Reason:        ReasonMasterGone,
+	}), true, nil
 }
 
 // upsert copies one source event, expanding it first where it repeats and
