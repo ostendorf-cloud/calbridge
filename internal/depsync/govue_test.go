@@ -1,8 +1,14 @@
 // Copyright 2026 Simon Ostendorf
 // SPDX-License-Identifier: Apache-2.0
 
-// Package depsync checks that a dependency released as more than one artifact under one
-// version stays pinned to that same version everywhere this repository names it.
+// Package depsync checks that two halves of one decision, written down in two files no
+// single tool reads together, still agree: a dependency pinned in both go.mod and
+// web/package.json, and the memory budget shared between internal/auth's cap on concurrent
+// password hashing and charts/calbridge's container limit.
+//
+// A dependency released as more than one artifact under one version has to stay pinned to
+// that same version everywhere this repository names it; a limit a package is sized against
+// has to stay what that package was sized against.
 package depsync
 
 import (

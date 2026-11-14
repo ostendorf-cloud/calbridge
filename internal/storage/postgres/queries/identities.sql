@@ -26,3 +26,14 @@ ORDER BY created_at;
 -- name: DeleteIdentity :execrows
 DELETE FROM identities
 WHERE id = $1 AND user_id = NULLIF(current_setting('app.user_id', true), '')::uuid;
+
+-- GetIdentityByProviderSubject is the one query here that runs against
+-- the pool directly rather than inside a WithUser transaction, the same
+-- exception and the same mechanism GetUserByEmail already is: resolving
+-- a provider sign-in to a calbridge user happens before any user id is
+-- known at all. identities_find_by_provider_subject is a SECURITY
+-- DEFINER function reading identities and nothing else; see
+-- db/migrations for why it may not grow a join to connections.
+-- name: GetIdentityByProviderSubject :one
+SELECT *
+FROM identities_find_by_provider_subject(sqlc.arg(provider), sqlc.arg(subject));

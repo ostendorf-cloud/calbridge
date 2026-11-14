@@ -77,6 +77,36 @@ func (q *Queries) GetIdentityByID(ctx context.Context, id uuid.UUID) (Identity, 
 	return i, err
 }
 
+const getIdentityByProviderSubject = `-- name: GetIdentityByProviderSubject :one
+SELECT id, user_id, provider, subject, created_at
+FROM identities_find_by_provider_subject($1, $2)
+`
+
+type GetIdentityByProviderSubjectParams struct {
+	Provider string
+	Subject  string
+}
+
+// GetIdentityByProviderSubject is the one query here that runs against
+// the pool directly rather than inside a WithUser transaction, the same
+// exception and the same mechanism GetUserByEmail already is: resolving
+// a provider sign-in to a calbridge user happens before any user id is
+// known at all. identities_find_by_provider_subject is a SECURITY
+// DEFINER function reading identities and nothing else; see
+// db/migrations for why it may not grow a join to connections.
+func (q *Queries) GetIdentityByProviderSubject(ctx context.Context, arg GetIdentityByProviderSubjectParams) (Identity, error) {
+	row := q.db.QueryRow(ctx, getIdentityByProviderSubject, arg.Provider, arg.Subject)
+	var i Identity
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Provider,
+		&i.Subject,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const listIdentities = `-- name: ListIdentities :many
 SELECT id, user_id, provider, subject, created_at
 FROM identities

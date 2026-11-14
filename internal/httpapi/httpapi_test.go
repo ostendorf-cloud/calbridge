@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -22,7 +23,11 @@ import (
 	"github.com/ostendorf-cloud/govue/logging"
 	"github.com/ostendorf-cloud/govue/metrics"
 
+	"github.com/google/uuid"
+
+	"github.com/ostendorf-cloud/calbridge/internal/auth"
 	"github.com/ostendorf-cloud/calbridge/internal/httpapi"
+	"github.com/ostendorf-cloud/calbridge/internal/storage/storagetest"
 )
 
 // generousRateLimit is a burst high enough that no test below the rate
@@ -43,29 +48,97 @@ func testDistFS() fstest.MapFS {
 	}
 }
 
+// testNow is the fixed clock every handler built here runs its TOTP
+// check against, so a step boundary can never make a test flaky.
+var testNow = time.Date(2026, time.November, 13, 12, 0, 0, 0, time.UTC)
+
+// testEmail and testPassword are the account seedAccount creates. The
+// password is obviously not a credential for anything and is only long
+// enough to satisfy auth.MinPasswordLength.
+const (
+	testEmail    = "person@example.com"
+	testPassword = "a-long-enough-test-passphrase"
+)
+
+// testDeps is the Deps every handler in this file is built from, with
+// its own empty store. A test that needs to reach that store takes it
+// from the returned value.
+func testDeps(t *testing.T) httpapi.Deps {
+	t.Helper()
+
+	return httpapi.Deps{
+		Logger:          logging.New(io.Discard, slog.LevelError),
+		HealthRegistry:  health.New(),
+		MetricsRegistry: metrics.NewRegistry(),
+		DistFS:          testDistFS(),
+		RateLimitBurst:  generousRateLimit,
+		RateLimitPer:    time.Minute,
+		Store:           storagetest.NewStore(),
+		Now:             func() time.Time { return testNow },
+	}
+}
+
 // buildTestHandlers builds a real pair of handlers over a fresh
 // health.Registry and metrics registry, so a test exercises the actual
 // middleware chains and routing, with no network.
 func buildTestHandlers(t *testing.T, registry *health.Registry) httpapi.Handlers {
 	t.Helper()
 
-	if registry == nil {
-		registry = health.New()
+	deps := testDeps(t)
+	if registry != nil {
+		deps.HealthRegistry = registry
 	}
 
-	handlers, err := httpapi.NewHandler(httpapi.Deps{
-		Logger:          logging.New(io.Discard, slog.LevelError),
-		HealthRegistry:  registry,
-		MetricsRegistry: metrics.NewRegistry(),
-		DistFS:          testDistFS(),
-		RateLimitBurst:  generousRateLimit,
-		RateLimitPer:    time.Minute,
-	})
+	return build(t, deps)
+}
+
+// build is the one place a test turns Deps into handlers, so a
+// construction failure reads the same wherever it happens.
+func build(t *testing.T, deps httpapi.Deps) httpapi.Handlers {
+	t.Helper()
+
+	handlers, err := httpapi.NewHandler(deps)
 	if err != nil {
 		t.Fatalf("httpapi.NewHandler() error = %v", err)
 	}
 
 	return handlers
+}
+
+// testStore is the in-memory store testDeps put on deps, for a test
+// that needs to seed or inspect it.
+func testStore(t *testing.T, deps httpapi.Deps) *storagetest.Store {
+	t.Helper()
+
+	store, ok := deps.Store.(*storagetest.Store)
+	if !ok {
+		t.Fatalf("deps.Store is a %T, want the in-memory store", deps.Store)
+	}
+
+	return store
+}
+
+// seedAccount creates the local account testEmail names, directly
+// through internal/auth rather than over HTTP, and returns a login body
+// carrying a code valid at testNow. The body is good for one login: a
+// second use of the same code is a replay, which internal/auth refuses
+// on purpose.
+func seedAccount(t *testing.T, store *storagetest.Store) string {
+	t.Helper()
+
+	local := auth.NewLocal(store, func() time.Time { return testNow })
+
+	_, enrolment, err := local.SignUp(t.Context(), testEmail, testPassword)
+	if err != nil {
+		t.Fatalf("seed the account: %v", err)
+	}
+
+	code, err := auth.GenerateTOTPCode(enrolment.Secret, testNow)
+	if err != nil {
+		t.Fatalf("generate the totp code: %v", err)
+	}
+
+	return fmt.Sprintf(`{"email":%q,"password":%q,"totp_code":%q}`, testEmail, testPassword, code)
 }
 
 func TestNewHandler(t *testing.T) {
@@ -123,6 +196,18 @@ func TestNewHandler(t *testing.T) {
 		}
 	})
 
+	t.Run("missing store is an error", func(t *testing.T) {
+		t.Parallel()
+
+		deps := testDeps(t)
+		deps.Store = nil
+
+		_, err := httpapi.NewHandler(deps)
+		if err == nil {
+			t.Fatal("NewHandler() error = nil, want an error for a missing store")
+		}
+	})
+
 	t.Run("every problem is reported together", func(t *testing.T) {
 		t.Parallel()
 
@@ -130,7 +215,8 @@ func TestNewHandler(t *testing.T) {
 		if err == nil {
 			t.Fatal("NewHandler() error = nil, want an error for every missing dependency")
 		}
-		if !errorContainsAll(err, "logger is required", "health registry is required", "metrics registry is required", "dist filesystem is required") {
+		if !errorContainsAll(err, "logger is required", "health registry is required",
+			"metrics registry is required", "dist filesystem is required", "store is required") {
 			t.Errorf("NewHandler() error = %v, want it to name every missing dependency", err)
 		}
 	})
@@ -391,8 +477,23 @@ func do(t *testing.T, client *http.Client, method, url, body, csrfToken string) 
 }
 
 type meResponse struct {
+	UserID    string `json:"user_id"`
 	Email     string `json:"email"`
 	CSRFToken string `json:"csrf_token"`
+}
+
+type signUpResponse struct {
+	TOTPSecret string `json:"totp_secret"`
+	TOTPURI    string `json:"totp_uri"`
+}
+
+type providersResponse struct {
+	Providers []struct {
+		ID               string `json:"id"`
+		Name             string `json:"name"`
+		IdentityOnly     bool   `json:"identity_only"`
+		PlaceholderEmail bool   `json:"placeholder_email"`
+	} `json:"providers"`
 }
 
 func TestMeWithoutASessionIsUnauthenticated(t *testing.T) {
@@ -407,24 +508,78 @@ func TestMeWithoutASessionIsUnauthenticated(t *testing.T) {
 	}
 }
 
-func TestLoginRequiresAnEmail(t *testing.T) {
+// TestLoginRefusalsAllLookTheSame: whichever part of the attempt was
+// wrong, the answer is the same 401. internal/auth collapses them on
+// purpose and this route must not pull them apart again.
+func TestLoginRefusalsAllLookTheSame(t *testing.T) {
 	t.Parallel()
 
-	client, baseURL := testClient(t, buildTestHandlers(t, nil))
+	deps := testDeps(t)
+	validBody := seedAccount(t, testStore(t, deps))
 
-	resp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/login", `{}`, "")
+	client, baseURL := testClient(t, build(t, deps))
 
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d for an empty email", resp.StatusCode, http.StatusBadRequest)
+	tests := map[string]string{
+		"no account for this address": `{"email":"nobody@example.com","password":"a-long-enough-test-passphrase","totp_code":"123456"}`,
+		"wrong password":              fmt.Sprintf(`{"email":%q,"password":"another-long-passphrase","totp_code":"123456"}`, testEmail),
+		"wrong code":                  fmt.Sprintf(`{"email":%q,"password":%q,"totp_code":"000000"}`, testEmail, testPassword),
+		"nothing at all":              `{}`,
+	}
+
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			resp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/login", body, "")
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+			}
+		})
+	}
+
+	// The valid body still works afterwards, so the refusals above were
+	// refusals and not a handler that rejects everything.
+	resp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/login", validBody, "")
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("status = %d, want %d for the correct credentials", resp.StatusCode, http.StatusNoContent)
 	}
 }
 
-func TestLoginStartsASessionMeAnswersItAndLogoutEndsIt(t *testing.T) {
+// TestSignUpThenLoginThenMeThenLogout is the whole local path over HTTP:
+// signup hands back the enrolment, the code it produces logs in, /me
+// answers the session and its csrf token, and logout spends that token.
+func TestSignUpThenLoginThenMeThenLogout(t *testing.T) {
 	t.Parallel()
 
 	client, baseURL := testClient(t, buildTestHandlers(t, nil))
 
-	loginResp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/login", `{"email":"owner@example.com"}`, "")
+	signUpResp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/signup",
+		fmt.Sprintf(`{"email":%q,"password":%q}`, testEmail, testPassword), "")
+	if signUpResp.StatusCode != http.StatusOK {
+		t.Fatalf("signup status = %d, want %d", signUpResp.StatusCode, http.StatusOK)
+	}
+
+	var enrolment signUpResponse
+	if err := json.NewDecoder(signUpResp.Body).Decode(&enrolment); err != nil {
+		t.Fatalf("decode the signup body: %v", err)
+	}
+
+	if enrolment.TOTPSecret == "" || !strings.HasPrefix(enrolment.TOTPURI, "otpauth://totp/") {
+		t.Fatalf("signup answered %+v, want a totp secret and an otpauth uri", enrolment)
+	}
+
+	// Signup starts no session: the person has to prove the enrolment
+	// worked by logging in with a code from it.
+	if _, ok := sessionCookie(signUpResp); ok {
+		t.Error("signup set a session cookie, want none until the second factor is used")
+	}
+
+	code, err := auth.GenerateTOTPCode(enrolment.TOTPSecret, testNow)
+	if err != nil {
+		t.Fatalf("generate the totp code: %v", err)
+	}
+
+	loginBody := fmt.Sprintf(`{"email":%q,"password":%q,"totp_code":%q}`, testEmail, testPassword, code)
+
+	loginResp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/login", loginBody, "")
 	if loginResp.StatusCode != http.StatusNoContent {
 		t.Fatalf("login status = %d, want %d", loginResp.StatusCode, http.StatusNoContent)
 	}
@@ -438,8 +593,11 @@ func TestLoginStartsASessionMeAnswersItAndLogoutEndsIt(t *testing.T) {
 	if err := json.NewDecoder(meResp.Body).Decode(&me); err != nil {
 		t.Fatalf("decode /api/v1/me body: %v", err)
 	}
-	if me.Email != "owner@example.com" {
-		t.Errorf("me.Email = %q, want %q", me.Email, "owner@example.com")
+	if me.Email != testEmail {
+		t.Errorf("me.Email = %q, want %q", me.Email, testEmail)
+	}
+	if _, err := uuid.Parse(me.UserID); err != nil {
+		t.Errorf("me.UserID = %q, want the users row id the session is keyed on", me.UserID)
 	}
 	if me.CSRFToken == "" {
 		t.Error("me.CSRFToken is empty, want the session's own csrf token")
@@ -464,46 +622,60 @@ func TestLoginStartsASessionMeAnswersItAndLogoutEndsIt(t *testing.T) {
 	}
 }
 
-// TestLoginIsRateLimited proves the login route carries its own rate
-// limiter: handleLogin starts a session for any email with no account
-// check, so this is the one route a request needs no session at all to
-// reach, and the one maxSessions's own doc comment relies on being
-// throttled. Each call below uses a fresh client with no cookie jar, so
-// every request arrives with no session of its own and the CSRF
-// protector has nothing to check; they still share one rate limit
-// bucket, since clientip.Resolver keys by the loopback address every one
-// of them connects from.
-func TestLoginIsRateLimited(t *testing.T) {
+// wrongCredentials is a login body no account matches, for a test that
+// is about the middleware in front of the handler rather than about the
+// handler's own answer.
+const wrongCredentials = `{"email":"nobody@example.com","password":"a-long-enough-test-passphrase","totp_code":"000000"}`
+
+// TestSignupAndLoginAreRateLimited proves both unauthenticated routes
+// carry the rate limiter, which is what maxSessions's own doc comment
+// relies on. The limiter runs ahead of the handler, so a refused
+// credential still spends a token: the attempts below answer 401 until
+// the burst is gone and 429 afterwards, and it is that change that shows
+// the limiter is there. Each call uses a fresh client with no cookie
+// jar, so every request arrives with no session of its own and the CSRF
+// protector has nothing to check; they still share one bucket, since
+// clientip.Resolver keys by the loopback address all of them connect
+// from.
+func TestSignupAndLoginAreRateLimited(t *testing.T) {
 	t.Parallel()
 
-	handlers, err := httpapi.NewHandler(httpapi.Deps{
-		Logger:          logging.New(io.Discard, slog.LevelError),
-		HealthRegistry:  health.New(),
-		MetricsRegistry: metrics.NewRegistry(),
-		DistFS:          testDistFS(),
-		RateLimitBurst:  2,
-		RateLimitPer:    time.Minute,
-	})
-	if err != nil {
-		t.Fatalf("httpapi.NewHandler() error = %v", err)
+	tests := map[string]struct {
+		path, body     string
+		beforeTheLimit int
+	}{
+		"login": {"/api/v1/auth/login", wrongCredentials, http.StatusUnauthorized},
+		// A password shorter than auth.MinPasswordLength is refused by
+		// the handler, so this spends a token without creating an
+		// account each time.
+		"signup": {"/api/v1/auth/signup", `{"email":"someone@example.com","password":"short"}`, http.StatusBadRequest},
 	}
 
-	server := httptest.NewServer(handlers.Public)
-	t.Cleanup(server.Close)
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	loginOnce := func() int {
-		resp := do(t, &http.Client{}, http.MethodPost, server.URL+"/api/v1/auth/login", `{"email":"owner@example.com"}`, "")
-		return resp.StatusCode
-	}
+			deps := testDeps(t)
+			deps.RateLimitBurst = 2
 
-	for i := range 2 {
-		if status := loginOnce(); status != http.StatusNoContent {
-			t.Fatalf("login %d status = %d, want %d", i, status, http.StatusNoContent)
-		}
-	}
+			server := httptest.NewServer(build(t, deps).Public)
+			t.Cleanup(server.Close)
 
-	if status := loginOnce(); status != http.StatusTooManyRequests {
-		t.Errorf("login after exhausting the burst status = %d, want %d", status, http.StatusTooManyRequests)
+			attempt := func() int {
+				return do(t, &http.Client{}, http.MethodPost, server.URL+test.path, test.body, "").StatusCode
+			}
+
+			for i := range 2 {
+				if status := attempt(); status != test.beforeTheLimit {
+					t.Fatalf("attempt %d status = %d, want %d", i, status, test.beforeTheLimit)
+				}
+			}
+
+			if status := attempt(); status != http.StatusTooManyRequests {
+				t.Errorf("attempt after exhausting the burst status = %d, want %d",
+					status, http.StatusTooManyRequests)
+			}
+		})
 	}
 }
 
@@ -521,7 +693,7 @@ func TestLoginRateLimitKeyHonoursTrustedProxyOnly(t *testing.T) {
 	loginAs := func(t *testing.T, baseURL, forwardedFor string) int {
 		t.Helper()
 
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL+"/api/v1/auth/login", strings.NewReader(`{"email":"owner@example.com"}`))
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL+"/api/v1/auth/login", strings.NewReader(wrongCredentials))
 		if err != nil {
 			t.Fatalf("build login request: %v", err)
 		}
@@ -542,23 +714,17 @@ func TestLoginRateLimitKeyHonoursTrustedProxyOnly(t *testing.T) {
 	t.Run("no trusted proxy configured ignores a forged header", func(t *testing.T) {
 		t.Parallel()
 
-		handlers, err := httpapi.NewHandler(httpapi.Deps{
-			Logger:          logging.New(io.Discard, slog.LevelError),
-			HealthRegistry:  health.New(),
-			MetricsRegistry: metrics.NewRegistry(),
-			DistFS:          testDistFS(),
-			RateLimitBurst:  1,
-			RateLimitPer:    time.Minute,
-		})
-		if err != nil {
-			t.Fatalf("httpapi.NewHandler() error = %v", err)
-		}
+		deps := testDeps(t)
+		deps.RateLimitBurst = 1
 
-		server := httptest.NewServer(handlers.Public)
+		server := httptest.NewServer(build(t, deps).Public)
 		t.Cleanup(server.Close)
 
-		if status := loginAs(t, server.URL, "203.0.113.1"); status != http.StatusNoContent {
-			t.Fatalf("first login status = %d, want %d", status, http.StatusNoContent)
+		// The credentials are wrong on purpose: this test is about which
+		// key the limiter counts against, not about the handler's answer,
+		// and the limiter runs ahead of the handler either way.
+		if status := loginAs(t, server.URL, "203.0.113.1"); status != http.StatusUnauthorized {
+			t.Fatalf("first login status = %d, want %d", status, http.StatusUnauthorized)
 		}
 
 		// A different forged client address buys no second bucket: with
@@ -578,31 +744,22 @@ func TestLoginRateLimitKeyHonoursTrustedProxyOnly(t *testing.T) {
 			t.Fatalf("clientip.ParseCIDRs() error = %v", err)
 		}
 
-		handlers, err := httpapi.NewHandler(httpapi.Deps{
-			Logger:            logging.New(io.Discard, slog.LevelError),
-			HealthRegistry:    health.New(),
-			MetricsRegistry:   metrics.NewRegistry(),
-			DistFS:            testDistFS(),
-			RateLimitBurst:    1,
-			RateLimitPer:      time.Minute,
-			TrustedProxyCIDRs: loopback,
-		})
-		if err != nil {
-			t.Fatalf("httpapi.NewHandler() error = %v", err)
-		}
+		deps := testDeps(t)
+		deps.RateLimitBurst = 1
+		deps.TrustedProxyCIDRs = loopback
 
-		server := httptest.NewServer(handlers.Public)
+		server := httptest.NewServer(build(t, deps).Public)
 		t.Cleanup(server.Close)
 
 		// httptest.NewServer listens on 127.0.0.1, so every request below
 		// shares that same TCP peer; trusting that peer is what makes the
 		// resolver read X-Forwarded-For and separate them by the address
 		// it names instead.
-		if status := loginAs(t, server.URL, "203.0.113.1"); status != http.StatusNoContent {
-			t.Fatalf("first client login status = %d, want %d", status, http.StatusNoContent)
+		if status := loginAs(t, server.URL, "203.0.113.1"); status != http.StatusUnauthorized {
+			t.Fatalf("first client login status = %d, want %d", status, http.StatusUnauthorized)
 		}
-		if status := loginAs(t, server.URL, "203.0.113.2"); status != http.StatusNoContent {
-			t.Errorf("second client login status = %d, want %d: a trusted proxy must give each forwarded address its own budget", status, http.StatusNoContent)
+		if status := loginAs(t, server.URL, "203.0.113.2"); status != http.StatusUnauthorized {
+			t.Errorf("second client login status = %d, want %d: a trusted proxy must give each forwarded address its own budget", status, http.StatusUnauthorized)
 		}
 
 		// Reusing the first client's own address exhausts its budget
@@ -634,9 +791,12 @@ func sessionCookie(resp *http.Response) (*http.Cookie, bool) {
 func TestSessionCookieIsSecureByDefault(t *testing.T) {
 	t.Parallel()
 
-	client, baseURL := testClient(t, buildTestHandlers(t, nil))
+	deps := testDeps(t)
+	body := seedAccount(t, testStore(t, deps))
 
-	resp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/login", `{"email":"owner@example.com"}`, "")
+	client, baseURL := testClient(t, build(t, deps))
+
+	resp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/login", body, "")
 
 	cookie, ok := sessionCookie(resp)
 	if !ok {
@@ -661,22 +821,13 @@ func TestSessionCookieIsSecureByDefault(t *testing.T) {
 func TestSessionCookieDropsSecureWhenPlainHTTPIsAllowed(t *testing.T) {
 	t.Parallel()
 
-	handlers, err := httpapi.NewHandler(httpapi.Deps{
-		Logger:          logging.New(io.Discard, slog.LevelError),
-		HealthRegistry:  health.New(),
-		MetricsRegistry: metrics.NewRegistry(),
-		DistFS:          testDistFS(),
-		RateLimitBurst:  generousRateLimit,
-		RateLimitPer:    time.Minute,
-		AllowPlainHTTP:  true,
-	})
-	if err != nil {
-		t.Fatalf("httpapi.NewHandler() error = %v", err)
-	}
+	deps := testDeps(t)
+	deps.AllowPlainHTTP = true
+	body := seedAccount(t, testStore(t, deps))
 
-	client, baseURL := testClient(t, handlers)
+	client, baseURL := testClient(t, build(t, deps))
 
-	resp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/login", `{"email":"owner@example.com"}`, "")
+	resp := do(t, client, http.MethodPost, baseURL+"/api/v1/auth/login", body, "")
 
 	cookie, ok := sessionCookie(resp)
 	if !ok {

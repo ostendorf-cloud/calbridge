@@ -12,6 +12,41 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const advanceUserTOTPCounter = `-- name: AdvanceUserTOTPCounter :execrows
+UPDATE users
+SET totp_last_counter = $2,
+    updated_at = now()
+WHERE id = $1
+  AND (totp_last_counter IS NULL OR totp_last_counter < $2)
+`
+
+type AdvanceUserTOTPCounterParams struct {
+	ID              uuid.UUID
+	TotpLastCounter pgtype.Int8
+}
+
+// AdvanceUserTOTPCounter is what a successful login writes, and the only
+// thing it writes. It is deliberately not UpdateUser below: a login
+// holds a snapshot of the row taken before a roughly 0.3 second Argon2id
+// verify, and writing password_hash, totp_secret and status back from
+// that snapshot would undo whatever changed them in the meantime.
+//
+// The WHERE clause is the replay check itself, not an optimisation. RFC
+// 6238 section 5.2 requires an already validated one-time password to be
+// refused on a second use, and checking the counter in Go before writing
+// cannot enforce that: two logins racing with the same captured code
+// read the same value on two connections and both pass. Here the
+// database compares against whatever the row holds at the moment of the
+// write, so exactly one of them changes a row and the other is told it
+// changed none.
+func (q *Queries) AdvanceUserTOTPCounter(ctx context.Context, arg AdvanceUserTOTPCounterParams) (int64, error) {
+	result, err := q.db.Exec(ctx, advanceUserTOTPCounter, arg.ID, arg.TotpLastCounter)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const createUser = `-- name: CreateUser :one
 
 INSERT INTO users (id, email, password_hash, totp_secret, totp_last_counter, status)
