@@ -217,10 +217,13 @@ func (e *Engine) Apply(ctx context.Context, b Binding, change provider.Change) (
 	}
 
 	current := e.pass()
-	if change.Event.Recurrence.IsMaster() {
-		// A repeating event is the one case a single change has to know
-		// what this edge already wrote: which key space the copies sit in
-		// depends on a strategy that may have changed since.
+	if !change.Event.Recurrence.IsInstance() {
+		// A single change has to know what this edge already wrote,
+		// because which key space the copies sit in depends on a strategy
+		// that may have changed since. That includes an event arriving
+		// without a rule: it may be the same event that had one, and the
+		// copies of its occurrences are what nothing writes to any more.
+		// An instance is the one kind that owns no key space of its own.
 		mappings, err := e.listMappings(ctx, b)
 		if err != nil {
 			return Report{}, err
@@ -406,14 +409,17 @@ func (e *Engine) upsert(ctx context.Context, b Binding, src provider.Event, p *p
 	}
 	report := reportOf(op)
 
-	if src.Recurrence.IsMaster() {
-		// The edge carries the rule itself now. An earlier pass may have
-		// expanded this same master into one copy per occurrence, and
-		// those copies are keyed where nothing writes any more, so they
-		// are removed here rather than left standing at whatever detail
-		// level they were written at. Every such row belongs to the
-		// strategy that is not in use, so the window bounds decide nothing
-		// here and are passed as the pass read them.
+	if !src.Recurrence.IsInstance() {
+		// The event is copied under its own id: it carries a rule this
+		// edge holds, or it carries none at all. Either way an earlier
+		// pass may have expanded this same event into one copy per
+		// occurrence, and those copies are keyed where nothing writes any
+		// more, so they are removed here rather than left standing at
+		// whatever detail level they were written at. The event losing
+		// its rule is the route that reaches this with no rule in hand.
+		// Every such row belongs to the strategy that is not in use, so
+		// the window bounds decide nothing here and are passed as the
+		// pass read them.
 		stale, err := e.removeStaleCopies(ctx, b, src.ID, map[string]bool{src.ID: true}, p.mappings, p.from, p.to)
 		report.merge(stale)
 		if err != nil {
@@ -481,21 +487,25 @@ func (e *Engine) expand(ctx context.Context, b Binding, master provider.Event, p
 	return report, errors.Join(errs...)
 }
 
-// removeStaleCopies deletes the copies of one repeating event that the
-// strategy in use no longer writes to: the rows under the other
+// removeStaleCopies deletes the copies under one event's key space that
+// the strategy in use no longer writes to: the rows under the other
 // strategy's key after the edge switched between copying the rule and
-// expanding it, the occurrences the rule stopped producing, and the ones
+// expanding it, the rows under an event's occurrences after it stopped
+// repeating, the occurrences the rule stopped producing, and the ones
 // that left the rolling window.
 //
-// A full pass would reach the strategy change through sourced as well,
-// which is the one place that decides a row's fate. This runs for two
-// things sourced cannot: it names the strategy change and the window
-// exit in the report rather than reporting a missing source, and it is
-// the only cleanup on the single change path, which has no calendar to
-// sweep against.
+// A full pass would reach the first two through sourced as well, which
+// is the one place that decides a row's fate. This runs for what sourced
+// cannot do: it names the strategy change and the window exit in the
+// report rather than reporting a missing source, it removes the
+// occurrences a rule stopped producing, which sourced never asks about,
+// and on the single change path it is the only cleanup there is, because
+// that path reads no calendar to sweep against. It is called for every
+// event that owns a key space, which is every one that is not an
+// instance.
 //
-// produced is every key the current strategy wrote this pass: the
-// master's own id where the rule is copied, and one id per occurrence
+// produced is every key the current strategy wrote this call: the
+// event's own id where it is copied whole, and one id per occurrence
 // where it is expanded. from and to are the rolling window as wall clock
 // readings in the series' own zone, which only the expansion path has
 // and only it reads.

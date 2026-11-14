@@ -239,6 +239,47 @@ func TestEngine_Recurrence_removesTheOccurrencesWhenTheEventStopsRepeating(t *te
 	wantActions(t, h.reconcile(), "none/unchanged")
 }
 
+func TestEngine_Recurrence_removesTheOccurrencesFromASingleChange(t *testing.T) {
+	t.Parallel()
+
+	// The same repair on the path a push notification takes. A single
+	// change sees one event and no calendar, so the sweep a full pass
+	// does is not available: the event arriving without a rule is the
+	// only evidence that its occurrence copies are stale, and it has to
+	// be enough.
+	h := newHarness(t, setup{window: shortWindow})
+	master := h.put(weekly("RRULE:FREQ=WEEKLY;COUNT=3"))
+
+	h.apply(master)
+	assertCopies(t, h, 3)
+
+	master.Recurrence = provider.Recurrence{}
+	master = h.put(master)
+
+	report := h.apply(master)
+	if got := report.CountReason(sync.ReasonStrategyChanged); got != 3 {
+		t.Fatalf("occurrence copies removed: got %d, want 3 (all: %v)", got, actions(report))
+	}
+
+	copies := assertCopies(t, h, 1)
+	if copies[0].Marker.Source != master.ID {
+		t.Fatalf("the surviving copy is mapped to %q, want the event's own id %q", copies[0].Marker.Source, master.ID)
+	}
+
+	// Lowering the level afterwards is where a copy left behind would
+	// show more than the user asked for.
+	h.setDetailLevel(storage.DetailLevelBusyBlock)
+	h.apply(master)
+
+	for _, copied := range assertCopies(t, h, 1) {
+		if copied.Summary != "" || copied.Description != "" || copied.Location != "" {
+			t.Fatalf("a copy still carries detail a busy block drops: %+v", copied)
+		}
+	}
+
+	wantActions(t, h.apply(master), "none/unchanged")
+}
+
 func TestEngine_Recurrence_leavesNothingAtTheOldDetailLevel(t *testing.T) {
 	t.Parallel()
 
