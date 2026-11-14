@@ -706,6 +706,18 @@ func (c *Connector) UpdateEvent(ctx context.Context, cred provider.Credential, c
 	stored.ETag = "etag-" + strconv.Itoa(len(cal.log)+1)
 	stored.Created = held.Created
 	stored.Updated = c.stamp()
+
+	// One object is one group for a write as well as for a deletion. A
+	// provider that keeps its overridden occurrences inside the master's
+	// own object is handed one event and stores one event, so the
+	// overrides that were in the object are gone. CalDAV is literally
+	// this: an update reads the resource for its UID, and PUTs a body
+	// holding exactly one VEVENT built from the event it was given.
+	//
+	// A fake that kept the overrides would be more permissive than the
+	// connector it stands in for, in the one direction a caller relies on
+	// when it leaves an override to the master's next write.
+	c.removeGroup(cal, event.ID)
 	c.record(cal, stored)
 	c.updates++
 
@@ -744,37 +756,39 @@ func (c *Connector) DeleteEvent(ctx context.Context, cred provider.Credential, c
 
 	// A provider that declares no instance writes keeps its overridden
 	// occurrences inside the master's own object, so removing the master
-	// removes them with it and there is one deletion to report. That is
-	// what provider.ChangeKindDelete documents, and a fake that left the
-	// overrides standing would let a caller pass a test the real provider
-	// fails.
-	for _, id := range c.removedWith(cal, eventID) {
-		delete(cal.events, id)
-		cal.log = append(cal.log, provider.Change{Kind: provider.ChangeKindDelete, EventID: id})
-	}
+	// removes them with it. A fake that left the overrides standing would
+	// let a caller pass a test the real provider fails.
+	c.removeGroup(cal, eventID)
+
+	// One object going is one deletion, named after the master, which is
+	// what provider.ChangeKindDelete documents and what
+	// caldav.readSyncPage reports: the object is already gone when the
+	// deletion is read, so the provider cannot list what was inside it.
+	// Reporting one deletion per removed id would let a consumer that
+	// forgot to apply the implication pass here and lose those copies
+	// against a real server.
+	cal.log = append(cal.log, provider.Change{Kind: provider.ChangeKindDelete, EventID: eventID})
 	c.deletes++
 
 	return nil
 }
 
-// removedWith returns every event id one deletion takes, which is the id
-// itself and, for a provider that stores its overrides inside the
-// master's object, the occurrences derived from it. The caller holds the
-// lock.
-func (c *Connector) removedWith(cal *calendar, eventID string) []string {
-	out := []string{eventID}
+// removeGroup takes the event the id names out of the calendar, together
+// with the overridden occurrences a provider storing them inside the
+// master's own object holds there. It is the one place that group is
+// defined, so a write and a deletion treat one object the same way. The
+// caller holds the lock.
+func (c *Connector) removeGroup(cal *calendar, eventID string) {
+	delete(cal.events, eventID)
 	if c.caps.InstanceWrites {
-		return out
+		return
 	}
 
 	for id := range cal.events {
 		if provider.IsInstanceIDOf(id, eventID) {
-			out = append(out, id)
+			delete(cal.events, id)
 		}
 	}
-	slices.Sort(out)
-
-	return out
 }
 
 // stamp is the moment a write records. It advances by a minute per write,

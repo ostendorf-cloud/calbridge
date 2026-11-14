@@ -240,6 +240,133 @@ func TestConnector_RefusesEveryWriteOfAnInstanceId(t *testing.T) {
 	})
 }
 
+// masterWithOverride puts a repeating master and one overridden
+// occurrence of it into a calendar, the way a provider that keeps both
+// inside one object holds them, and asserts the fixture so a probe that
+// changes it cannot pass by accident.
+func masterWithOverride(t *testing.T, c *fakeConnector, calendarID string) (master, override provider.Event) {
+	t.Helper()
+
+	master = provider.Event{
+		Summary:    "Jour fixe",
+		Start:      provider.Zoned(time.Date(2026, time.March, 4, 9, 0, 0, 0, time.UTC), "Europe/Berlin"),
+		End:        provider.Zoned(time.Date(2026, time.March, 4, 10, 0, 0, 0, time.UTC), "Europe/Berlin"),
+		Recurrence: provider.Recurrence{Rule: []string{"RRULE:FREQ=WEEKLY;COUNT=3"}},
+	}
+	master.ID = "evt-1.ics"
+
+	override = provider.Event{
+		Summary: "Jour fixe, verlegt",
+		Start:   provider.Zoned(time.Date(2026, time.March, 11, 14, 0, 0, 0, time.UTC), "Europe/Berlin"),
+		End:     provider.Zoned(time.Date(2026, time.March, 11, 15, 0, 0, 0, time.UTC), "Europe/Berlin"),
+		Recurrence: provider.Recurrence{
+			MasterID:      master.ID,
+			OriginalStart: provider.Zoned(time.Date(2026, time.March, 11, 9, 0, 0, 0, time.UTC), "Europe/Berlin"),
+		},
+	}
+	override.ID = provider.InstanceIDOf(master.ID, "20260311T090000")
+
+	for _, event := range []provider.Event{master, override} {
+		if stored := c.Put(calendarID, event); stored.ID != event.ID {
+			t.Fatalf("the calendar stored %q as %q", event.ID, stored.ID)
+		}
+	}
+	if got := len(c.Events(calendarID)); got != 2 {
+		t.Fatalf("calendar holds %d events, want the master and its override", got)
+	}
+
+	return master, override
+}
+
+func TestConnector_WritingAMasterReplacesItsWholeObject(t *testing.T) {
+	t.Parallel()
+
+	// A provider that keeps its overridden occurrences inside the
+	// master's own object is handed one event and stores one event, so a
+	// write of the master takes the overrides with it. That is what a
+	// caller relies on when it leaves such an override standing rather
+	// than asking for a write the capability refuses.
+	connector := newFakeConnector(provider.Capabilities{NativeRecurrence: true})
+	calendarID := primaryID(t, connector)
+	master, override := masterWithOverride(t, connector, calendarID)
+
+	master.Summary = "Jour fixe, neuer Titel"
+	if _, err := connector.UpdateEvent(t.Context(), credentialFor(defaultConnection), calendarID, master); err != nil {
+		t.Fatalf("UpdateEvent() error = %v", err)
+	}
+
+	if connector.Holds(calendarID, override.ID) {
+		t.Error("the override survived a write of the master's own object")
+	}
+	if !connector.Holds(calendarID, master.ID) {
+		t.Error("the write lost the master it was writing")
+	}
+	if got := len(connector.Events(calendarID)); got != 1 {
+		t.Errorf("calendar holds %d events after the write, want only the master", got)
+	}
+}
+
+func TestConnector_WritingAMasterKeepsInstancesTheProviderOwns(t *testing.T) {
+	t.Parallel()
+
+	// A provider whose instances are events of their own declares it, and
+	// then a write of the master is a write of one event and nothing else.
+	connector := newFakeConnector(provider.Capabilities{NativeRecurrence: true, InstanceWrites: true})
+	calendarID := primaryID(t, connector)
+	master, override := masterWithOverride(t, connector, calendarID)
+
+	master.Summary = "Jour fixe, neuer Titel"
+	if _, err := connector.UpdateEvent(t.Context(), credentialFor(defaultConnection), calendarID, master); err != nil {
+		t.Fatalf("UpdateEvent() error = %v", err)
+	}
+
+	if !connector.Holds(calendarID, override.ID) {
+		t.Error("a write of the master removed an instance the provider stores on its own")
+	}
+}
+
+func TestConnector_DeletingAMasterReportsOneDeletion(t *testing.T) {
+	t.Parallel()
+
+	// The object is already gone when the deletion is read, so the
+	// provider cannot list what was inside it and reports one deletion
+	// naming the master. A consumer that forgot to apply that implication
+	// has to fail here, or it passes against a fake and loses those copies
+	// against a real server.
+	connector := newFakeConnector(provider.Capabilities{NativeRecurrence: true})
+	cred := credentialFor(defaultConnection)
+	calendarID := primaryID(t, connector)
+	master, override := masterWithOverride(t, connector, calendarID)
+
+	position, err := connector.Changes(t.Context(), cred, calendarID, provider.SyncToken{})
+	if err != nil {
+		t.Fatalf("initial sync: %v", err)
+	}
+	if len(position.Changes) != 2 {
+		t.Fatalf("initial sync reported %d events, want the master and its override", len(position.Changes))
+	}
+
+	if err := connector.DeleteEvent(t.Context(), cred, calendarID, master.ID); err != nil {
+		t.Fatalf("DeleteEvent() error = %v", err)
+	}
+
+	page, err := connector.Changes(t.Context(), cred, calendarID, position.Token)
+	if err != nil {
+		t.Fatalf("incremental read: %v", err)
+	}
+
+	reported := make([]string, 0, len(page.Changes))
+	for _, change := range page.Changes {
+		reported = append(reported, change.Kind.String()+" "+change.EventID)
+	}
+	if len(reported) != 1 || reported[0] != "delete "+master.ID {
+		t.Errorf("the provider reported %v, want one deletion naming the master", reported)
+	}
+	if connector.Holds(calendarID, override.ID) {
+		t.Error("the override survived the deletion of the object holding it")
+	}
+}
+
 func TestConnector_ReplaceRefusesAnEventWithNoId(t *testing.T) {
 	t.Parallel()
 
