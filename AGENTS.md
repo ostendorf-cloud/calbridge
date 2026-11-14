@@ -60,13 +60,20 @@ on; every other path already exists.
   speak one normalised event type and never leak a provider's own model;
   everything provider-shaped stays inside its package. No connector exists
   yet: the interface, the registry and a fake are what is there.
-- `internal/sync` will turn a source change into target operations by
-  applying an edge's field mask, and is the only package meant to know what
-  a detail level means. It owns the mapping table (edge id, source event
-  id, target event id, start, end, content hash), recurrence expansion for
-  the case where source and target disagree on a rule, and the marker that
-  stops a connector from reporting calbridge's own writes back as a source
-  change.
+- `internal/sync` turns a source change into target operations by applying
+  an edge's field mask, and is the only package meant to know what a detail
+  level means. It owns the mapping table (edge id, source event id, target
+  event id, start, end, content hash), recurrence expansion for the case
+  where source and target disagree on a rule, and the marker that stops
+  calbridge's own writes from being copied onward as source changes. The
+  full reconcile reads both calendars from the zero sync token, so it
+  depends on no stored position and no delivered notification, and the
+  teardown of an edge, including one whose grant was revoked, removes every
+  event it wrote, the edge row included. A mirrored event edited by hand
+  in the target is overwritten on the next reconcile, and a revoked grant
+  takes the edge with it; see `docs/adr/`.
+- `docs/adr/` holds the decisions worth remembering, in the MADR shape, one
+  per numbered file.
 - `internal/storage` defines the domain types and the repository
   interfaces the layers above call, with nothing here importing a provider
   SDK or generated sqlc code directly.

@@ -77,6 +77,23 @@ func (q *Queries) DeleteEventMapping(ctx context.Context, id uuid.UUID) (int64, 
 	return result.RowsAffected(), nil
 }
 
+const deleteEventMappingsByEdge = `-- name: DeleteEventMappingsByEdge :execrows
+
+DELETE FROM event_mapping
+WHERE edge_id = $1 AND user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
+`
+
+// Tearing an edge down removes its mapping rows in one statement, so the
+// edge row itself can be deleted in the same transaction without the
+// foreign key from event_mapping holding it back.
+func (q *Queries) DeleteEventMappingsByEdge(ctx context.Context, edgeID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteEventMappingsByEdge, edgeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getEventMappingByEdgeAndSourceEventID = `-- name: GetEventMappingByEdgeAndSourceEventID :one
 SELECT id, user_id, edge_id, source_event_id, target_event_id, starts_at, ends_at, content_hash, encrypted_details, created_at, updated_at
 FROM event_mapping
@@ -130,6 +147,49 @@ func (q *Queries) GetEventMappingByID(ctx context.Context, id uuid.UUID) (EventM
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const listEventMappingsByEdge = `-- name: ListEventMappingsByEdge :many
+
+SELECT id, user_id, edge_id, source_event_id, target_event_id, starts_at, ends_at, content_hash, encrypted_details, created_at, updated_at
+FROM event_mapping
+WHERE edge_id = $1 AND user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
+ORDER BY source_event_id
+`
+
+// Every event one edge wrote. internal/sync reads this on a full
+// reconcile, to find the copies whose source is gone, and on teardown, to
+// delete every event the edge ever wrote.
+func (q *Queries) ListEventMappingsByEdge(ctx context.Context, edgeID uuid.UUID) ([]EventMapping, error) {
+	rows, err := q.db.Query(ctx, listEventMappingsByEdge, edgeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []EventMapping
+	for rows.Next() {
+		var i EventMapping
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.EdgeID,
+			&i.SourceEventID,
+			&i.TargetEventID,
+			&i.StartsAt,
+			&i.EndsAt,
+			&i.ContentHash,
+			&i.EncryptedDetails,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updateEventMapping = `-- name: UpdateEventMapping :one

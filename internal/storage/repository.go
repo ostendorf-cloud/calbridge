@@ -85,10 +85,14 @@ type CalendarRepository interface {
 
 // EdgeRepository persists and queries sync edges. Every method must run
 // inside a context UserScope.WithUser produced; see ErrNoUserScope.
+// ListByCalendar answers the question internal/sync asks when a grant is
+// revoked: which of this user's edges touch that calendar, on either
+// side, and therefore have to stop and give back what they wrote.
 type EdgeRepository interface {
 	Create(ctx context.Context, edge Edge) (Edge, error)
 	FindByID(ctx context.Context, id uuid.UUID) (Edge, error)
 	List(ctx context.Context) ([]Edge, error)
+	ListByCalendar(ctx context.Context, calendarID uuid.UUID) ([]Edge, error)
 	UpdateDetailLevel(ctx context.Context, id uuid.UUID, detailLevel DetailLevel) (Edge, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 }
@@ -114,10 +118,21 @@ type CalendarGrantRepository interface {
 // and every read is in clear: internal/storage/postgres encrypts and
 // decrypts it at the database boundary itself, so no caller has to
 // remember to.
+//
+// ListByEdge returns every copy one edge made, which is what a full
+// reconcile compares the source against and what a teardown deletes.
+// DeleteByEdge removes those rows in one statement and reports how many
+// it removed, so a teardown forgets an edge's copies without reading
+// them back one at a time. It runs in a transaction of its own, before
+// the edge row is deleted in another: the events themselves are removed
+// at the provider in between, and a database transaction is not held
+// open across a network call.
 type EventMappingRepository interface {
 	Create(ctx context.Context, mapping EventMapping) (EventMapping, error)
 	FindByID(ctx context.Context, id uuid.UUID) (EventMapping, error)
 	FindByEdgeAndSourceEventID(ctx context.Context, edgeID uuid.UUID, sourceEventID string) (EventMapping, error)
+	ListByEdge(ctx context.Context, edgeID uuid.UUID) ([]EventMapping, error)
 	Update(ctx context.Context, mapping EventMapping) (EventMapping, error)
 	Delete(ctx context.Context, id uuid.UUID) error
+	DeleteByEdge(ctx context.Context, edgeID uuid.UUID) (int64, error)
 }

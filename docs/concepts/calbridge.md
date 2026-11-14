@@ -161,8 +161,6 @@ Selective calendar mirroring across providers, one detail level per edge.
   is built, since verification is submitted against a working consent screen and not before.
 - Where does the encryption key come from in the cluster: an environment variable from a sealed
   secret, or OpenBao? Next step: decide with the existing deployment pattern, promote to an ADR.
-- What happens when a mirrored event is edited by hand in the target calendar: overwrite on next
-  reconcile, or detach and stop managing it?
 - How are all-day events and floating times normalised between the three providers, given each
   represents them differently?
 - What reconcile interval do the providers' rate limits actually permit for six calendars, and how
@@ -172,6 +170,8 @@ Selective calendar mirroring across providers, one detail level per edge.
 
 ## Decisions to record as ADRs
 
+- A mirrored event edited by hand in the target is overwritten on the next reconcile, recorded in
+  `docs/adr/0001-overwrite-hand-edited-mirrored-events.md`.
 - Apple is reached by CalDAV with an app-specific password, because no OAuth path exists.
 - Event content is stored as a minimal mapping with an encrypted details cache, not as a full event
   cache.
