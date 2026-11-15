@@ -324,35 +324,144 @@ type Recurrence struct {
 // overrides inside the master's object has no id of its own to give them,
 // so the connector derives one, and this is the byte that derives it.
 //
-// Reading a derived id back is only unambiguous where no plain event id
-// in the same calendar carries the separator, and a connector does not
-// always get to choose. A CalDAV resource name is the server's, not the
-// connector's: a resource named "a%23b.ics" reaches the connector as the
-// event id "a#b.ics" and reads as an occurrence of "a". A caller may not
-// assume the separator is absent from a plain id. What it may assume is
-// the weaker thing: a collision shows as one event's copy being swept
-// with another's, never as a source event the caller stops seeing.
-// Closing it for good is issue #29, which bounds the damage in the
-// engine rather than by constraining what a server may name a resource.
+// It never appears in an Event.ID except where it does that joining. A
+// provider's own identifier reaches an Event.ID through EventIDOf, which
+// escapes the separator, and a derived id is built by InstanceIDOf from
+// an already escaped master id. So an Event.ID carrying an unescaped
+// separator is a derived one and nothing else, cutting one at the first
+// separator recovers exactly the master's Event.ID, and NativeIDOf
+// recovers the provider's own identifier from either half. A plain event
+// id cannot read as an occurrence of another event whatever a server
+// names a resource: a CalDAV resource whose name is "a#b.ics" becomes
+// the Event.ID "a%23b.ics", which carries no unescaped separator and so
+// is no occurrence of a master named "a".
 const InstanceSeparator = "#"
 
-// InstanceIDOf returns the Event.ID of one overridden occurrence of the
-// master masterID names. occurrence is whatever the provider identifies
-// the occurrence by, such as an RFC 5545 RECURRENCE-ID, and stays opaque
-// outside the connector.
-func InstanceIDOf(masterID, occurrence string) string {
-	return masterID + InstanceSeparator + occurrence
+// The escape EventIDOf applies. The separator and the escape byte itself
+// are the only two bytes escaped, and each becomes its own percent
+// escape, so the mapping is reversible for every byte sequence a
+// provider id can hold, invalid UTF-8 included.
+//
+// Percent escaping is the escape rather than one of this package's own
+// because an event id from the one connector that has the problem is a
+// CalDAV resource name, and a path segment is already read and written
+// that way: the escaped form of "a#b.ics" is "a%23b.ics", which is how
+// that resource reads on the wire.
+const (
+	separatorByte    = '#'
+	escapeByte       = '%'
+	escapedSeparator = "%23"
+	escapedEscape    = "%25"
+)
+
+// EventIDOf returns the Event.ID a provider's own identifier of one
+// event becomes. nativeID is whatever the provider names the event, such
+// as a CalDAV resource name, and may hold any byte: the separator and
+// the escape byte are escaped, and NativeIDOf reverses that exactly.
+//
+// Every connector puts a plain event id through this, so the id space
+// above a connector has one shape and no caller escapes anything at its
+// own call site.
+func EventIDOf(nativeID string) string {
+	if !strings.ContainsAny(nativeID, string(separatorByte)+string(escapeByte)) {
+		return nativeID
+	}
+
+	var out strings.Builder
+	out.Grow(len(nativeID) + 2)
+	for i := range len(nativeID) {
+		switch nativeID[i] {
+		case separatorByte:
+			out.WriteString(escapedSeparator)
+		case escapeByte:
+			out.WriteString(escapedEscape)
+		default:
+			out.WriteByte(nativeID[i])
+		}
+	}
+
+	return out.String()
 }
 
-// IsInstanceIDOf reports whether eventID is an id derived from masterID
-// with InstanceIDOf. It is what turns one deletion of a master into the
+// NativeIDOf returns the provider's own identifier EventIDOf built an
+// Event.ID from. It is the one way back, and a connector calls it before
+// an id reaches the provider.
+//
+// It refuses an id EventIDOf cannot have produced: one carrying an
+// unescaped separator, which is a derived id rather than a plain one and
+// names no object a provider knows, and one carrying the escape byte
+// outside an escape sequence. CutInstanceID is what reads a derived id.
+func NativeIDOf(eventID string) (string, error) {
+	var out strings.Builder
+	out.Grow(len(eventID))
+	for i := 0; i < len(eventID); {
+		switch {
+		case eventID[i] == separatorByte:
+			return "", fmt.Errorf(
+				"event id %q carries an unescaped %q and names no event of its own: %w",
+				eventID, InstanceSeparator, ErrInvalidEvent)
+		case eventID[i] != escapeByte:
+			out.WriteByte(eventID[i])
+			i++
+		case strings.HasPrefix(eventID[i:], escapedSeparator):
+			out.WriteByte(separatorByte)
+			i += len(escapedSeparator)
+		case strings.HasPrefix(eventID[i:], escapedEscape):
+			out.WriteByte(escapeByte)
+			i += len(escapedEscape)
+		default:
+			return "", fmt.Errorf(
+				"event id %q carries %q outside an escape sequence: %w",
+				eventID, string(escapeByte), ErrInvalidEvent)
+		}
+	}
+
+	return out.String(), nil
+}
+
+// InstanceIDOf returns the Event.ID of one overridden occurrence of the
+// master masterEventID names. masterEventID is the master's Event.ID, so
+// one EventIDOf produced. occurrence is whatever the provider identifies
+// the occurrence by, such as an RFC 5545 RECURRENCE-ID, and stays opaque
+// outside the connector; it is escaped the same way a plain id is, so the
+// derived id carries exactly one unescaped separator and both halves read
+// back.
+func InstanceIDOf(masterEventID, occurrence string) string {
+	return masterEventID + InstanceSeparator + EventIDOf(occurrence)
+}
+
+// CutInstanceID splits an id InstanceIDOf derived into the master's
+// Event.ID and the provider's own identifier of the occurrence, and
+// reports whether eventID is such an id at all.
+//
+// It is the one place a master is recovered from an id, for the caller
+// that has nothing else to recover it from. A caller holding the event
+// reads Recurrence.MasterID instead, which the connector set. A plain
+// event id never answers true here, whatever it holds.
+func CutInstanceID(eventID string) (masterEventID, occurrence string, ok bool) {
+	master, rest, found := strings.Cut(eventID, InstanceSeparator)
+	if !found || master == "" {
+		return "", "", false
+	}
+	native, err := NativeIDOf(rest)
+	if err != nil {
+		return "", "", false
+	}
+
+	return master, native, true
+}
+
+// IsInstanceIDOf reports whether eventID is an id InstanceIDOf derived
+// from masterEventID. It is what turns one deletion of a master into the
 // deletion of the instances the provider removed with it.
 //
-// It answers on the id's shape alone, so a plain event id that happens to
-// carry the separator answers true for whatever precedes it. See
-// InstanceSeparator for what that costs and what it does not.
-func IsInstanceIDOf(eventID, masterID string) bool {
-	return strings.HasPrefix(eventID, masterID+InstanceSeparator)
+// It answers on the whole master id rather than on a prefix of the
+// derived one, so an event of its own, whatever its id holds, is never
+// one of another event's occurrences.
+func IsInstanceIDOf(eventID, masterEventID string) bool {
+	master, _, ok := CutInstanceID(eventID)
+
+	return ok && master == masterEventID
 }
 
 // IsMaster reports whether the event repeats under its own rule.

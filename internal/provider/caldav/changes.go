@@ -110,7 +110,9 @@ func (c *Connector) Changes(
 }
 
 // syncPage is what one sync report said: the resources to read, the
-// resources that are gone, the token, and what the caller does next.
+// resources that are gone, the token, and what the caller does next. The
+// resources are named by Event.ID in both lists, so nothing below this
+// carries a resource name that was never escaped.
 type syncPage struct {
 	changed []string
 	deletes []provider.Change
@@ -189,12 +191,17 @@ func readSyncPage(p Profile, calendar *url.URL, ms multistatus) (syncPage, error
 		if name == "" {
 			continue
 		}
+		// The resource name becomes an Event.ID here, the same way
+		// decodeEvent turns one into the id of the event it decodes, so a
+		// deletion names the id the upsert of that resource named and
+		// resourceURL is the one way back to the name.
+		eventID := provider.EventIDOf(name)
 		if r.gone() {
-			page.deletes = append(page.deletes, provider.Change{Kind: provider.ChangeKindDelete, EventID: name})
+			page.deletes = append(page.deletes, provider.Change{Kind: provider.ChangeKindDelete, EventID: eventID})
 
 			continue
 		}
-		page.changed = append(page.changed, name)
+		page.changed = append(page.changed, eventID)
 	}
 
 	if page.token == "" {
@@ -251,20 +258,23 @@ func rejectedToken(p Profile, res result, token provider.SyncToken) error {
 // turns them into upserts. One resource holds one UID, so it yields the
 // recurring master and one event for each occurrence that was
 // overridden.
+//
+// eventIDs name the resources as syncPage carries them, so the resource
+// name each href needs comes back out of them through resourceURL.
 func (c *Connector) readResources(
 	ctx context.Context,
 	p Profile,
 	cred Credential,
 	calendar *url.URL,
-	names []string,
+	eventIDs []string,
 ) ([]provider.Change, error) {
-	if len(names) == 0 {
+	if len(eventIDs) == 0 {
 		return nil, nil
 	}
 
 	body := calendarMultiget{}
-	for _, name := range names {
-		at, err := resourceURL(calendar, name)
+	for _, eventID := range eventIDs {
+		at, err := resourceURL(calendar, eventID)
 		if err != nil {
 			return nil, err
 		}
@@ -331,10 +341,20 @@ func (c *Connector) readResources(
 }
 
 // resourceURL builds the URL of one object resource inside a collection,
-// and refuses a name that would leave it.
-func resourceURL(calendar *url.URL, name string) (*url.URL, error) {
+// and refuses an id that names no resource in it.
+//
+// It is the one place an Event.ID becomes a resource name again, so the
+// one place the escaping decodeEvent applied is undone. An id that
+// carries an unescaped separator is one derived for an overridden
+// occurrence and names no resource of its own; provider.NativeIDOf
+// refuses it, and so does an id no connector of this package issued.
+func resourceURL(calendar *url.URL, eventID string) (*url.URL, error) {
+	name, err := provider.NativeIDOf(eventID)
+	if err != nil {
+		return nil, fmt.Errorf("caldav event id %q is not a resource name: %w", eventID, provider.ErrUnknownEvent)
+	}
 	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
-		return nil, fmt.Errorf("caldav event id %q is not a resource name: %w", name, provider.ErrUnknownEvent)
+		return nil, fmt.Errorf("caldav event id %q is not a resource name: %w", eventID, provider.ErrUnknownEvent)
 	}
 	out := *calendar
 	out.Path = calendar.Path + name

@@ -21,16 +21,6 @@ const (
 	markerSourceProp = "X-CALBRIDGE-SOURCE"
 )
 
-// instanceSeparator joins a resource name and a RECURRENCE-ID into the
-// id of one overridden occurrence. It is provider.InstanceSeparator,
-// because internal/provider's eleventh normalisation rule is what makes
-// such an id readable above this package: one deletion of the resource
-// stands for the master and every override in it, and the caller finds
-// the overrides by that rule. It is also a character no path segment of
-// a CalDAV resource carries unescaped, so splitting an id is
-// unambiguous.
-const instanceSeparator = provider.InstanceSeparator
-
 // productID is the PRODID every object this connector writes carries,
 // as RFC 5545 section 3.7.3 requires.
 const productID = "-//ostendorf-cloud//calbridge//EN"
@@ -90,6 +80,13 @@ func decodeResource(resourceName, text string) ([]provider.Event, error) {
 }
 
 // decodeEvent maps one VEVENT onto the normalised event.
+//
+// It is the one place a resource name becomes an Event.ID, so the one
+// place that escaping happens. A resource name is the server's to
+// choose and may hold any character a path segment can, the separator
+// internal/provider reserves included, which is why it goes through
+// provider.EventIDOf rather than straight into the id. resourceURL is
+// the one way back.
 func decodeEvent(resourceName string, component *icalComponent) (provider.Event, error) {
 	start, err := eventTime(component, "DTSTART")
 	if err != nil {
@@ -100,8 +97,9 @@ func decodeEvent(resourceName string, component *icalComponent) (provider.Event,
 		return provider.Event{}, err
 	}
 
+	resourceID := provider.EventIDOf(resourceName)
 	event := provider.Event{
-		ID:           resourceName,
+		ID:           resourceID,
 		UID:          component.value("UID"),
 		Summary:      component.value("SUMMARY"),
 		Description:  component.value("DESCRIPTION"),
@@ -126,8 +124,8 @@ func decodeEvent(resourceName string, component *icalComponent) (provider.Event,
 		if err != nil {
 			return provider.Event{}, err
 		}
-		event.ID = provider.InstanceIDOf(resourceName, recurrenceID.Value)
-		event.Recurrence.MasterID = resourceName
+		event.ID = provider.InstanceIDOf(resourceID, recurrenceID.Value)
+		event.Recurrence.MasterID = resourceID
 		event.Recurrence.OriginalStart = original
 	} else {
 		event.Recurrence.Rule = decodeRecurrenceRule(component)

@@ -532,17 +532,15 @@ func (e *Engine) removeOrphans(ctx context.Context, b Binding, p *pass, accounte
 // Which event this is comes from the event itself, never from its id. A
 // connector sets Recurrence.MasterID on every override it reports, and
 // Recurrence.Validate enforces that shape, so the master's id is read
-// rather than derived. Taking it from the id instead would mean cutting
-// at provider.InstanceSeparator, which a plain event id may carry:
-// InstanceSeparator's own documentation names the CalDAV resource
-// "a%23b.ics", and the id this function hands to DeleteEvent names the
-// object it removes.
+// rather than derived. The id would answer too, now that a plain one
+// carries no unescaped separator, but the event is the shorter way to
+// the same answer and needs no agreement about the id space.
 //
-// An event whose id carries the separator while the event names no
-// master is that collision, and it has no answer that removes anything.
-// Its own id is one the target refuses, and the only other id would be a
-// guess at an object this edge may never have written. So it is reported
-// and left alone, which is also what issue #29 is about.
+// An id provider.CutInstanceID reads as derived while the event names no
+// master is a connector contradicting rule 11, and it has no answer that
+// removes anything: its own id is one the target refuses, and the only
+// other id would be a guess at an object this edge may never have
+// written. So it is reported and left alone.
 //
 // Where the master is still in the calendar, the occurrence sits inside
 // an object this edge owns, so removing the master removes it and
@@ -592,7 +590,7 @@ func (e *Engine) sweepInstance(
 		return Report{}, false, nil
 	}
 	if !event.Recurrence.IsInstance() {
-		if !strings.Contains(eventID, provider.InstanceSeparator) {
+		if _, _, derived := provider.CutInstanceID(eventID); !derived {
 			return Report{}, false, nil
 		}
 
@@ -1118,8 +1116,13 @@ func sourced(b Binding, mapping storage.EventMapping, sourceState map[string]pro
 		return writesUnderOwnID(b, src, sourceState)
 	}
 
-	masterID, _, found := strings.Cut(mapping.SourceEventID, occurrenceSeparator)
-	if !found {
+	// A mapping row carries the key and nothing else, so here the master
+	// really is recovered from the id. provider.CutInstanceID is the one
+	// function that does it, and it reads only a key something derived
+	// for an occurrence: a row naming a source event of its own answers
+	// false whatever that event's id holds.
+	masterID, _, derived := provider.CutInstanceID(mapping.SourceEventID)
+	if !derived {
 		return false
 	}
 
@@ -1158,8 +1161,8 @@ func unsourcedReason(mapping storage.EventMapping, sourceState map[string]provid
 		return ReasonStrategyChanged
 	}
 
-	masterID, _, found := strings.Cut(mapping.SourceEventID, occurrenceSeparator)
-	if !found {
+	masterID, _, derived := provider.CutInstanceID(mapping.SourceEventID)
+	if !derived {
 		return ReasonSourceGone
 	}
 	if _, ok := sourceState[masterID]; ok {

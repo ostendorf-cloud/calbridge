@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 
 	"github.com/ostendorf-cloud/calbridge/internal/provider"
 )
@@ -184,7 +183,7 @@ func (c *Connector) CreateEvent(
 	if stored.UID == "" {
 		stored.UID = c.newUID()
 	}
-	stored.ID = stored.UID + resourceSuffix
+	stored.ID = provider.EventIDOf(stored.UID + resourceSuffix)
 	now := c.now().UTC()
 	stored.Created, stored.Updated = now, now
 
@@ -221,7 +220,7 @@ func (c *Connector) UpdateEvent(
 	if err != nil {
 		return provider.Event{}, err
 	}
-	if !caps.InstanceWrites && strings.Contains(stored.ID, instanceSeparator) {
+	if _, _, isInstance := provider.CutInstanceID(stored.ID); isInstance && !caps.InstanceWrites {
 		return provider.Event{}, fmt.Errorf(
 			"caldav declares no instance writes and %q names one overridden occurrence: %w",
 			stored.ID, provider.ErrUnsupported)
@@ -258,10 +257,15 @@ func (c *Connector) DeleteEvent(ctx context.Context, cred provider.Credential, c
 	if err != nil {
 		return err
 	}
-	if !c.Capabilities().InstanceWrites && strings.Contains(eventID, instanceSeparator) {
+	if _, _, isInstance := provider.CutInstanceID(eventID); isInstance && !c.Capabilities().InstanceWrites {
 		// Removing the master's id removes the resource, and the override
 		// inside it with it, which is what the interface documents a
 		// connector declaring no instance writes does.
+		//
+		// The question is whether the id was derived for an occurrence,
+		// not whether it holds the separator: an id that holds it escaped
+		// names a resource the server chose that name for, and deleting
+		// that resource is an ordinary deletion.
 		return fmt.Errorf(
 			"caldav declares no instance writes and %q names one overridden occurrence: %w",
 			eventID, provider.ErrUnsupported)

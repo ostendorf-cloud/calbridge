@@ -199,15 +199,18 @@ func isManaged(at *url.URL) bool {
 	return strings.HasPrefix(lastSegment(at.Path), managedPrefix)
 }
 
-// lastSegment returns the final non-empty path segment, unescaped where
-// it can be.
+// lastSegment returns the final non-empty path segment of a URL's own
+// Path, which is the segment as the server named it.
+//
+// It unescapes nothing: url.URL.Path is already the decoded form, and
+// unescaping it a second time renames a resource the server called
+// "a%2523b.ics", whose name is "a%23b.ics", to "a#b.ics". That is
+// another resource, so the write that followed would reach the wrong
+// object. Only the raw form, which stays in url.URL.RawPath, may be
+// unescaped.
 func lastSegment(path string) string {
 	trimmed := strings.TrimSuffix(path, "/")
 	at := strings.LastIndex(trimmed, "/")
-	segment := trimmed[at+1:]
-	if unescaped, err := url.PathUnescape(segment); err == nil {
-		return unescaped
-	}
 
-	return segment
+	return trimmed[at+1:]
 }

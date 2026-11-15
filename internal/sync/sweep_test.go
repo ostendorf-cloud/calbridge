@@ -6,10 +6,13 @@ package sync_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/ostendorf-cloud/calbridge/internal/provider"
+	"github.com/ostendorf-cloud/calbridge/internal/storage"
+	"github.com/ostendorf-cloud/calbridge/internal/sync"
 )
 
 // nativeTargetCaps is the shape the shipped iCloud profile has: it stores
@@ -306,25 +309,22 @@ func TestEngine_Reconcile_removesOneObjectOnceForEveryOverrideItHolds(t *testing
 	}
 }
 
-func TestEngine_Reconcile_removesTheObjectAnOverrideNamesAndNotThePrefixOfItsID(t *testing.T) {
+func TestEngine_Reconcile_removesTheObjectOfAnOverrideWhoseMasterNameHoldsTheSeparator(t *testing.T) {
 	t.Parallel()
 
-	// A master's own id can carry the separator: the CalDAV resource
-	// "a%23b.ics" reaches the connector as the event id "a#b.ics", and an
-	// override inside that resource is reported under that id plus its
-	// occurrence. Cutting the override's id at the first separator yields
-	// "a", an object nobody named, so the id has to come from the event:
-	// Recurrence.MasterID is what the connector read off the resource.
-	//
-	// The id is built here rather than through provider.InstanceIDOf, so
-	// the fixture rests on no helper that answers on an id's shape.
+	// A master's own name can carry the separator: the CalDAV resource
+	// "a#b.ics" reaches the engine as the event id provider.EventIDOf
+	// made of it, and an override inside that resource is reported under
+	// that id plus its occurrence. The object is deleted by the master's
+	// id, which the override carries, and the target accepts that id
+	// rather than reading it as an occurrence of an event named "a".
 	h := newHarness(t, setup{targetCaps: nativeTargetCaps, window: shortWindow})
 	target := h.recordTargetDeletes()
 
-	const masterID = "a" + provider.InstanceSeparator + "b.ics"
+	masterID := provider.EventIDOf("a" + provider.InstanceSeparator + "b.ics")
 
 	override := meeting("Standup", 4, 9)
-	override.ID = masterID + provider.InstanceSeparator + occurrenceID
+	override.ID = provider.InstanceIDOf(masterID, occurrenceID)
 	override.Marker = provider.Marker{Edge: h.binding.Edge.ID.String(), Source: "evt-gone"}
 	override.Recurrence = provider.Recurrence{
 		MasterID:      masterID,
@@ -334,40 +334,38 @@ func TestEngine_Reconcile_removesTheObjectAnOverrideNamesAndNotThePrefixOfItsID(
 		t.Fatalf("the target stored the override as %q, want %q", stored.ID, override.ID)
 	}
 
-	_, err := h.engine.Reconcile(context.Background(), h.binding)
+	report, err := h.engine.Reconcile(context.Background(), h.binding)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
 
 	// The id the delete asked for is the whole point, and the calendar
 	// cannot be asked: the object and the occurrence go together.
+	wantActions(t, report, "delete/master absent")
 	wantDeletes(t, target, masterID)
 
-	// What the connector then does with that id is issue #29's: a master id
-	// carrying the separator is refused by every connector declaring no
-	// instance writes, the fake and caldav alike, so the object stays and
-	// the refusal reaches the caller.
-	if !errors.Is(err, provider.ErrUnsupported) {
-		t.Errorf("Reconcile() error = %v, want ErrUnsupported from the refused id", err)
-	}
-	if !h.target.Holds(h.targetCal, override.ID) {
-		t.Error("the override is gone after a delete the connector refused")
+	if h.target.Holds(h.targetCal, override.ID) {
+		t.Error("the override outlived the object its master's id names")
 	}
 }
 
-func TestEngine_Reconcile_sweepsNoObjectForAnEventThatOnlyLooksLikeAnOverride(t *testing.T) {
+func TestEngine_Reconcile_sweepsAnEventOfItsOwnWhoseNameHoldsTheSeparator(t *testing.T) {
 	t.Parallel()
 
 	// A plain event id is the server's to choose, and a CalDAV resource
-	// named "a%23b.ics" reaches the connector as the event id "a#b.ics".
-	// Read as an occurrence it names an object "a" this edge may never have
-	// written, so nothing is derived from the id: the event itself says
-	// whether it is an override, and this one does not.
+	// named "a#b.ics" reaches the engine as the event id
+	// provider.EventIDOf made of it. It names an event of its own and
+	// nothing else: the pass neither reads it as an occurrence of an
+	// event named "a" nor leaves it standing for want of an id the
+	// target accepts. It is an orphan copy, and it goes by its own id.
 	h := newHarness(t, setup{targetCaps: nativeTargetCaps, window: shortWindow})
 	target := h.recordTargetDeletes()
 
-	collision := meeting("Standup", 4, 9)
-	collision.ID = "a" + provider.InstanceSeparator + "b.ics"
-	collision.Marker = provider.Marker{Edge: h.binding.Edge.ID.String(), Source: "evt-gone"}
-	if stored := h.target.Put(h.targetCal, collision); stored.ID != collision.ID {
-		t.Fatalf("the target stored the event as %q, want %q", stored.ID, collision.ID)
+	orphan := meeting("Standup", 4, 9)
+	orphan.ID = provider.EventIDOf("a" + provider.InstanceSeparator + "b.ics")
+	orphan.Marker = provider.Marker{Edge: h.binding.Edge.ID.String(), Source: "evt-gone"}
+	if stored := h.target.Put(h.targetCal, orphan); stored.ID != orphan.ID {
+		t.Fatalf("the target stored the event as %q, want %q", stored.ID, orphan.ID)
 	}
 
 	report, err := h.engine.Reconcile(context.Background(), h.binding)
@@ -375,17 +373,122 @@ func TestEngine_Reconcile_sweepsNoObjectForAnEventThatOnlyLooksLikeAnOverride(t 
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	// Its own id is one the target refuses, and it names no master, so no
-	// id in the calendar removes it. It stays, and the report says why.
+	wantActions(t, report, "delete/orphan")
+	wantDeletes(t, target, orphan.ID)
+
+	if h.target.Holds(h.targetCal, orphan.ID) {
+		t.Error("the copy is still in the target after the pass deleted it")
+	}
+}
+
+func TestEngine_Reconcile_reportsAnOverrideIDOnAnEventThatNamesNoMaster(t *testing.T) {
+	t.Parallel()
+
+	// internal/provider's eleventh normalisation rule has a connector
+	// report Recurrence.MasterID on every override it derives an id for,
+	// so an id that reads as derived on an event naming no master is a
+	// connector contradicting itself. There is no id that removes such an
+	// event: its own is one a target declaring no instance writes
+	// refuses, and the only other would be a guess at an object this edge
+	// may never have written. It is reported and left alone.
+	h := newHarness(t, setup{targetCaps: nativeTargetCaps, window: shortWindow})
+	target := h.recordTargetDeletes()
+
+	broken := meeting("Standup", 4, 9)
+	broken.ID = provider.InstanceIDOf("evt-never-written", occurrenceID)
+	broken.Marker = provider.Marker{Edge: h.binding.Edge.ID.String(), Source: "evt-gone"}
+	if stored := h.target.Put(h.targetCal, broken); stored.ID != broken.ID {
+		t.Fatalf("the target stored the event as %q, want %q", stored.ID, broken.ID)
+	}
+
+	report, err := h.engine.Reconcile(context.Background(), h.binding)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
 	wantActions(t, report, "none/no deletable id")
 	wantDeletes(t, target)
 
-	if !h.target.Holds(h.targetCal, collision.ID) {
-		t.Error("the pass removed the event whose id only reads as an occurrence")
+	if !h.target.Holds(h.targetCal, broken.ID) {
+		t.Error("the pass removed the event it reported as having no deletable id")
 	}
-	if got := report.Operations[0].TargetEventID; got != collision.ID {
-		t.Errorf("the operation names %q, want the event it is about, %q", got, collision.ID)
+	if got := report.Operations[0].TargetEventID; got != broken.ID {
+		t.Errorf("the operation names %q, want the event it is about, %q", got, broken.ID)
 	}
+}
+
+func TestEngine_Apply_deleteOfAMasterLeavesTheCopyOfAnEventNamedAfterIt(t *testing.T) {
+	t.Parallel()
+
+	// The engine keys an expanded occurrence under its master's id, and a
+	// mapping row carries that key and nothing else. A source event the
+	// server named "a#b.ics", next to a master named "a", is the one that
+	// used to read as an occurrence of that master: deleting the master
+	// then took the unrelated event's copy and its mapping row with it.
+	h := newHarness(t, setup{window: shortWindow})
+	target := h.recordTargetDeletes()
+
+	master := weekly("RRULE:FREQ=WEEKLY;COUNT=2")
+	master.ID = provider.EventIDOf("a")
+	master = h.put(master)
+
+	unrelated := meeting("Steuerberater", 5, 11)
+	unrelated.ID = provider.EventIDOf("a" + provider.InstanceSeparator + "b.ics")
+	unrelated = h.put(unrelated)
+
+	h.reconcile()
+
+	rows := h.store.mappingsOf(h.binding.Edge.ID)
+	if len(rows) != 3 {
+		t.Fatalf("mapping rows after the first pass: got %d, want one per occurrence and one for the unrelated event", len(rows))
+	}
+	copied := mappingOf(t, rows, unrelated.ID)
+
+	// The master is gone from the source, and the provider reports it
+	// under its own id, which is every occurrence's key as well.
+	report, err := h.engine.Apply(context.Background(), h.binding, provider.Change{
+		Kind:    provider.ChangeKindDelete,
+		EventID: master.ID,
+	})
+	if err != nil {
+		t.Fatalf("apply delete: %v", err)
+	}
+
+	// Which copies went is the connector's own record. Comparing calendar
+	// state cannot say which id was asked for.
+	if got := report.Count(sync.ActionDelete); got != 2 {
+		t.Fatalf("deletes: got %d, want the two occurrences (all: %v)", got, actions(report))
+	}
+	if slices.Contains(target.deleted, copied.TargetEventID) {
+		t.Errorf("the pass deleted %q, the copy of the unrelated event %q", copied.TargetEventID, unrelated.ID)
+	}
+
+	left := h.store.mappingsOf(h.binding.Edge.ID)
+	if len(left) != 1 || left[0].SourceEventID != unrelated.ID {
+		t.Fatalf("mapping rows after the delete: got %+v, want only the row of %q", left, unrelated.ID)
+	}
+	if !h.target.Holds(h.targetCal, copied.TargetEventID) {
+		t.Errorf("the copy of the unrelated event %q is gone from the target", unrelated.ID)
+	}
+	if got := len(h.copies()); got != 1 {
+		t.Errorf("copies in the target: got %d, want only the unrelated event's", got)
+	}
+}
+
+// mappingOf returns the row of one source event, failing where the edge
+// has none: a test asserting that a row survived proves nothing where
+// the row was never written.
+func mappingOf(t *testing.T, rows []storage.EventMapping, sourceEventID string) storage.EventMapping {
+	t.Helper()
+
+	for _, row := range rows {
+		if row.SourceEventID == sourceEventID {
+			return row
+		}
+	}
+	t.Fatalf("the edge has no mapping row for %q", sourceEventID)
+
+	return storage.EventMapping{}
 }
 
 func TestEngine_Reconcile_removesTheObjectOfAnOverrideWhoseMasterWasWrittenElsewhere(t *testing.T) {
