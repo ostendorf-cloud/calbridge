@@ -67,11 +67,50 @@ not just read another user's rows through a live connection, but could also swit
 protection off for every user at once, by virtue of owning the tables. This chart therefore
 never renders with the two equal.
 
-`migrationJob.databaseUser` additionally needs `EXECUTE` on `users_find_by_email`
-(`db/migrations`'s own pre-login email lookup) granted to `config.databaseUser`, the same way
-`docker-compose.yaml`'s own `grant-app-role` service grants it to `calbridge_app`: provisioning
-that grant, like every other table-level grant `config.databaseUser` needs on a database this
-chart does not itself own, is the cluster operator's responsibility; see "Database" below.
+`config.databaseUser` needs its privileges granted by `migrationJob.databaseUser`, which owns
+the tables. This chart cannot do that itself: it does not own the database and runs no step
+after the migration Job that could, so provisioning them is the cluster operator's
+responsibility. The list is not left to the operator to work out, though, because a privilege
+granted here that is not granted elsewhere makes
+`internal/storage/postgres`'s own row level security tests prove less than they claim. It is
+exactly what `docker-compose.yaml`'s `grant-app-role` service applies, and
+`internal/depsync`'s `TestTheApplicationRoleAndTheTestRoleHoldTheSameGrants` is what keeps the
+three copies from drifting apart. It reads the block below as one of its three sources, with
+`<config.databaseUser>` standing in for the role name, and compares the privileges each list
+grants per object rather than the statement text, so reordering or rewrapping a statement here
+is not drift and adding a privilege is:
+
+```sql
+GRANT USAGE ON SCHEMA public TO <config.databaseUser>;
+GRANT SELECT, INSERT, UPDATE, DELETE ON users TO <config.databaseUser>;
+GRANT SELECT, INSERT, DELETE ON identities, calendars, calendar_grants TO <config.databaseUser>;
+GRANT SELECT, INSERT, UPDATE, DELETE ON connections, edges, event_mapping TO <config.databaseUser>;
+GRANT EXECUTE ON FUNCTION users_find_by_email(text) TO <config.databaseUser>;
+GRANT EXECUTE ON FUNCTION identities_find_by_provider_subject(text, text) TO <config.databaseUser>;
+GRANT EXECUTE ON FUNCTION grant_counterparties() TO <config.databaseUser>;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO <config.databaseUser>;
+```
+
+Three things about that list are deliberate rather than incidental:
+
+- Each table gets exactly the privileges its own repository in `internal/storage/postgres`
+  uses, and no more. `users` gets no `DELETE` because nothing deletes a user row other than
+  account deletion, which does hold it. `calendars`, `identities` and `calendar_grants` get no
+  `UPDATE` because none of them has an update query; for `calendars` that withheld privilege is
+  a guarantee an integration test asserts directly, so granting it here without revisiting that
+  test would weaken a check rather than widen a permission.
+- The three `EXECUTE` grants are the only way `config.databaseUser` reads a row it does not
+  own: a local account by email (also what resolves the address a grant names), a sign-in
+  identity by `(provider, subject)`, and the addresses on the other side of a grant. Each
+  function is revoked from `PUBLIC` in `db/migrations`, so these grants are what actually decide
+  who may call them.
+- `ALTER DEFAULT PRIVILEGES` covers a table a later migration adds, and only one added after it
+  runs, by the role that ran it. It cannot retroactively cover the tables above, which is why
+  each of them is still named explicitly. It is compared like every other statement here, and
+  the integration test's own role carries the same rule: without that, the first table a
+  migration adds would arrive with `UPDATE` in a deployment and without it in the test, and an
+  assertion about what the role may not do would hold there for a reason no deployment has.
 
 ## Migrations
 
@@ -240,21 +279,25 @@ full period before it closes the listener. `terminationGracePeriodSeconds` in tu
 never kills the container before that shutdown sequence gets to finish on its own. The three
 defaults already satisfy both orderings; changing one means checking the other two.
 
-## The login rate limit is per client only with trusted proxies configured
+## The rate limits are per client only with trusted proxies configured
 
-`cmd/calbridge` rate limits `POST /api/v1/auth/login` by the client address
-its login rate limiter resolves, through govue's `clientip` package.
-`config.trustedProxyCIDRs` is empty by default, which is the secure choice:
-with nothing configured, the resolver trusts no proxy and keys every
-request on its TCP peer.
+`cmd/calbridge` rate limits two sets of routes by the client address its
+limiters resolve, through govue's `clientip` package: the ones a request
+reaches with no session (`POST /api/v1/auth/signup`,
+`POST /api/v1/auth/login` and the two provider sign-in routes) and
+`POST /api/v1/grants`, which answers whether an account exists for an
+address. The two have separate budgets, so sharing calendars cannot use
+up what a login needs. `config.trustedProxyCIDRs` is empty by default,
+which is the secure choice: with nothing configured, the resolver trusts
+no proxy and keys every request on its TCP peer.
 
 `templates/ingress.yaml` and `templates/httproute.yaml` both route every
 request through the chosen `Ingress` controller or Gateway data plane
 before it reaches this Service, so with `config.trustedProxyCIDRs` left
 empty, the TCP peer calbridge sees is that controller or data plane for
-every request alike, not the client. The login budget then ends up shared
-by every client instead of kept one per client, and one client exhausting
-it trips the limit for everyone else too.
+every request alike, not the client. Each budget then ends up shared by
+every client instead of kept one per client, and one client exhausting
+one trips that limit for everyone else too.
 
 Set `config.trustedProxyCIDRs` to the address or CIDR range the ingress
 controller's or Gateway data plane's pods send traffic from, as a comma
@@ -305,7 +348,7 @@ for the full list `cmd/calbridge` reads today.
 | `migrationJob.enabled` | Run `db/migrations` as a pre-install,pre-upgrade hook Job. See "Migrations" above. | `true` |
 | `migrationJob.databaseUser` | A separate role that applies `db/migrations`, distinct from `config.databaseUser`. Required; no usable default. See "Migrations run as a separate role" above. | `""` |
 | `migrationJob.image.repository` / `migrationJob.image.tag` / `migrationJob.image.digest` | The dbmate image the migration Job runs. | `ghcr.io/amacneil/dbmate` / `2.38.1` / pinned, see `values.yaml` |
-| `config.trustedProxyCIDRs` | `TRUSTED_PROXY_CIDRS`, a comma separated list of CIDRs (or bare addresses). Empty keeps the login rate limiter keyed on the TCP peer; see "The login rate limit is per client only with trusted proxies configured" above. | `""` |
+| `config.trustedProxyCIDRs` | `TRUSTED_PROXY_CIDRS`, a comma separated list of CIDRs (or bare addresses). Empty keeps the rate limiters keyed on the TCP peer; see "The rate limits are per client only with trusted proxies configured" above. | `""` |
 | `config.authBaseUrl` | `AUTH_BASE_URL`, the public base URL provider redirect URLs are built from. See "Provider sign-in" above. | `""` |
 | `config.auth.google.clientId` / `config.auth.microsoft.clientId` / `config.auth.apple.clientId` | `AUTH_GOOGLE_CLIENT_ID` / `AUTH_MICROSOFT_CLIENT_ID` / `AUTH_APPLE_CLIENT_ID`. Empty means that provider's sign-in is not offered. See "Provider sign-in" above. | `""` |
 | `config.auth.google.issuer` / `config.auth.microsoft.issuer` / `config.auth.apple.issuer` | `AUTH_GOOGLE_ISSUER` / `AUTH_MICROSOFT_ISSUER` / `AUTH_APPLE_ISSUER`. Empty falls back to `internal/auth`'s own documented default issuer. See "Provider sign-in" above. | `""` |

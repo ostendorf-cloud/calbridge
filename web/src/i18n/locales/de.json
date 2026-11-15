@@ -52,5 +52,128 @@
     "logout": "Abmelden",
     "loggingOut": "Wird abgemeldet",
     "logoutError": "Abmelden ist fehlgeschlagen."
+  },
+  "nav": {
+    "ariaLabel": "Navigation",
+    "home": "Übersicht",
+    "canvas": "Kalenderübersicht",
+    "grants": "Freigaben"
+  },
+  "canvas": {
+    "title": "Kalenderübersicht",
+    "lead": "Verbinden Sie Kalender über Konten hinweg und legen Sie fest, wie viele Details jede Verbindung kopiert.",
+    "loading": "Übersicht wird geladen",
+    "loadError": "Übersicht konnte nicht geladen werden.",
+    "unexpectedError": "Etwas ist schiefgelaufen. Bitte versuchen Sie es erneut.",
+    "sharedGroup": {
+      "title": "Mit Ihnen geteilt"
+    },
+    "badge": {
+      "managed": "Von calbridge erstellt",
+      "sharedBy": "Geteilt von {email}",
+      "maxDetail": "Höchstens: {level}"
+    },
+    "connectFromHere": "Verbindung von hier aus starten",
+    "connectFromHereFor": "Verbindung von hier aus starten: {name}",
+    "connectAnnouncement": "Verbindung von {name} wird vorbereitet. Wählen Sie unten ein Ziel.",
+    "controls": {
+      "zoomIn": "Vergrößern",
+      "zoomOut": "Verkleinern",
+      "fitView": "Ganze Ansicht einpassen"
+    },
+    "form": {
+      "title": "Verbindung erstellen",
+      "source": "Quelle",
+      "target": "Ziel",
+      "targetCalendar": "Zielkalender",
+      "targetMode": {
+        "existing": "Vorhandenen Kalender verwenden",
+        "new": "Neuen Kalender von calbridge anlegen lassen"
+      },
+      "newTargetAccount": "Konto für den neuen Kalender",
+      "newTargetName": "Name des neuen Kalenders",
+      "detailLevel": "Detailgrad",
+      "selectPlaceholder": "Bitte auswählen",
+      "cappedHint": "Die Freigabe eines beteiligten Kalenders begrenzt die möglichen Detailgrade. Breitere Stufen sind deshalb nicht wählbar.",
+      "submit": "Verbindung erstellen",
+      "validation": {
+        "source": "Bitte wählen Sie eine Quelle.",
+        "target": "Bitte wählen Sie ein Ziel.",
+        "newTargetAccount": "Bitte wählen Sie ein Konto.",
+        "newTargetName": "Bitte geben Sie einen Namen an.",
+        "detailLevel": "Bitte wählen Sie einen Detailgrad.",
+        "targetNotOwned": "Als Ziel kann nur ein eigener Kalender dienen."
+      }
+    },
+    "edges": {
+      "title": "Verbindungen",
+      "emptyTitle": "Noch keine Verbindungen",
+      "emptyDescription": "Erstellen Sie oben eine Verbindung zwischen zwei Kalendern.",
+      "edit": "Bearbeiten",
+      "delete": "Löschen"
+    },
+    "editor": {
+      "title": "Verbindung bearbeiten",
+      "fieldsDisclosure": "Welche Felder kopiert dieser Detailgrad?",
+      "cancel": "Abbrechen",
+      "save": "Speichern"
+    },
+    "deleteDialog": {
+      "title": "Verbindung löschen?",
+      "message": "Das Löschen entfernt jeden Termin, den diese Verbindung in ihr Ziel geschrieben hat.",
+      "confirm": "Verbindung löschen",
+      "cancel": "Abbrechen"
+    },
+    "detailLevel": {
+      "full": "Vollständig",
+      "title_time": "Titel und Zeit",
+      "busy_block": "Nur belegt"
+    },
+    "field": {
+      "summary": "Titel",
+      "description": "Beschreibung",
+      "location": "Ort",
+      "attendees": "Teilnehmer",
+      "status": "Status",
+      "transparency": "Verfügbarkeit",
+      "visibility": "Sichtbarkeit",
+      "recurrence": "Wiederholung"
+    }
+  },
+  "grants": {
+    "title": "Freigaben",
+    "lead": "Geben Sie anderen Personen Zugriff auf einen eigenen Kalender, und sehen Sie, was Ihnen freigegeben wurde.",
+    "loading": "Freigaben werden geladen",
+    "loadError": "Freigaben konnten nicht geladen werden.",
+    "unexpectedError": "Etwas ist schiefgelaufen. Bitte versuchen Sie es erneut.",
+    "revoke": "Zurückziehen",
+    "form": {
+      "title": "Zugriff gewähren",
+      "calendar": "Eigener Kalender",
+      "email": "E-Mail-Adresse der Person",
+      "maxDetailLevel": "Höchster Detailgrad",
+      "submit": "Zugriff gewähren",
+      "validation": {
+        "calendar": "Bitte wählen Sie einen Kalender.",
+        "email": "Bitte geben Sie eine E-Mail-Adresse an.",
+        "maxDetailLevel": "Bitte wählen Sie einen Detailgrad."
+      }
+    },
+    "given": {
+      "title": "Von Ihnen gewährt",
+      "emptyTitle": "Noch keine Freigaben",
+      "emptyDescription": "Freigaben, die Sie erteilen, erscheinen hier."
+    },
+    "received": {
+      "title": "Ihnen gewährt",
+      "emptyTitle": "Noch nichts freigegeben",
+      "emptyDescription": "Freigaben, die andere Ihnen erteilen, erscheinen hier."
+    },
+    "revokeDialog": {
+      "title": "Freigabe zurückziehen?",
+      "message": "Das Zurückziehen entfernt jede Verbindung, die diese Freigabe nutzt, und löscht die Termine, die diese Verbindungen in ihr Ziel geschrieben haben.",
+      "confirm": "Freigabe zurückziehen",
+      "cancel": "Abbrechen"
+    }
   }
 }

@@ -4,9 +4,11 @@
 // Package httpapi builds the HTTP handlers calbridge answers requests
 // with: liveness, readiness and metrics on Admin, and on Public the
 // signup, login, sign-in-with-a-provider, session and account routes
-// listed under "The session and CSRF contract" below, plus the SPA
-// fallback that serves the embedded Vue build. A later issue adds the
-// calendar, edge, grant and webhook routes to Public.
+// listed under "The session and CSRF contract" below, the sync graph
+// routes the Vue Flow canvas is a view of, and the SPA fallback that
+// serves the embedded Vue build. A later issue adds the webhook route to
+// Public. The graph routes live in graph.go, and the three rules every
+// one of them holds to are written out in that file's own doc comment.
 //
 // Every dependency is constructed by cmd/calbridge's main and handed to
 // NewHandler through Deps; this package builds no logger, no health
@@ -86,6 +88,12 @@
 //	GET    /api/v1/auth/providers                   the sign-in providers this deployment configured
 //	GET    /api/v1/auth/providers/{provider}/login     starts a provider sign-in
 //	GET    /api/v1/auth/providers/{provider}/callback  finishes one and starts the session
+//	GET    /api/v1/graph                            the whole sync graph: accounts, calendars, edges, grants, presets
+//	POST   /api/v1/edges                            draws one edge, into an existing target or one calbridge creates
+//	PATCH  /api/v1/edges/{id}                       changes an edge's detail level
+//	DELETE /api/v1/edges/{id}                       removes one edge
+//	POST   /api/v1/grants                           shares one calendar with another account, up to a detail level
+//	DELETE /api/v1/grants/{id}                      revokes one grant, from either side
 //
 // A login starts a session cookie, /me answers with the session's own
 // csrf_token, and every unsafe route spends it. Both login paths end at
@@ -99,6 +107,14 @@
 // RateLimitPer, and maxSessions below for the budget that limiter is
 // sized against. Signup and the provider callback both create rows, so
 // the same limit is what keeps a script from filling the users table.
+//
+// POST /api/v1/grants is throttled too, although it needs a session,
+// because it answers whether an account exists for an address. It
+// spends a second limiter with its own budget rather than that one:
+// sharing a calendar is an ordinary authenticated action, and on one
+// bucket a person sharing eleven calendars in a minute would refuse a
+// login. See limitedRoute in NewHandler and config.Config's
+// GrantRateLimitBurst.
 //
 // The session store is an in-memory session.MemoryStore, and the CSRF
 // signing key and the session.Codec that signs the provider login in
@@ -153,6 +169,7 @@ import (
 	"github.com/ostendorf-cloud/govue/session"
 
 	"github.com/ostendorf-cloud/calbridge/internal/auth"
+	"github.com/ostendorf-cloud/calbridge/internal/storage"
 )
 
 // maxSessions bounds session.NewMemoryStore's tracked session count.
@@ -216,6 +233,31 @@ func ProviderCallbackPath(providerID string) string {
 	return apiPathPrefix + "v1/auth/providers/" + providerID + "/callback"
 }
 
+// Store is what this package needs from a storage backend. It is
+// defined here, at the consumer, per go-conventions:
+// internal/storage/postgres.Store satisfies it with no adapter, because
+// its method set is a superset of this one.
+//
+// It embeds internal/auth's own Store, so the account routes keep
+// reaching exactly what that package allows and nothing more: there is
+// still no connection repository on auth.Store, so no code in
+// internal/auth can reach one, and widening this interface does not
+// widen that one.
+//
+// The repositories added here are the sync graph's. Every one of them
+// requires a context storage.UserScope.WithUser produced, which is what
+// makes row level security, and not a conditional in a handler, the
+// thing that decides what a request can see; see graph.go's inUserScope.
+type Store interface {
+	auth.Store
+
+	Connections() storage.ConnectionRepository
+	Calendars() storage.CalendarRepository
+	Edges() storage.EdgeRepository
+	CalendarGrants() storage.CalendarGrantRepository
+	Sharing() storage.SharingRepository
+}
+
 // Deps is everything NewHandler needs, constructed by cmd/calbridge's
 // main.
 type Deps struct {
@@ -244,24 +286,32 @@ type Deps struct {
 	AllowPlainHTTP bool
 
 	// RateLimitBurst and RateLimitPer configure the token bucket the
-	// login route is rate limited with. See maxSessions's own doc
-	// comment for why that route specifically needs one.
+	// unauthenticated routes are rate limited with. See maxSessions's own
+	// doc comment for why those routes specifically need one.
 	RateLimitBurst int
 	RateLimitPer   time.Duration
 
+	// GrantRateLimitBurst and GrantRateLimitPer configure the second
+	// token bucket, the one POST /api/v1/grants spends. It is separate
+	// from the bucket above on purpose; see limitedRoute in NewHandler
+	// and config.Config's own GrantRateLimitBurst.
+	GrantRateLimitBurst int
+	GrantRateLimitPer   time.Duration
+
 	// TrustedProxyCIDRs mirrors config.Config.TrustedProxyCIDRs: the
-	// addresses the login rate limiter's clientip.Resolver trusts to have
+	// addresses both rate limiters' clientip.Resolver trusts to have
 	// appended the real client address to X-Forwarded-For. Left empty,
 	// the resolver keys every request on its TCP peer; see
 	// config.Config.TrustedProxyCIDRs's own doc comment for what that
 	// means behind this application's Ingress or HTTPRoute.
 	TrustedProxyCIDRs []netip.Prefix
 
-	// Store is the storage backend every account route runs against,
-	// through internal/auth. Required: without it there is no account to
-	// check a login against, and an application that answered a login
-	// anyway is the shell this package no longer is.
-	Store auth.Store
+	// Store is the storage backend every route runs against: the account
+	// routes through internal/auth, and the sync graph routes directly,
+	// always inside Store.WithUser. Required: without it there is no
+	// account to check a login against, and an application that answered
+	// a login anyway is the shell this package no longer is.
+	Store Store
 
 	// AuthProviders are the sign-in providers this deployment
 	// configured, already built by main from config.Config.AuthProviders.
@@ -326,6 +376,17 @@ func NewHandler(d Deps) (Handlers, error) {
 		// config.Config.TrustedProxyCIDRs's own doc comment for why
 		// that is the safe default and what it costs behind this
 		// application's Ingress or HTTPRoute.
+		ClientIP: clientip.NewResolver(d.TrustedProxyCIDRs),
+	})
+	fail(err)
+
+	// A second limiter, with its own ratelimit.New and so its own
+	// buckets, for the one authenticated route that still has to be
+	// throttled. Both resolve the client the same way; what they must not
+	// share is the budget. See limitedRoute below.
+	grantLimiter := ratelimit.New(d.GrantRateLimitBurst, d.GrantRateLimitPer, maxRateLimitKeys)
+	grantRateLimit, err := middleware.NewRateLimit(middleware.RateLimitConfig{
+		Limiter:  grantLimiter,
 		ClientIP: clientip.NewResolver(d.TrustedProxyCIDRs),
 	})
 	fail(err)
@@ -442,6 +503,34 @@ func NewHandler(d Deps) (Handlers, error) {
 		return middleware.Chain(h, rateLimit.Middleware, protector.Middleware)
 	}
 
+	// limitedRoute is openRoute's shape with the other limiter, for a
+	// route that does need a session and still has to be throttled. There
+	// is exactly one: POST /api/v1/grants, which names the account to
+	// share with by email address and answers "no account exists for this
+	// email address" when there is none.
+	//
+	// That answer is deliberate and is argued in graph.go's
+	// handleCreateGrant: it discloses nothing signup does not already,
+	// since signup answers "an account already exists for this email
+	// address". The argument only holds while the two are bounded the
+	// same way, though. Without a limiter here, a caller with one account
+	// could enumerate the whole user base by address far faster than
+	// through signup, and the disclosure would stop being equivalent and
+	// start being the cheaper path. grantRateLimit's default budget is
+	// signup's own for that reason.
+	//
+	// It is a separate limiter, not the one above, because the two bound
+	// unrelated things and a shared budget makes each the other's denial
+	// of service: sharing a calendar is an ordinary authenticated action
+	// a person may repeat, and on one bucket the eleventh share in a
+	// minute would refuse a login instead. Behind an Ingress with no
+	// TrustedProxyCIDRs set every request resolves to the ingress
+	// controller, so that refusal would reach every account at once; see
+	// config.Config.TrustedProxyCIDRs.
+	limitedRoute := func(h http.Handler) http.Handler {
+		return middleware.Chain(h, grantRateLimit.Middleware, protector.Middleware)
+	}
+
 	mux := http.NewServeMux()
 
 	mux.Handle("POST /api/v1/auth/signup", openRoute(api.Handle(a.handleSignUp)))
@@ -450,6 +539,21 @@ func NewHandler(d Deps) (Handlers, error) {
 	mux.Handle("GET /api/v1/auth/providers", route(api.Handle(a.handleProviders)))
 	mux.Handle("GET /api/v1/me", route(api.Handle(a.handleMe)))
 	mux.Handle("DELETE /api/v1/me", route(api.Handle(a.handleDeleteAccount)))
+
+	// The sync graph. Every one of these needs a session and runs inside
+	// Store.WithUser; see graph.go. All but one carry no rate limiter,
+	// unlike signup and login: a request with no session never reaches
+	// past sessionFromRequest, so there is nothing an unauthenticated
+	// caller can spend by repeating one, and a caller that does have a
+	// session is already named. The exception is the grant route, which
+	// is mounted through limitedRoute above for the reason recorded
+	// there.
+	mux.Handle("GET /api/v1/graph", route(api.Handle(a.handleGraph)))
+	mux.Handle("POST /api/v1/edges", route(api.Handle(a.handleCreateEdge)))
+	mux.Handle("PATCH /api/v1/edges/{id}", route(api.Handle(a.handleUpdateEdge)))
+	mux.Handle("DELETE /api/v1/edges/{id}", route(api.Handle(a.handleDeleteEdge)))
+	mux.Handle("POST /api/v1/grants", limitedRoute(api.Handle(a.handleCreateGrant)))
+	mux.Handle("DELETE /api/v1/grants/{id}", route(api.Handle(a.handleDeleteGrant)))
 
 	// One pair of routes per configured provider, mounted by name rather
 	// than behind a single {provider} wildcard: a path segment that
@@ -519,7 +623,7 @@ func NewHandler(d Deps) (Handlers, error) {
 type app struct {
 	sessions *session.Manager
 	csrfKey  []byte
-	store    auth.Store
+	store    Store
 	local    *auth.Local
 	logger   *slog.Logger
 

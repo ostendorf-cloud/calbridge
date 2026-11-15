@@ -5,8 +5,8 @@
 // meResponse), and then spends that token on a real mutating request, the
 // logout button's POST /api/v1/auth/logout, which the server's CSRF
 // protector would reject without it.
-import { isApiError, GovueButton, GovueCard, GovuePage } from '@ostendorf-cloud/govue'
-import { onMounted, ref } from 'vue'
+import { isApiError, GovueButton, GovueCard, GovueNav, GovuePage } from '@ostendorf-cloud/govue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 
@@ -19,6 +19,12 @@ interface MeResponse {
 
 const { t } = useI18n()
 const router = useRouter()
+
+const navItems = computed(() => [
+  { href: '/', label: t('nav.home'), current: true },
+  { href: '/canvas', label: t('nav.canvas') },
+  { href: '/grants', label: t('nav.grants') },
+])
 
 const profile = ref<MeResponse | undefined>(undefined)
 const loading = ref(true)
@@ -59,6 +65,8 @@ async function logout(): Promise<void> {
 
 <template>
   <GovuePage :title="t('home.title')" :lead="t('home.lead')">
+    <GovueNav :items="navItems" :aria-label="t('nav.ariaLabel')" />
+
     <p v-if="loading">{{ t('home.loading') }}</p>
 
     <p v-else-if="loadError" role="alert" class="text-danger-text">{{ loadError }}</p>

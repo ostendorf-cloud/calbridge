@@ -73,8 +73,12 @@ func testDeps(t *testing.T) httpapi.Deps {
 		DistFS:          testDistFS(),
 		RateLimitBurst:  generousRateLimit,
 		RateLimitPer:    time.Minute,
-		Store:           storagetest.NewStore(),
-		Now:             func() time.Time { return testNow },
+		// The grant route has a bucket of its own, and a test about
+		// anything else must not be able to spend it either.
+		GrantRateLimitBurst: generousRateLimit,
+		GrantRateLimitPer:   time.Minute,
+		Store:               storagetest.NewStore(),
+		Now:                 func() time.Time { return testNow },
 	}
 }
 

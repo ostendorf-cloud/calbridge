@@ -23,17 +23,28 @@ on; every other path already exists.
   once, at startup, through govue's `envconf`. The database connection,
   the encryption key and each sign-in provider's client secret follow
   `envconf`'s `SecretOrFile`/`RequiredSecretOrFile` `_FILE`-suffix
-  convention; the rest is server, logging, session, login rate limit and
-  provider sign-in configuration.
+  convention; the rest is server, logging, session, rate limit and
+  provider sign-in configuration. There are two rate limit budgets, not
+  one: the routes a request reaches with no session carry one, and
+  `POST /api/v1/grants` carries its own, so an ordinary share cannot
+  spend what a login needs.
 - `internal/httpapi` builds the HTTP handler: liveness, readiness and
   metrics on the admin listener, and on the public one signup, login,
   logout, `GET` and `DELETE /api/v1/me`, the sign-in provider list and a
   pair of routes per configured provider, plus the SPA fallback that
   serves the embedded Vue build. Every account decision belongs to
   `internal/auth`; this package decodes a request, calls that package and
-  turns the answer into JSON or a session cookie. A later issue adds the
-  calendar, edge and grant API and the webhook endpoint Google and
-  Microsoft Graph push change notifications to.
+  turns the answer into JSON or a session cookie. `graph.go` carries the
+  sync graph API the canvas is a view of: `GET /api/v1/graph`, the edge
+  routes and the grant routes. Three rules hold there and are written out
+  in that file's own doc comment: every handler reaches the store only
+  through `inUserScope`, so row level security and not a conditional is
+  what bounds a read; a refusal for a row that does not exist and one for
+  a row the caller may not see are the identical answer; and
+  `internal/sync` stays the only package that decides what a detail level
+  means, through `MaskFor`, `CheckGrants` and `CheckLoop`. A later issue
+  adds the webhook endpoint Google and Microsoft Graph push change
+  notifications to.
 - `charts/calbridge/` is the Helm chart for the real deployment, with no
   Postgres subchart, the shape `charts/solobill` uses. It exposes the
   service through either an `Ingress` or a Gateway API `HTTPRoute`, chosen
@@ -102,12 +113,25 @@ on; every other path already exists.
   level security, not this package, is what actually enforces that scope.
   `crypto.go` encrypts and decrypts `connections.credentials` and
   `event_mapping.encrypted_details` at the database boundary, so a caller
-  above this package never holds or passes ciphertext. The two lookups
-  that have to run before any user id is known, a local account by email
-  and a sign-in identity by `(provider, subject)`, go through their own
-  `SECURITY DEFINER` function instead of through a widened policy; both
-  are revoked from `PUBLIC` in `db/migrations`, so the explicit grant to
-  the application role is what decides who may call them.
+  above this package never holds or passes ciphertext. The lookups that
+  cannot be reached under the asking user's own scope go through a
+  `SECURITY DEFINER` function instead of through a widened policy: a
+  local account by email, a sign-in identity by `(provider, subject)`,
+  and the addresses on the other side of a grant
+  (`grant_counterparties`). Each is revoked from `PUBLIC` in
+  `db/migrations`, so the explicit grant to the application role is what
+  decides who may call it. Each one also nulls in its own body whatever
+  its callers have no business with: `grant_counterparties` returns
+  `SETOF users`, because that is the only shape sqlc can resolve, and
+  returns no password hash and no TOTP secret in it. `sharing.go` is the
+  one file holding everything that reaches across from one user to
+  another, so that whole surface reads at once: the calendars a grant
+  shares with this user, the people a grant names, and the address-to-id
+  lookup that creates one. A calendar read across a grant comes back as
+  `storage.SharedCalendar`, which deliberately does not embed
+  `storage.Calendar`: the policy admits the owner's `external_id`, the
+  provider's own identifier, and nothing above the database is to have a
+  field to put it in.
 - `internal/storage/storagetest` is an in-memory implementation of the
   same repository interfaces, for a test of a package above the storage
   layer. It imitates the scoping row level security enforces, so a
@@ -137,9 +161,29 @@ on; every other path already exists.
   through govue's own generator. `LoginView` carries sign-in with both
   factors, sign-up with its TOTP enrolment, and a button per configured
   sign-in provider, with Apple marked as granting identity only. The Vue
-  Flow canvas where calendars are nodes grouped by account, an edge is
-  drawn by dragging one onto another, and the detail level is edited on
-  the edge, is a later issue's work.
+  Flow canvas draws calendars as nodes grouped by account, with the
+  calendars shared with this account as nodes of their own; an edge is
+  drawn by dragging one node onto another and the detail level is edited
+  on the edge. Every action on it is reachable without a pointer drag,
+  which is not a refinement: an edge that can only be created by dragging
+  cannot be created from a keyboard, and drawing edges is the product.
+  The grant screen is the ledger of what was shared out and in, and
+  where a share is revoked.
+
+## Deliberate gaps
+
+- A calendar calbridge is asked to create as an edge's target is written
+  with a provisional `external_id` (`calbridge-pending:` plus a uuid),
+  because no connector is wired into the service yet and
+  `calendars.external_id` is `NOT NULL`. A connector's own calendar
+  creation replaces it with the provider's id. See
+  `internal/httpapi/graph.go`'s `provisionalExternalIDPrefix`.
+- Revoking a grant removes the grant row. Tearing down the edges it
+  covered, and taking back the events they wrote, is
+  `internal/sync`'s `EnforceGrants`, which runs when the engine is wired;
+  the edges belong to the grantee and are out of the owner's scope, so no
+  API handler could do it even in principle. See
+  `docs/adr/0002-a-revoked-grant-deletes-the-edge.md`.
 
 ## Deviations
 

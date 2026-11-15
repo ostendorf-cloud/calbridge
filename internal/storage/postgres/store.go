@@ -140,6 +140,14 @@ func (s *Store) CalendarGrants() storage.CalendarGrantRepository {
 	return &calendarGrantRepository{}
 }
 
+// Sharing returns the sharing repository: the reads that cross from one
+// user to another. ListCalendarsSharedWithMe and ListGrantCounterparties
+// require a context WithUser produced; FindUserIDByEmail deliberately
+// does not. See storage.SharingRepository.
+func (s *Store) Sharing() storage.SharingRepository {
+	return &sharingRepository{pool: s.pool}
+}
+
 // EventMappings returns the event mapping repository. Every method on it
 // requires a context WithUser produced; see
 // storage.EventMappingRepository.

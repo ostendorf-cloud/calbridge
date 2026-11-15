@@ -69,4 +69,16 @@ describe('HomeView', () => {
 
     await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('login'))
   })
+
+  it('links to the canvas and the grants screen', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue(profile)
+
+    renderHomeView()
+
+    expect(await screen.findByRole('link', { name: 'Calendar canvas' })).toHaveAttribute(
+      'href',
+      '/canvas',
+    )
+    expect(screen.getByRole('link', { name: 'Grants' })).toHaveAttribute('href', '/grants')
+  })
 })

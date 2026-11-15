@@ -81,16 +81,18 @@ func run() error {
 	}
 
 	handlers, err := httpapi.NewHandler(httpapi.Deps{
-		Logger:            logger,
-		HealthRegistry:    healthRegistry,
-		MetricsRegistry:   metricsRegistry,
-		DistFS:            distFS,
-		AllowPlainHTTP:    cfg.SessionAllowPlainHTTP,
-		RateLimitBurst:    cfg.RateLimitBurst,
-		RateLimitPer:      cfg.RateLimitPer,
-		TrustedProxyCIDRs: cfg.TrustedProxyCIDRs,
-		Store:             store,
-		AuthProviders:     providers,
+		Logger:              logger,
+		HealthRegistry:      healthRegistry,
+		MetricsRegistry:     metricsRegistry,
+		DistFS:              distFS,
+		AllowPlainHTTP:      cfg.SessionAllowPlainHTTP,
+		RateLimitBurst:      cfg.RateLimitBurst,
+		RateLimitPer:        cfg.RateLimitPer,
+		GrantRateLimitBurst: cfg.GrantRateLimitBurst,
+		GrantRateLimitPer:   cfg.GrantRateLimitPer,
+		TrustedProxyCIDRs:   cfg.TrustedProxyCIDRs,
+		Store:               store,
+		AuthProviders:       providers,
 	})
 	if err != nil {
 		return fmt.Errorf("calbridge: build http handler: %w", err)

@@ -128,11 +128,24 @@ services:
   # opens a connection before these grants exist either.
   #
   # Runs as calbridge_super against the postgres service: it only grants
-  # privileges, so it needs no password of calbridge_app's own. Nothing
-  # here ever deletes a user, so users gets no DELETE; every other table
-  # gets exactly the privileges its own repository in
+  # privileges, so it needs no password of calbridge_app's own. users
+  # carries DELETE because DELETE /api/v1/me removes the account itself;
+  # every other table gets exactly the privileges its own repository in
   # internal/storage/postgres uses, matching
-  # internal/storage/postgres/integration_test.go's own test role grant.
+  # internal/storage/postgres/integration_test.go's own test role grant
+  # and charts/calbridge/README.md's list for a cluster.
+  # internal/depsync's TestTheApplicationRoleAndTheTestRoleHoldTheSameGrants
+  # is what holds that last sentence true across all three: a privilege
+  # granted here and not to the test role, or the other way round, turns
+  # an integration assertion about what the restricted role may not do
+  # into one that passes for a reason production does not have. It
+  # compares privileges per object rather than statement text, so
+  # rewrapping a line here is not drift, and it compares the
+  # ALTER DEFAULT PRIVILEGES line too, so a later migration's new table
+  # arrives with the same privileges in a deployment and in the test
+  # rather than only in one. calendars getting no
+  # UPDATE is load bearing that way, not an omission to tidy up; see
+  # TestAGranteeMayReadASharedCalendarAndNothingElseWithIt.
   # EXECUTE on users_find_by_email is the one way calbridge_app may read
   # a users row it does not already own: see that migration's own
   # comment for why the GRANT cannot live inside db/migrations itself.
@@ -156,6 +169,8 @@ services:
       - GRANT EXECUTE ON FUNCTION users_find_by_email(text) TO calbridge_app;
       - -c
       - GRANT EXECUTE ON FUNCTION identities_find_by_provider_subject(text, text) TO calbridge_app;
+      - -c
+      - GRANT EXECUTE ON FUNCTION grant_counterparties() TO calbridge_app;
       - -c
       - GRANT SELECT, INSERT, DELETE ON identities, calendars, calendar_grants TO calbridge_app;
       - -c

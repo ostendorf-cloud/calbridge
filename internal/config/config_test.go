@@ -73,6 +73,13 @@ func TestLoad(t *testing.T) {
 		if cfg.RateLimitPer != time.Minute {
 			t.Errorf("RateLimitPer = %v, want default 1m", cfg.RateLimitPer)
 		}
+		if cfg.GrantRateLimitBurst != 10 {
+			t.Errorf("GrantRateLimitBurst = %d, want default 10, signup's own budget",
+				cfg.GrantRateLimitBurst)
+		}
+		if cfg.GrantRateLimitPer != time.Minute {
+			t.Errorf("GrantRateLimitPer = %v, want default 1m", cfg.GrantRateLimitPer)
+		}
 	})
 
 	t.Run("listen addr override", func(t *testing.T) {
@@ -228,6 +235,42 @@ func TestLoad(t *testing.T) {
 		}
 		if cfg.RateLimitPer != 30*time.Second {
 			t.Errorf("RateLimitPer = %v, want 30s", cfg.RateLimitPer)
+		}
+	})
+
+	t.Run("the grant rate limit is configured separately from the login one", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, err := Load(validEnv(map[string]string{
+			"RATE_LIMIT_BURST":       "5",
+			"RATE_LIMIT_PER":         "30s",
+			"GRANT_RATE_LIMIT_BURST": "20",
+			"GRANT_RATE_LIMIT_PER":   "2m",
+		}))
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.GrantRateLimitBurst != 20 {
+			t.Errorf("GrantRateLimitBurst = %d, want 20", cfg.GrantRateLimitBurst)
+		}
+		if cfg.GrantRateLimitPer != 2*time.Minute {
+			t.Errorf("GrantRateLimitPer = %v, want 2m", cfg.GrantRateLimitPer)
+		}
+		if cfg.RateLimitBurst != 5 {
+			t.Errorf("RateLimitBurst = %d, want 5; the grant settings must not reach the login "+
+				"limiter", cfg.RateLimitBurst)
+		}
+		if cfg.RateLimitPer != 30*time.Second {
+			t.Errorf("RateLimitPer = %v, want 30s", cfg.RateLimitPer)
+		}
+	})
+
+	t.Run("grant rate limit per below the minimum is an error", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := Load(validEnv(map[string]string{"GRANT_RATE_LIMIT_PER": "100ms"}))
+		if err == nil {
+			t.Fatal("Load() error = nil, want an error for a GRANT_RATE_LIMIT_PER below the minimum")
 		}
 	})
 

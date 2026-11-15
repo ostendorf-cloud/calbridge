@@ -474,7 +474,7 @@ func TestRowLevelSecurity(t *testing.T) {
 				`INSERT INTO users (id, email, status) VALUES ($1, $2, 'active')`,
 				uuid.New(), "smuggled-"+uuid.NewString()+"@example.com")
 
-			requirePgError(t, err, pgInsufficientPrivilege, `new row violates row-level security policy`)
+			requirePgErrorRoutine(t, err, pgInsufficientPrivilege, pgRoutineRLSCheck)
 		})
 	})
 
@@ -812,7 +812,7 @@ func TestRowLevelSecurity(t *testing.T) {
 				return err
 			})
 
-			requirePgError(t, err, pgRaiseException, edgesSourceCalendarRefusal)
+			requireEdgesSourceCalendarRefusal(t, err)
 		})
 
 		t.Run("a calendar id that exists under nobody is refused identically, closing the oracle", func(t *testing.T) {
@@ -833,7 +833,7 @@ func TestRowLevelSecurity(t *testing.T) {
 				return err
 			})
 
-			requirePgError(t, err, pgRaiseException, edgesSourceCalendarRefusal)
+			requireEdgesSourceCalendarRefusal(t, err)
 		})
 	})
 
@@ -1152,6 +1152,7 @@ func TestTheSecurityDefinerLookupsAreNotExecutableByPublic(t *testing.T) {
 	for _, signature := range []string{
 		"users_find_by_email(text)",
 		"identities_find_by_provider_subject(text, text)",
+		"grant_counterparties()",
 	} {
 		var executableByPublic bool
 
@@ -1592,16 +1593,27 @@ $$;`
 	// Mirrors docker-compose.yaml's "grant-app-role" service: every table
 	// gets exactly the privileges its own repository in
 	// internal/storage/postgres actually uses. users gets DELETE because
-	// userRepository.DeleteAccount removes the row itself, and the two
-	// SECURITY DEFINER lookup functions get EXECUTE because the two
-	// pre-login lookups go through them.
+	// userRepository.DeleteAccount removes the row itself, and the three
+	// SECURITY DEFINER lookup functions get EXECUTE because the lookups
+	// that cannot run under the asking user's own scope go through them.
+	//
+	// The ALTER DEFAULT PRIVILEGES line is the standing rule for a table
+	// a later migration adds, and it is here for the same reason the
+	// explicit grants are: without it, the first such table would arrive
+	// with UPDATE in the deployment and without it on this role, and an
+	// assertion about what this role may not do would hold for a reason
+	// production does not have. internal/depsync's
+	// TestTheApplicationRoleAndTheTestRoleHoldTheSameGrants compares this
+	// statement with the deployment's and the chart's.
 	grant := `
 GRANT USAGE ON SCHEMA public TO ` + testAppRole + `;
 GRANT SELECT, INSERT, UPDATE, DELETE ON users TO ` + testAppRole + `;
 GRANT EXECUTE ON FUNCTION users_find_by_email(text) TO ` + testAppRole + `;
 GRANT EXECUTE ON FUNCTION identities_find_by_provider_subject(text, text) TO ` + testAppRole + `;
+GRANT EXECUTE ON FUNCTION grant_counterparties() TO ` + testAppRole + `;
 GRANT SELECT, INSERT, DELETE ON identities, calendars, calendar_grants TO ` + testAppRole + `;
-GRANT SELECT, INSERT, UPDATE, DELETE ON connections, edges, event_mapping TO ` + testAppRole + `;`
+GRANT SELECT, INSERT, UPDATE, DELETE ON connections, edges, event_mapping TO ` + testAppRole + `;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ` + testAppRole + `;`
 
 	if _, err := adminPool.Exec(ctx, grant); err != nil {
 		t.Fatalf("grant %s privileges: %v", testAppRole, err)
@@ -1620,13 +1632,38 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON connections, edges, event_mapping TO ` +
 // The SQLSTATEs the assertions above name a refusing mechanism by. See
 // https://www.postgresql.org/docs/current/errcodes-appendix.html.
 const (
-	// pgInsufficientPrivilege is what a row level security policy raises
-	// when it refuses a write outright, rather than filtering a row away.
+	// pgInsufficientPrivilege is carried by two different refusals, and
+	// an assertion using it has to name the message as well as the code
+	// to say which one it got.
+	//
+	// A row level security policy raises it when it refuses a write
+	// outright rather than filtering a row away: "new row violates row
+	// level security policy for table ...". A missing table privilege
+	// raises it too, before any policy is consulted at all: "permission
+	// denied for table ...". The first means the role may attempt the
+	// command and this row was refused; the second means the role may
+	// not attempt the command. Asserting only the code cannot tell a
+	// guarantee the schema makes from one a GRANT list makes.
 	pgInsufficientPrivilege = "42501"
 	// pgRaiseException is what a plpgsql RAISE EXCEPTION that names no
 	// ERRCODE of its own carries, which is how
 	// edges_check_calendar_access refuses.
 	pgRaiseException = "P0001"
+)
+
+// The two PostgreSQL C functions that raise pgInsufficientPrivilege, as
+// carried in pgconn.PgError.Routine. The message text for either comes
+// through lc_messages and is translated on a server running a non-English
+// locale; Routine names the mechanism directly and is stable regardless.
+const (
+	// pgRoutineAclCheck is aclcheck_error, raised when the role may not
+	// even attempt the command: a missing table privilege, consulted
+	// before any row level security policy.
+	pgRoutineAclCheck = "aclcheck_error"
+	// pgRoutineRLSCheck is ExecWithCheckOptions, raised when a row level
+	// security policy's WITH CHECK clause refuses a row the role was
+	// allowed to attempt writing.
+	pgRoutineRLSCheck = "ExecWithCheckOptions"
 )
 
 // edgesSourceCalendarRefusal is the message edges_check_calendar_access
@@ -1635,17 +1672,57 @@ const (
 // assert which check refused a write rather than only that one did.
 const edgesSourceCalendarRefusal = "edges: source_calendar_id is not owned by or granted to this edge's user"
 
-// requirePgError fails unless err carries a Postgres error with the given
-// SQLSTATE and a message containing wantMessage. A test that only asserts
-// "an error came back" cannot tell a trigger's refusal from a row level
-// security refusal, a foreign key violation or a check constraint, so it
-// keeps passing when the check it is about is removed and a different one
-// happens to refuse in its place.
-func requirePgError(t *testing.T, err error, code, wantMessage string) {
+// requireEdgesSourceCalendarRefusal fails unless err carries a Postgres
+// error with SQLSTATE pgRaiseException and a message containing
+// edgesSourceCalendarRefusal: the edges_check_calendar_access trigger's
+// own refusal, which is the only RAISE EXCEPTION any test in this file
+// still asserts on message text. That message is plpgsql's own literal,
+// written once in db/migrations and spelled out again here; it is not a
+// server-generated message translated through lc_messages, so asserting
+// it is still locale-independent, unlike requirePgErrorRoutine's two
+// callers, which have to use Routine instead because pgInsufficientPrivilege
+// covers a privilege denial and a row level security refusal that share
+// one SQLSTATE and differ only in a message Postgres itself generates and
+// translates. A test that only asserts "an error came back" cannot tell
+// this trigger's refusal from a row level security refusal, a foreign key
+// violation or a check constraint, so it keeps passing when the check it
+// is about is removed and a different one happens to refuse in its place.
+func requireEdgesSourceCalendarRefusal(t *testing.T, err error) {
 	t.Helper()
 
 	if err == nil {
-		t.Fatalf("got no error, want SQLSTATE %s with a message containing %q", code, wantMessage)
+		t.Fatalf("got no error, want SQLSTATE %s with a message containing %q",
+			pgRaiseException, edgesSourceCalendarRefusal)
+	}
+
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		t.Fatalf("err = %v, want a Postgres error with SQLSTATE %s", err, pgRaiseException)
+	}
+
+	if pgErr.Code != pgRaiseException {
+		t.Fatalf("SQLSTATE = %s (%q), want %s: a different mechanism refused this write than the one under test",
+			pgErr.Code, pgErr.Message, pgRaiseException)
+	}
+
+	if !strings.Contains(pgErr.Message, edgesSourceCalendarRefusal) {
+		t.Fatalf("message = %q, want it to contain %q", pgErr.Message, edgesSourceCalendarRefusal)
+	}
+}
+
+// requirePgErrorRoutine fails unless err carries a Postgres error with the
+// given SQLSTATE and Routine. pgInsufficientPrivilege (42501) is raised by
+// two different mechanisms with two different messages, and the message
+// text is server-locale dependent, translated through lc_messages. Routine
+// names the C function that raised the error and does not vary with the
+// locale, so it is what this assertion names the mechanism by; the message
+// is still read into the failure output, where it helps explain what went
+// wrong, but it is never what the assertion depends on.
+func requirePgErrorRoutine(t *testing.T, err error, code, wantRoutine string) {
+	t.Helper()
+
+	if err == nil {
+		t.Fatalf("got no error, want SQLSTATE %s raised by %s", code, wantRoutine)
 	}
 
 	var pgErr *pgconn.PgError
@@ -1658,8 +1735,9 @@ func requirePgError(t *testing.T, err error, code, wantMessage string) {
 			pgErr.Code, pgErr.Message, code)
 	}
 
-	if !strings.Contains(pgErr.Message, wantMessage) {
-		t.Fatalf("message = %q, want it to contain %q", pgErr.Message, wantMessage)
+	if pgErr.Routine != wantRoutine {
+		t.Fatalf("Routine = %q (message %q), want %s: a different mechanism refused this write than the one under test",
+			pgErr.Routine, pgErr.Message, wantRoutine)
 	}
 }
 
@@ -1734,6 +1812,730 @@ func connectionIDs(t *testing.T, rows pgx.Rows) []uuid.UUID {
 	}
 
 	return ids
+}
+
+// sharingFixture is two accounts, each with a connection and a
+// calendar, and one grant from the owner's calendar to the grantee. It
+// is what every assertion about the sharing surface needs in front of
+// it.
+type sharingFixture struct {
+	store *postgres.Store
+
+	owner            storage.User
+	ownerCalendar    storage.Calendar
+	grantee          storage.User
+	granteeCalendar  storage.Calendar
+	unrelated        storage.User
+	grant            storage.CalendarGrant
+	grantDetailLevel storage.DetailLevel
+}
+
+// seedSharing builds that fixture through the restricted role, so every
+// row in it was written under the same policies the assertions then run
+// against.
+func seedSharing(ctx context.Context, t *testing.T, store *postgres.Store) sharingFixture {
+	t.Helper()
+
+	fixture := sharingFixture{store: store, grantDetailLevel: storage.DetailLevelTitleTime}
+
+	for _, seat := range []struct {
+		user     *storage.User
+		calendar *storage.Calendar
+		prefix   string
+	}{
+		{&fixture.owner, &fixture.ownerCalendar, "owner"},
+		{&fixture.grantee, &fixture.granteeCalendar, "grantee"},
+		{&fixture.unrelated, nil, "unrelated"},
+	} {
+		user, err := store.Users().Create(ctx, storage.User{
+			Email:  seat.prefix + "-" + uuid.NewString() + "@example.com",
+			Status: storage.UserStatusActive,
+		})
+		if err != nil {
+			t.Fatalf("create the %s user: %v", seat.prefix, err)
+		}
+
+		*seat.user = user
+
+		if seat.calendar == nil {
+			continue
+		}
+
+		if err := store.WithUser(ctx, user.ID, func(ctx context.Context) error {
+			connection, err := store.Connections().Create(ctx, storage.Connection{
+				UserID:      user.ID,
+				Provider:    storage.ConnectionProviderGoogle,
+				DisplayName: seat.prefix + "'s Google account",
+				Credentials: []byte("not-a-real-refresh-token"),
+			})
+			if err != nil {
+				return err
+			}
+
+			calendar, err := store.Calendars().Create(ctx, storage.Calendar{
+				UserID:       user.ID,
+				ConnectionID: connection.ID,
+				ExternalID:   seat.prefix + "-" + uuid.NewString(),
+				Name:         seat.prefix + "'s calendar",
+			})
+			if err != nil {
+				return err
+			}
+
+			*seat.calendar = calendar
+
+			return nil
+		}); err != nil {
+			t.Fatalf("seed the %s calendar: %v", seat.prefix, err)
+		}
+	}
+
+	if err := store.WithUser(ctx, fixture.owner.ID, func(ctx context.Context) error {
+		grant, err := store.CalendarGrants().Create(ctx, storage.CalendarGrant{
+			OwnerUserID:    fixture.owner.ID,
+			GranteeUserID:  fixture.grantee.ID,
+			CalendarID:     fixture.ownerCalendar.ID,
+			MaxDetailLevel: fixture.grantDetailLevel,
+		})
+		if err != nil {
+			return err
+		}
+
+		fixture.grant = grant
+
+		return nil
+	}); err != nil {
+		t.Fatalf("create the grant: %v", err)
+	}
+
+	return fixture
+}
+
+// TestAGrantIsWhatLetsAGranteeReadTheSharedCalendar holds down the
+// policy this milestone added: calendars_grantee_read, and nothing else,
+// is what admits a calendar somebody else owns, and it admits exactly
+// the ones a grant names.
+func TestAGrantIsWhatLetsAGranteeReadTheSharedCalendar(t *testing.T) {
+	adminURL := requireDatabaseURL(t)
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	store := restrictedStore(ctx, t, adminPool, adminURL)
+	fixture := seedSharing(ctx, t, store)
+
+	var shared []storage.SharedCalendar
+
+	if err := store.WithUser(ctx, fixture.grantee.ID, func(ctx context.Context) error {
+		var err error
+		shared, err = store.Sharing().ListCalendarsSharedWithMe(ctx)
+
+		return err
+	}); err != nil {
+		t.Fatalf("list the calendars shared with the grantee: %v", err)
+	}
+
+	if len(shared) != 1 {
+		t.Fatalf("the grantee sees %d shared calendars, want exactly the one the grant names", len(shared))
+	}
+
+	if shared[0].ID != fixture.ownerCalendar.ID {
+		t.Errorf("shared calendar = %v, want %v", shared[0].ID, fixture.ownerCalendar.ID)
+	}
+
+	if shared[0].UserID != fixture.owner.ID {
+		t.Errorf("shared calendar's owner = %v, want %v", shared[0].UserID, fixture.owner.ID)
+	}
+
+	if shared[0].MaxDetailLevel != fixture.grantDetailLevel {
+		t.Errorf("max detail level = %q, want %q; a shared calendar without its bound is the thing "+
+			"storage.SharedCalendar exists to prevent", shared[0].MaxDetailLevel, fixture.grantDetailLevel)
+	}
+
+	if shared[0].GrantID != fixture.grant.ID {
+		t.Errorf("grant id = %v, want %v", shared[0].GrantID, fixture.grant.ID)
+	}
+
+	// The control: an account no grant names sees nothing, even though
+	// the very same row is really there and the very same query runs.
+	var unrelated []storage.SharedCalendar
+
+	if err := store.WithUser(ctx, fixture.unrelated.ID, func(ctx context.Context) error {
+		var err error
+		unrelated, err = store.Sharing().ListCalendarsSharedWithMe(ctx)
+
+		return err
+	}); err != nil {
+		t.Fatalf("list the calendars shared with an unrelated account: %v", err)
+	}
+
+	if len(unrelated) != 0 {
+		t.Fatalf("an account no grant names sees %d shared calendars, want none", len(unrelated))
+	}
+}
+
+// TestAGranteeMayReadASharedCalendarAndNothingElseWithIt is the other
+// half of calendars_grantee_read: it is FOR SELECT, so it widens what
+// comes back and cannot widen what may be written.
+//
+// The two writes it tries are refused by two different mechanisms, and
+// the difference is the point of this test rather than an accident of
+// it:
+//
+//   - UPDATE is refused before any policy is consulted, because the
+//     application role holds no UPDATE privilege on calendars at all.
+//     internal/storage's CalendarRepository has no update method and
+//     queries/calendars.sql contains no UPDATE statement, so the grant
+//     lists in docker-compose.yaml's grant-app-role service and in
+//     setUpTestAppRole below both give calendars SELECT, INSERT and
+//     DELETE and nothing more. That is a table privilege, so it raises
+//     42501 rather than filtering a row.
+//   - DELETE is granted at the table level, so it reaches the policies,
+//     and calendars_user_isolation's USING clause is what refuses it.
+//     A USING clause refuses by matching no row, not by raising, so
+//     this one comes back with no error and zero rows affected.
+//
+// calendars_grantee_read still matters even though UPDATE is denied
+// outright: DELETE is reachable at the table level and the policy is the
+// only thing standing between a grantee and deleting somebody else's
+// calendar. And the privilege list is not a guarantee of the schema, it
+// is a choice recorded in two deployment files: the day a calendar gains
+// a rename, UPDATE gets granted and the policy becomes the only refusal
+// left on that path too. Both halves are asserted here so that neither
+// can quietly become the only one.
+//
+// The privileges themselves are read out of the database first, rather
+// than assumed from those two files, so that this test states what it
+// depends on. internal/depsync is what keeps the two files agreeing with
+// each other.
+func TestAGranteeMayReadASharedCalendarAndNothingElseWithIt(t *testing.T) {
+	adminURL := requireDatabaseURL(t)
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	store := restrictedStore(ctx, t, adminPool, adminURL)
+	fixture := seedSharing(ctx, t, store)
+
+	restrictedPool, err := postgres.NewPool(ctx, setUpTestAppRole(ctx, t, adminPool, adminURL))
+	if err != nil {
+		t.Fatalf("open restricted pool as %s: %v", testAppRole, err)
+	}
+	t.Cleanup(restrictedPool.Close)
+
+	// What the role may attempt at all, before any policy has a say. An
+	// UPDATE that is denied here never reaches calendars_user_isolation,
+	// and a DELETE that is allowed here reaches it and nothing else.
+	for _, privilege := range []struct {
+		name string
+		want bool
+	}{
+		{"SELECT", true},
+		{"INSERT", true},
+		{"DELETE", true},
+		{"UPDATE", false},
+	} {
+		var held bool
+
+		// $1 is cast to name explicitly: has_table_privilege has both a
+		// (name, text, text) and a (oid, text, text) overload, and an
+		// untyped parameter could resolve to either, which Postgres
+		// refuses as "function is not unique" rather than guessing.
+		if err := adminPool.QueryRow(ctx,
+			`SELECT has_table_privilege($1::name, 'calendars', $2)`, testAppRole, privilege.name).Scan(&held); err != nil {
+			t.Fatalf("read %s's %s privilege on calendars: %v", testAppRole, privilege.name, err)
+		}
+
+		if held != privilege.want {
+			t.Fatalf("%s on calendars is held = %t, want %t; the grant lists in docker-compose.yaml and "+
+				"in setUpTestAppRole give calendars exactly the privileges its own repository uses, and "+
+				"the two refusals asserted below depend on which of them this is",
+				privilege.name, held, privilege.want)
+		}
+	}
+
+	// The read the new policy admits, run with no predicate on user_id
+	// at all, so what comes back is what the policies admitted.
+	var visible int
+
+	granteeTx(ctx, t, restrictedPool, fixture.grantee.ID, func(tx pgx.Tx) {
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM calendars WHERE id = $1`, fixture.ownerCalendar.ID).Scan(&visible); err != nil {
+			t.Fatalf("read the shared calendar as the grantee: %v", err)
+		}
+	})
+
+	if visible != 1 {
+		t.Fatalf("the grantee reads %d rows for the shared calendar, want 1; calendars_grantee_read "+
+			"is what admits it", visible)
+	}
+
+	// The UPDATE, refused at the table level. It gets a transaction of
+	// its own because a raised error aborts the one it happened in, and
+	// every later statement there would then fail with 25P02 rather than
+	// with whatever it was meant to prove. Routine, not the message, is
+	// what separates a missing table privilege from a policy's own
+	// 42501; see pgInsufficientPrivilege.
+	var updateErr error
+
+	granteeTx(ctx, t, restrictedPool, fixture.grantee.ID, func(tx pgx.Tx) {
+		_, updateErr = tx.Exec(ctx,
+			`UPDATE calendars SET name = 'renamed by the grantee' WHERE id = $1`, fixture.ownerCalendar.ID)
+	})
+
+	requirePgErrorRoutine(t, updateErr, pgInsufficientPrivilege, pgRoutineAclCheck)
+
+	// The DELETE, refused by the policy. The role may attempt it, so
+	// this reaches calendars_user_isolation, whose USING clause the
+	// grantee does not satisfy: no error, no row.
+	var (
+		tag       pgconn.CommandTag
+		deleteErr error
+	)
+
+	granteeTx(ctx, t, restrictedPool, fixture.grantee.ID, func(tx pgx.Tx) {
+		tag, deleteErr = tx.Exec(ctx, `DELETE FROM calendars WHERE id = $1`, fixture.ownerCalendar.ID)
+	})
+
+	if deleteErr != nil {
+		t.Fatalf("delete the shared calendar as the grantee: %v, want it filtered away by "+
+			"calendars_user_isolation rather than refused with an error", deleteErr)
+	}
+
+	if tag.RowsAffected() != 0 {
+		t.Errorf("the grantee's delete touched %d rows, want 0: calendars_grantee_read is FOR SELECT "+
+			"and must not widen a write", tag.RowsAffected())
+	}
+
+	// And the row really is still there and unchanged, read through a
+	// connection that bypasses row level security. Without this the
+	// assertions above would pass against an empty table.
+	var name string
+
+	if err := adminPool.QueryRow(ctx,
+		`SELECT name FROM calendars WHERE id = $1`, fixture.ownerCalendar.ID).Scan(&name); err != nil {
+		t.Fatalf("admin read of the shared calendar: %v", err)
+	}
+
+	if name != fixture.ownerCalendar.Name {
+		t.Errorf("the shared calendar is now named %q, want %q", name, fixture.ownerCalendar.Name)
+	}
+}
+
+// granteeTx opens a transaction on pool scoped to userID, runs fn against
+// it and rolls it back as soon as fn returns, rather than deferring the
+// rollback to t.Cleanup. Each caller gets a transaction of its own,
+// because a statement that raises aborts the transaction it ran in:
+// reusing one would turn every assertion after the first refusal into
+// 25P02, "current transaction is aborted", whatever it was meant to
+// check.
+//
+// Rolling back immediately, instead of at the end of the test, is what
+// keeps this safe to call more than a handful of times in one test: a
+// transaction held open until t.Cleanup keeps its pooled connection
+// checked out for the rest of the test, and pool's default MaxConns is 4.
+// A test with four or more calls would have its fourth granteeTx block in
+// Begin, on a context.Background() with no deadline, and hang rather
+// than fail. Rolling back here returns the connection before the next
+// call needs one, so the number of calls in one test is no longer bounded
+// by MaxConns.
+func granteeTx(ctx context.Context, t *testing.T, pool *pgxpool.Pool, userID uuid.UUID, fn func(tx pgx.Tx)) {
+	t.Helper()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.user_id', $1, true)`, userID.String()); err != nil {
+		t.Fatalf("scope the transaction to %s: %v", userID, err)
+	}
+
+	fn(tx)
+}
+
+// TestGrantCounterpartiesDisclosesOnlyThePeopleAGrantAlreadyNames holds
+// down the SECURITY DEFINER function this milestone added. It bypasses
+// row level security on users and calendar_grants by design, so its own
+// WHERE clause is the whole of the access control and is what this
+// checks: both sides of a grant see each other, an account on neither
+// side sees nobody, and nothing but the address comes back.
+func TestGrantCounterpartiesDisclosesOnlyThePeopleAGrantAlreadyNames(t *testing.T) {
+	adminURL := requireDatabaseURL(t)
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	store := restrictedStore(ctx, t, adminPool, adminURL)
+	fixture := seedSharing(ctx, t, store)
+
+	requireUsersExist(ctx, t, adminPool, fixture.owner.ID, fixture.grantee.ID, fixture.unrelated.ID)
+
+	cases := []struct {
+		name      string
+		scope     uuid.UUID
+		wantID    uuid.UUID
+		wantEmail string
+		wantNone  bool
+	}{
+		{
+			name:      "the owner sees the account they shared with",
+			scope:     fixture.owner.ID,
+			wantID:    fixture.grantee.ID,
+			wantEmail: fixture.grantee.Email,
+		},
+		{
+			name:      "the grantee sees the account that shared with them",
+			scope:     fixture.grantee.ID,
+			wantID:    fixture.owner.ID,
+			wantEmail: fixture.owner.Email,
+		},
+		{
+			name:     "an account on neither side of any grant sees nobody",
+			scope:    fixture.unrelated.ID,
+			wantNone: true,
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var counterparties []storage.GrantCounterparty
+
+			if err := store.WithUser(ctx, testCase.scope, func(ctx context.Context) error {
+				var err error
+				counterparties, err = store.Sharing().ListGrantCounterparties(ctx)
+
+				return err
+			}); err != nil {
+				t.Fatalf("list the counterparties: %v", err)
+			}
+
+			if testCase.wantNone {
+				if len(counterparties) != 0 {
+					t.Fatalf("got %d counterparties, want none: the function's own WHERE clause is "+
+						"the only thing bounding it", len(counterparties))
+				}
+
+				return
+			}
+
+			if len(counterparties) != 1 {
+				t.Fatalf("got %d counterparties, want exactly the one the grant names", len(counterparties))
+			}
+
+			if counterparties[0].UserID != testCase.wantID {
+				t.Errorf("counterparty = %v, want %v", counterparties[0].UserID, testCase.wantID)
+			}
+
+			if counterparties[0].Email != testCase.wantEmail {
+				t.Errorf("email = %q, want %q", counterparties[0].Email, testCase.wantEmail)
+			}
+		})
+	}
+}
+
+// TestGrantCounterpartiesCarriesNoCredentialAtAll is the other half of
+// the function above: not what rows it returns, but what is in them.
+//
+// It returns SETOF users, because sqlc resolves a function's columns
+// from the table a SETOF names and from nothing else, so the rowtype is
+// the whole of users, password_hash and totp_secret included. The body
+// substitutes NULL for the three credential columns, which is what makes
+// the wide rowtype harmless: a query one directory away that projected
+// them would read NULL rather than a hash. This asserts that directly,
+// from the restricted role, against a counterparty whose real row does
+// hold all three.
+func TestGrantCounterpartiesCarriesNoCredentialAtAll(t *testing.T) {
+	adminURL := requireDatabaseURL(t)
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	store := restrictedStore(ctx, t, adminPool, adminURL)
+	fixture := seedSharing(ctx, t, store)
+
+	// The owner is the grantee's counterparty, so the owner's row is
+	// what the grantee's call returns. Writing the credentials through
+	// the admin pool keeps this test independent of whether any
+	// repository method sets them yet.
+	const (
+		seededHash   = "$argon2id$v=19$m=65536,t=3,p=4$not-a-real-salt$not-a-real-hash"
+		seededSecret = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+		seededCount  = int64(12345)
+	)
+
+	if _, err := adminPool.Exec(ctx,
+		`UPDATE users SET password_hash = $2, totp_secret = $3, totp_last_counter = $4 WHERE id = $1`,
+		fixture.owner.ID, seededHash, seededSecret, seededCount); err != nil {
+		t.Fatalf("seed the owner's credentials: %v", err)
+	}
+
+	// The control: the columns really do hold those values, read through
+	// a connection that bypasses row level security. Without this the
+	// assertions below would pass against three empty columns.
+	var (
+		storedHash   *string
+		storedSecret *string
+		storedCount  *int64
+	)
+
+	if err := adminPool.QueryRow(ctx,
+		`SELECT password_hash, totp_secret, totp_last_counter FROM users WHERE id = $1`,
+		fixture.owner.ID).Scan(&storedHash, &storedSecret, &storedCount); err != nil {
+		t.Fatalf("admin read of the owner's credentials: %v", err)
+	}
+
+	if storedHash == nil || *storedHash != seededHash {
+		t.Fatalf("the owner's stored password_hash is %v, want the seeded hash; the assertion below "+
+			"proves nothing against an empty column", storedHash)
+	}
+
+	if storedSecret == nil || storedCount == nil {
+		t.Fatalf("the owner's stored totp_secret is %v and totp_last_counter is %v, want both seeded",
+			storedSecret, storedCount)
+	}
+
+	restrictedPool, err := postgres.NewPool(ctx, setUpTestAppRole(ctx, t, adminPool, adminURL))
+	if err != nil {
+		t.Fatalf("open restricted pool as %s: %v", testAppRole, err)
+	}
+	t.Cleanup(restrictedPool.Close)
+
+	// Every column of the counterparty row, asked for by name, as the
+	// restricted role the application connects as.
+	var (
+		gotID     uuid.UUID
+		gotEmail  string
+		gotHash   *string
+		gotSecret *string
+		gotCount  *int64
+	)
+
+	granteeTx(ctx, t, restrictedPool, fixture.grantee.ID, func(tx pgx.Tx) {
+		if err := tx.QueryRow(ctx,
+			`SELECT id, email, password_hash, totp_secret, totp_last_counter FROM grant_counterparties()`,
+		).Scan(&gotID, &gotEmail, &gotHash, &gotSecret, &gotCount); err != nil {
+			t.Fatalf("read the counterparty's columns as the grantee: %v", err)
+		}
+	})
+
+	if gotID != fixture.owner.ID {
+		t.Fatalf("counterparty = %v, want the owner %v", gotID, fixture.owner.ID)
+	}
+
+	if gotEmail != fixture.owner.Email {
+		t.Errorf("email = %q, want %q; the address is what the function exists to disclose",
+			gotEmail, fixture.owner.Email)
+	}
+
+	for _, column := range []struct {
+		name  string
+		value any
+	}{
+		{"password_hash", gotHash},
+		{"totp_secret", gotSecret},
+		{"totp_last_counter", gotCount},
+	} {
+		switch value := column.value.(type) {
+		case *string:
+			if value != nil {
+				t.Errorf("%s came back as %q, want NULL: the function's body nulls it, so no "+
+					"projection above the database can read it", column.name, *value)
+			}
+		case *int64:
+			if value != nil {
+				t.Errorf("%s came back as %d, want NULL: the function's body nulls it, so no "+
+					"projection above the database can read it", column.name, *value)
+			}
+		}
+	}
+}
+
+// TestTheProjectionIsWhatWithholdsASharedCalendarsProviderIdentifier
+// records which layer keeps external_id from a grantee.
+//
+// calendars_grantee_read is a row level policy, so it admits every
+// column of a shared row, and this asserts that it does: a grantee
+// asking for external_id by name gets it. That is why the projection in
+// queries/calendars.sql leaves the column out and
+// storage.SharedCalendar has no field for it, which
+// internal/storage/postgres's own TestASharedCalendarCarriesNoProviderIdentifier
+// is what holds down. If this test ever starts failing because the
+// policy withholds the column, the Go-side defence has become belt
+// without braces rather than the only thing in the way.
+func TestTheProjectionIsWhatWithholdsASharedCalendarsProviderIdentifier(t *testing.T) {
+	adminURL := requireDatabaseURL(t)
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	store := restrictedStore(ctx, t, adminPool, adminURL)
+	fixture := seedSharing(ctx, t, store)
+
+	restrictedPool, err := postgres.NewPool(ctx, setUpTestAppRole(ctx, t, adminPool, adminURL))
+	if err != nil {
+		t.Fatalf("open restricted pool as %s: %v", testAppRole, err)
+	}
+	t.Cleanup(restrictedPool.Close)
+
+	var admitted string
+
+	granteeTx(ctx, t, restrictedPool, fixture.grantee.ID, func(tx pgx.Tx) {
+		if err := tx.QueryRow(ctx,
+			`SELECT external_id FROM calendars WHERE id = $1`, fixture.ownerCalendar.ID).Scan(&admitted); err != nil {
+			t.Fatalf("read the shared calendar's external_id as the grantee: %v", err)
+		}
+	})
+
+	if admitted != fixture.ownerCalendar.ExternalID {
+		t.Errorf("external_id = %q, want %q", admitted, fixture.ownerCalendar.ExternalID)
+	}
+
+	// And what the repository hands back carries no such value, which is
+	// the whole of the defence this records.
+	var shared []storage.SharedCalendar
+
+	if err := store.WithUser(ctx, fixture.grantee.ID, func(ctx context.Context) error {
+		var err error
+		shared, err = store.Sharing().ListCalendarsSharedWithMe(ctx)
+
+		return err
+	}); err != nil {
+		t.Fatalf("list the calendars shared with the grantee: %v", err)
+	}
+
+	if len(shared) != 1 {
+		t.Fatalf("the grantee sees %d shared calendars, want exactly the one the grant names", len(shared))
+	}
+
+	if shared[0].Name != fixture.ownerCalendar.Name {
+		t.Errorf("shared calendar name = %q, want %q", shared[0].Name, fixture.ownerCalendar.Name)
+	}
+}
+
+// TestFindUserIDByEmailAnswersOnlyTheID holds down the projection
+// queries/users.sql relies on: the SECURITY DEFINER function behind it
+// returns a whole users row, and what leaves the database is the id.
+func TestFindUserIDByEmailAnswersOnlyTheID(t *testing.T) {
+	adminURL := requireDatabaseURL(t)
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	store := restrictedStore(ctx, t, adminPool, adminURL)
+	fixture := seedSharing(ctx, t, store)
+
+	found, err := store.Sharing().FindUserIDByEmail(ctx, fixture.grantee.Email)
+	if err != nil {
+		t.Fatalf("find the grantee by address: %v", err)
+	}
+
+	if found != fixture.grantee.ID {
+		t.Errorf("found %v, want %v", found, fixture.grantee.ID)
+	}
+
+	if _, err := store.Sharing().FindUserIDByEmail(ctx, "nobody-"+uuid.NewString()+"@example.com"); !errors.Is(err, storage.ErrNotFound) {
+		t.Errorf("err = %v, want storage.ErrNotFound for an address no account has", err)
+	}
+}
+
+// TestAnEdgeOverACalendarNoGrantSharesIsRefusedByTheTrigger is the rule
+// internal/httpapi relies on underneath its own checks: the database
+// refuses the edge whatever the handler did or did not look at first.
+// It names the mechanism by SQLSTATE and message, so a different check
+// refusing in the trigger's place fails here.
+func TestAnEdgeOverACalendarNoGrantSharesIsRefusedByTheTrigger(t *testing.T) {
+	adminURL := requireDatabaseURL(t)
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	store := restrictedStore(ctx, t, adminPool, adminURL)
+	fixture := seedSharing(ctx, t, store)
+
+	// The unrelated account owns no calendar at all, so it builds its
+	// edge naming the owner's calendar as source and, as target, a
+	// calendar the grantee owns. Neither is reachable from it.
+	err = store.WithUser(ctx, fixture.unrelated.ID, func(ctx context.Context) error {
+		_, err := store.Edges().Create(ctx, storage.Edge{
+			UserID:           fixture.unrelated.ID,
+			SourceCalendarID: fixture.ownerCalendar.ID,
+			TargetCalendarID: fixture.granteeCalendar.ID,
+			DetailLevel:      storage.DetailLevelBusyBlock,
+		})
+
+		return err
+	})
+
+	requireEdgesSourceCalendarRefusal(t, err)
+
+	// A calendar id that names nothing at all is refused by the same
+	// trigger with the same message, which is what keeps the two cases
+	// indistinguishable at the database as well as at the API.
+	err = store.WithUser(ctx, fixture.unrelated.ID, func(ctx context.Context) error {
+		_, err := store.Edges().Create(ctx, storage.Edge{
+			UserID:           fixture.unrelated.ID,
+			SourceCalendarID: uuid.New(),
+			TargetCalendarID: fixture.granteeCalendar.ID,
+			DetailLevel:      storage.DetailLevelBusyBlock,
+		})
+
+		return err
+	})
+
+	requireEdgesSourceCalendarRefusal(t, err)
+
+	// And the grantee, who does hold a grant, may build the same edge
+	// over the same source. Without this the two refusals above would
+	// prove only that the trigger refuses everything.
+	if err := store.WithUser(ctx, fixture.grantee.ID, func(ctx context.Context) error {
+		_, err := store.Edges().Create(ctx, storage.Edge{
+			UserID:           fixture.grantee.ID,
+			SourceCalendarID: fixture.ownerCalendar.ID,
+			TargetCalendarID: fixture.granteeCalendar.ID,
+			DetailLevel:      storage.DetailLevelBusyBlock,
+		})
+
+		return err
+	}); err != nil {
+		t.Fatalf("the grantee's own edge over the shared calendar was refused: %v", err)
+	}
 }
 
 func assertOnlyConnection(t *testing.T, connections []storage.Connection, wantID uuid.UUID) {
