@@ -4,6 +4,9 @@ templates:
 set:
   existingSecret:
     name: calbridge-secrets
+  landing:
+    config:
+      appUrl: "https://app.calbridge.example.org"
   config:
     databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
     databaseUser: calbridge_app
@@ -84,6 +87,64 @@ tests:
         auth:
           google:
             clientId: google-client-id
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: fails the render when landing.config.listenAddr and landing.service.port disagree
+    set:
+      landing:
+        config:
+          listenAddr: ":9000"
+    asserts:
+      - failedTemplate:
+          errorMessage: >-
+            landing.config.listenAddr (:9000) and landing.service.port (8080) disagree on
+            the port: both must name the same container port.
+
+  - it: fails the render when landing.config.adminListenAddr and landing.service.adminPort disagree
+    set:
+      landing:
+        config:
+          adminListenAddr: ":9001"
+    asserts:
+      - failedTemplate:
+          errorMessage: >-
+            landing.config.adminListenAddr (:9001) and landing.service.adminPort (8081)
+            disagree on the port: both must name the same container port.
+
+  - it: renders fine when every landing listen address matches its service port
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: fails the render when landing.podLabels sets the selector's name label
+    set:
+      landing:
+        podLabels:
+          app.kubernetes.io/name: evil
+    asserts:
+      - failedTemplate:
+          errorMessage: >-
+            landing.podLabels must not set app.kubernetes.io/name: it collides with the
+            landing server's own immutable selector label.
+
+  - it: fails the render when landing.podLabels sets the selector's instance label
+    set:
+      landing:
+        podLabels:
+          app.kubernetes.io/instance: evil
+    asserts:
+      - failedTemplate:
+          errorMessage: >-
+            landing.podLabels must not set app.kubernetes.io/instance: it collides with the
+            landing server's own immutable selector label.
+
+  - it: renders fine with an unrelated landing pod label
+    set:
+      landing:
+        podLabels:
+          team: calendar
     asserts:
       - hasDocuments:
           count: 0

@@ -308,6 +308,65 @@ cluster; consult its own documentation for the pod network or source
 address its data plane uses to reach a Service, and verify the resolved
 address changes per client rather than staying fixed before relying on it.
 
+## The public landing server
+
+This chart renders two workloads, not one: the application
+(`templates/deployment.yaml` and friends) and, alongside it, the public landing
+server on `templates/landing-deployment.yaml`, `templates/landing-service.yaml`,
+`templates/landing-serviceaccount.yaml`, `templates/landing-ingress.yaml` and
+`templates/landing-httproute.yaml`. It is a separate static build
+(`cmd/calbridge-landing`, see `internal/landingapi` and `internal/landingconfig`)
+with its own container image, its own `Deployment` and its own route, so a
+correction to the privacy policy's text is a new image for this workload alone,
+never a redeployment of the application.
+
+Both workloads always render; only each one's route is optional, and each one's
+`ingress.enabled`/`httproute.enabled` pair is independent of the other's.
+`landing.ingress.enabled` and `landing.httproute.enabled` are mutually
+exclusive, exactly like the application's own pair above, and neither is
+enabled by default.
+
+`landing.config.appUrl` is the application's own public base URL, for example
+`https://app.calbridge.example.com`. `internal/landingapi` renders it into
+every page the landing server serves in place of its own placeholder, so the
+same built image serves any deployment's own application host; it has no
+usable default and the render fails without it, the same shape
+`config.databaseUrl` and `existingSecret.name` already take above.
+
+`landing.config.listenAddr` must encode the same port as `landing.service.port`,
+and `landing.config.adminListenAddr` the same port as `landing.service.adminPort`,
+for the same reason the application's own "Metrics and probes live on their own
+port" section gives; the render fails with a readable message otherwise.
+
+```sh
+# Ingress
+helm install calbridge charts/calbridge \
+  --set landing.ingress.enabled=true \
+  --set landing.ingress.className=nginx \
+  --set landing.ingress.hosts[0].host=calbridge.example.com \
+  --set landing.ingress.hosts[0].paths[0].path=/ \
+  --set landing.ingress.hosts[0].paths[0].pathType=Prefix
+
+# Gateway API HTTPRoute
+helm install calbridge charts/calbridge \
+  --set landing.httproute.enabled=true \
+  --set landing.httproute.parentRefs[0].name=my-gateway \
+  --set landing.httproute.parentRefs[0].namespace=gateway-system \
+  --set landing.httproute.hostnames[0]=calbridge.example.com
+```
+
+The landing server carries no session, no CSRF protector and no database
+connection at all: see `internal/landingapi`'s own package doc for why.
+
+The link runs the other way too: `config.publicSiteUrl`, the landing page's
+own base URL, for example `https://calbridge.example.com`. `internal/httpapi`
+renders it into the application's login screen and signed-in shell as the
+"back to the public site" link. Empty by default, which renders no such
+link, the correct shape for a deployment that has not published a landing
+page, or installs the application standalone (`landing.config.appUrl` and
+`config.publicSiteUrl` are two independent, unrelated settings: setting one
+does not imply or require the other).
+
 ## Database
 
 This chart ships with no Postgres subchart: the database is a connection this chart takes as
@@ -350,6 +409,8 @@ for the full list `cmd/calbridge` reads today.
 | `migrationJob.image.repository` / `migrationJob.image.tag` / `migrationJob.image.digest` | The dbmate image the migration Job runs. | `ghcr.io/amacneil/dbmate` / `2.38.1` / pinned, see `values.yaml` |
 | `config.trustedProxyCIDRs` | `TRUSTED_PROXY_CIDRS`, a comma separated list of CIDRs (or bare addresses). Empty keeps the rate limiters keyed on the TCP peer; see "The rate limits are per client only with trusted proxies configured" above. | `""` |
 | `config.authBaseUrl` | `AUTH_BASE_URL`, the public base URL provider redirect URLs are built from. See "Provider sign-in" above. | `""` |
+| `config.publicSiteUrl` | `PUBLIC_SITE_URL`, the public landing page's own base URL. Rendered into the login screen and the signed-in shell as the link back to the public site. Empty renders no such link. See "The public landing server" above. | `""` |
+| `landing.config.appUrl` | `APP_URL`, the application's own public base URL the landing server links every call to action at. Required; no usable default. See "The public landing server" above. | `""` |
 | `config.auth.google.clientId` / `config.auth.microsoft.clientId` / `config.auth.apple.clientId` | `AUTH_GOOGLE_CLIENT_ID` / `AUTH_MICROSOFT_CLIENT_ID` / `AUTH_APPLE_CLIENT_ID`. Empty means that provider's sign-in is not offered. See "Provider sign-in" above. | `""` |
 | `config.auth.google.issuer` / `config.auth.microsoft.issuer` / `config.auth.apple.issuer` | `AUTH_GOOGLE_ISSUER` / `AUTH_MICROSOFT_ISSUER` / `AUTH_APPLE_ISSUER`. Empty falls back to `internal/auth`'s own documented default issuer. See "Provider sign-in" above. | `""` |
 | `existingSecret.googleClientSecretKey` / `existingSecret.microsoftClientSecretKey` / `existingSecret.appleClientSecretKey` | Keys for each provider's client secret in that Secret. See "Provider sign-in" above. | `AUTH_GOOGLE_CLIENT_SECRET` / `AUTH_MICROSOFT_CLIENT_SECRET` / `AUTH_APPLE_CLIENT_SECRET` |

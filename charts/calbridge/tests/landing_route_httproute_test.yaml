@@ -1,0 +1,79 @@
+suite: landing httproute enabled
+templates:
+  - templates/landing-httproute.yaml
+  - templates/landing-ingress.yaml
+set:
+  existingSecret:
+    name: calbridge-secrets
+  landing:
+    config:
+      appUrl: "https://app.calbridge.example.org"
+    httproute:
+      enabled: true
+      parentRefs:
+        - name: eg
+          namespace: gateway-system
+          sectionName: https
+      hostnames:
+        - calbridge.example.org
+  config:
+    databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
+    databaseUser: calbridge_app
+  migrationJob:
+    databaseUser: calbridge_migrator
+tests:
+  - it: renders exactly one landing HTTPRoute
+    template: templates/landing-httproute.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isAPIVersion:
+          of: gateway.networking.k8s.io/v1
+      - isKind:
+          of: HTTPRoute
+
+  - it: renders no landing Ingress
+    template: templates/landing-ingress.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: attaches to the configured Gateway and hostname
+    template: templates/landing-httproute.yaml
+    asserts:
+      - equal:
+          path: spec.parentRefs[0].name
+          value: eg
+      - equal:
+          path: spec.parentRefs[0].namespace
+          value: gateway-system
+      - equal:
+          path: spec.parentRefs[0].sectionName
+          value: https
+      - equal:
+          path: spec.hostnames[0]
+          value: calbridge.example.org
+
+  - it: points the backend at the landing Service and port, not the application's own
+    template: templates/landing-httproute.yaml
+    asserts:
+      - equal:
+          path: spec.rules[0].backendRefs[0].name
+          value: RELEASE-NAME-calbridge-landing
+      - equal:
+          path: spec.rules[0].backendRefs[0].port
+          value: 8080
+
+  - it: fails the render when landing.httproute is enabled with no Gateway named
+    template: templates/landing-httproute.yaml
+    set:
+      landing:
+        httproute:
+          enabled: true
+          parentRefs:
+            - name: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: >-
+            landing.httproute.enabled is true but landing.httproute.parentRefs names no
+            Gateway: set at least one parentRefs entry's name.

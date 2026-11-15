@@ -1,0 +1,60 @@
+suite: landing ingress enabled
+templates:
+  - templates/landing-ingress.yaml
+  - templates/landing-httproute.yaml
+set:
+  existingSecret:
+    name: calbridge-secrets
+  landing:
+    config:
+      appUrl: "https://app.calbridge.example.org"
+    ingress:
+      enabled: true
+      className: nginx
+      hosts:
+        - host: calbridge.example.org
+          paths:
+            - path: /
+              pathType: Prefix
+  config:
+    databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
+    databaseUser: calbridge_app
+  migrationJob:
+    databaseUser: calbridge_migrator
+tests:
+  - it: renders exactly one landing Ingress
+    template: templates/landing-ingress.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: Ingress
+
+  - it: renders no landing HTTPRoute
+    template: templates/landing-httproute.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: uses the configured ingress class and host
+    template: templates/landing-ingress.yaml
+    asserts:
+      - equal:
+          path: spec.ingressClassName
+          value: nginx
+      - equal:
+          path: spec.rules[0].host
+          value: calbridge.example.org
+
+  - it: points the backend at the landing Service and port, not the application's own
+    template: templates/landing-ingress.yaml
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.name
+          value: RELEASE-NAME-calbridge-landing
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.port.number
+          value: 8080
+      - equal:
+          path: spec.rules[0].http.paths[0].pathType
+          value: Prefix

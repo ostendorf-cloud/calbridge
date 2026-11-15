@@ -1,0 +1,35 @@
+{{- if .Values.landing.ingress.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "calbridge.landing.fullname" . }}
+  labels:
+    {{- include "calbridge.landing.labels" . | nindent 4 }}
+  {{- with .Values.landing.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.landing.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.landing.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.landing.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "calbridge.landing.fullname" $ }}
+                port:
+                  number: {{ $.Values.landing.service.port }}
+          {{- end }}
+    {{- end }}
+{{- end -}}

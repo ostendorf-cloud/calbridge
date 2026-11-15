@@ -94,3 +94,45 @@ misconfigured deployment crash-loop on its own probes.
 {{- $parts := splitList ":" . -}}
 {{- last $parts -}}
 {{- end -}}
+
+{{/*
+The landing server's own fully qualified name: calbridge.fullname with a
+"-landing" suffix, so it never collides with the application's own
+Deployment, Service or ServiceAccount inside the same release while both
+are rendered from the one chart.
+*/}}
+{{- define "calbridge.landing.fullname" -}}
+{{- printf "%s-landing" (include "calbridge.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+Landing server labels, mirroring calbridge.labels with its own component
+and its own selector labels: a selector must stay stable across an image
+upgrade like the application's own, and must not collide with it either,
+since both workloads share one release.
+*/}}
+{{- define "calbridge.landing.labels" -}}
+helm.sh/chart: {{ include "calbridge.chart" . }}
+{{ include "calbridge.landing.selectorLabels" . }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/component: landing
+app.kubernetes.io/part-of: {{ include "calbridge.name" . }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end -}}
+
+{{- define "calbridge.landing.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "calbridge.landing.fullname" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
+{{/*
+Name of the landing server's own ServiceAccount, mirroring
+calbridge.serviceAccountName for landing.serviceAccount.
+*/}}
+{{- define "calbridge.landing.serviceAccountName" -}}
+{{- if .Values.landing.serviceAccount.create -}}
+{{- default (include "calbridge.landing.fullname" .) .Values.landing.serviceAccount.name -}}
+{{- else -}}
+{{- default "default" .Values.landing.serviceAccount.name -}}
+{{- end -}}
+{{- end -}}
