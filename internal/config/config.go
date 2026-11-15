@@ -170,6 +170,16 @@ type Config struct {
 	// configured, and empty otherwise.
 	AuthBaseURL string
 
+	// PublicSiteURL is calbridge.de's own public base URL, scheme and
+	// host, with no path, for example "https://calbridge.example.com".
+	// internal/httpapi renders it into the SPA shell so the application
+	// can link back to the public landing page, the imprint and the
+	// privacy policy it carries (see spa.go's indexReplacements); empty
+	// by default, which is a deployment that only ever serves the
+	// application and has no public site to link back to, and simply
+	// shows no such link.
+	PublicSiteURL string
+
 	// AuthProviders carries the sign-in providers this deployment
 	// configured, in the fixed order of authProviderIDs. A provider with
 	// no client id is simply not offered; internal/auth and
@@ -262,6 +272,10 @@ func Load(getenv func(string) string) (Config, error) {
 	fail(err)
 	cfg.AuthProviders = providers
 
+	publicSiteURL := strings.TrimSuffix(strings.TrimSpace(l.String("PUBLIC_SITE_URL", "")), "/")
+	fail(checkPublicSiteURL(publicSiteURL))
+	cfg.PublicSiteURL = publicSiteURL
+
 	if err := errors.Join(append(problems, l.Err())...); err != nil {
 		return Config{}, fmt.Errorf("config: load: %w", err)
 	}
@@ -340,6 +354,31 @@ func checkAuthBaseURL(baseURL string) error {
 
 	if parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return fmt.Errorf("AUTH_BASE_URL: %q must carry scheme and host only, no path", baseURL)
+	}
+
+	return nil
+}
+
+// checkPublicSiteURL requires an absolute http or https URL with a host
+// and no path, the same shape checkAuthBaseURL enforces, but only once
+// PublicSiteURL is actually set: unlike AUTH_BASE_URL, nothing else
+// configured by this deployment makes PUBLIC_SITE_URL required.
+func checkPublicSiteURL(publicSiteURL string) error {
+	if publicSiteURL == "" {
+		return nil
+	}
+
+	parsed, err := url.Parse(publicSiteURL)
+	if err != nil {
+		return fmt.Errorf("PUBLIC_SITE_URL: %w", err)
+	}
+
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("PUBLIC_SITE_URL: %q is not an absolute http or https URL", publicSiteURL)
+	}
+
+	if parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("PUBLIC_SITE_URL: %q must carry scheme and host only, no path", publicSiteURL)
 	}
 
 	return nil

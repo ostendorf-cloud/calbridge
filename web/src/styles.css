@@ -18,6 +18,10 @@
  * does not publish (its "files" field ships src/ only), so nothing in
  * this repository can invoke it without a separate govue checkout. A
  * task check:theme is worth adding once that generator can run in CI.
+ *
+ * web-landing/src/theme/calbridge.css is a copy of this same generated
+ * file, for the landing build: regenerate both from this one seed file
+ * when the brand changes, and keep them identical.
  */
 @import '@ostendorf-cloud/govue/styles.css';
 @import './theme/calbridge.css';

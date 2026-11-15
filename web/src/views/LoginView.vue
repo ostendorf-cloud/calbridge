@@ -22,9 +22,15 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 
 import { apiClient } from '../api'
+import { publicSiteUrl } from '../publicSiteUrl'
 
 const { t } = useI18n()
 const router = useRouter()
+
+// Empty for a deployment that configured no PUBLIC_SITE_URL, which
+// hides the link rather than rendering one that goes nowhere; see
+// publicSiteUrl.ts's own comment.
+const siteUrl = publicSiteUrl()
 
 type Mode = 'sign-in' | 'sign-up'
 const mode = ref<Mode>('sign-in')
@@ -314,5 +320,9 @@ const signUpForm = useForm<SignUpFields>({
         </div>
       </div>
     </GovueCard>
+
+    <p v-if="siteUrl" class="text-center">
+      <a :href="siteUrl" class="text-accent-text hover:underline">{{ t('common.backToSite') }}</a>
+    </p>
   </GovuePage>
 </template>

@@ -400,6 +400,53 @@ func TestLoad(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("no public site url is configured by default", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, err := Load(validEnv(nil))
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.PublicSiteURL != "" {
+			t.Errorf("PublicSiteURL = %q, want empty by default", cfg.PublicSiteURL)
+		}
+	})
+
+	t.Run("public site url override drops a trailing slash", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, err := Load(validEnv(map[string]string{"PUBLIC_SITE_URL": "https://calbridge.example.com/"}))
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.PublicSiteURL != "https://calbridge.example.com" {
+			t.Errorf("PublicSiteURL = %q, want the trailing slash dropped", cfg.PublicSiteURL)
+		}
+	})
+
+	t.Run("public site url refusals", func(t *testing.T) {
+		t.Parallel()
+
+		tests := map[string]string{
+			"not absolute":   "calbridge.example.com",
+			"carries a path": "https://calbridge.example.com/imprint",
+		}
+
+		for name, value := range tests {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+
+				_, err := Load(validEnv(map[string]string{"PUBLIC_SITE_URL": value}))
+				if err == nil {
+					t.Fatal("Load() error = nil, want a refusal")
+				}
+				if !strings.Contains(err.Error(), "PUBLIC_SITE_URL") {
+					t.Errorf("error %q does not mention PUBLIC_SITE_URL", err)
+				}
+			})
+		}
+	})
 }
 
 // TestLoadWithNilGetenvReadsTheRealProcessEnvironment is its own top

@@ -867,6 +867,60 @@ func TestSessionCookieDropsSecureWhenPlainHTTPIsAllowed(t *testing.T) {
 	}
 }
 
+// indexHTMLWithPublicSiteURLPlaceholder is a minimal embedded build
+// carrying the same placeholder web/index.html does, for
+// TestPublicSiteURLIsRenderedIntoTheSPAShell: testDistFS's own indexHTML
+// carries no placeholder, so every other SPA test's exact-body
+// assertion stays meaningful regardless of Deps.PublicSiteURL.
+const indexHTMLWithPublicSiteURLPlaceholder = `<!doctype html><meta name="calbridge-public-site-url" content="__CALBRIDGE_PUBLIC_SITE_URL__">`
+
+func TestPublicSiteURLIsRenderedIntoTheSPAShell(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name          string
+		publicSiteURL string
+		want          string
+	}{
+		{
+			name:          "configured",
+			publicSiteURL: "https://calbridge.example.com",
+			want:          `<!doctype html><meta name="calbridge-public-site-url" content="https://calbridge.example.com">`,
+		},
+		{
+			name:          "a different host renders too, proving the value is not hardcoded",
+			publicSiteURL: "https://landing.staging.example.org",
+			want:          `<!doctype html><meta name="calbridge-public-site-url" content="https://landing.staging.example.org">`,
+		},
+		{
+			name:          "left unset",
+			publicSiteURL: "",
+			want:          `<!doctype html><meta name="calbridge-public-site-url" content="">`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			deps := testDeps(t)
+			deps.DistFS = fstest.MapFS{
+				"index.html": {Data: []byte(indexHTMLWithPublicSiteURLPlaceholder)},
+			}
+			deps.PublicSiteURL = tc.publicSiteURL
+			handlers := build(t, deps)
+
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+			rec := httptest.NewRecorder()
+			handlers.Public.ServeHTTP(rec, req)
+
+			if rec.Body.String() != tc.want {
+				t.Errorf("body = %q, want %q", rec.Body.String(), tc.want)
+			}
+		})
+	}
+}
+
 // errorContainsAll reports whether err's message contains every one of
 // subs, used only to assert that NewHandler joins every construction
 // problem into one error rather than reporting the first and discarding

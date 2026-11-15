@@ -13,6 +13,17 @@ vi.mock('../api', () => ({
   csrfToken: { value: undefined },
 }))
 
+function setPublicSiteUrlMeta(content: string | undefined): void {
+  document.head.querySelector('meta[name="calbridge-public-site-url"]')?.remove()
+  if (content === undefined) {
+    return
+  }
+  const meta = document.createElement('meta')
+  meta.setAttribute('name', 'calbridge-public-site-url')
+  meta.setAttribute('content', content)
+  document.head.appendChild(meta)
+}
+
 function renderLoginView() {
   const router = createRouter({
     history: createMemoryHistory(),
@@ -30,6 +41,7 @@ describe('LoginView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(apiClient.get).mockResolvedValue({ providers: [] })
+    setPublicSiteUrlMeta(undefined)
   })
 
   it('signs in with email, password and the totp code and routes to home', async () => {
@@ -120,6 +132,34 @@ describe('LoginView', () => {
 
     await screen.findByRole('button', { name: 'Continue with Google' })
     expect(screen.queryByText(/does not give us a confirmed email address/)).toBeNull()
+  })
+
+  it('links back to the configured public site host, not a hardcoded one', () => {
+    setPublicSiteUrlMeta('https://calbridge.example.com')
+
+    renderLoginView()
+
+    expect(screen.getByRole('link', { name: 'Back to the calbridge homepage' })).toHaveAttribute(
+      'href',
+      'https://calbridge.example.com',
+    )
+  })
+
+  it('links back to a different configured host too', () => {
+    setPublicSiteUrlMeta('https://landing.staging.example.org')
+
+    renderLoginView()
+
+    expect(screen.getByRole('link', { name: 'Back to the calbridge homepage' })).toHaveAttribute(
+      'href',
+      'https://landing.staging.example.org',
+    )
+  })
+
+  it('shows no link back to the public site when none is configured', () => {
+    renderLoginView()
+
+    expect(screen.queryByRole('link', { name: 'Back to the calbridge homepage' })).toBeNull()
   })
 })
 

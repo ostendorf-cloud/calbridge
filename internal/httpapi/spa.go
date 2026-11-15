@@ -20,6 +20,16 @@ import (
 // exactly one catch-all, answering each shape differently.
 const apiPathPrefix = "/api/"
 
+// publicSiteURLPlaceholder is the literal text web/index.html carries in
+// its <meta name="calbridge-public-site-url"> tag. newSPAHandler
+// replaces it once, at construction, with Deps.PublicSiteURL, mirroring
+// internal/landingapi's own appURLPlaceholder on the landing build: the
+// same built bundle then links back to whatever public site a given
+// deployment configured, rather than one fixed at image build time. An
+// empty PublicSiteURL leaves the tag's content empty, and web/'s own
+// composable renders no link for that.
+const publicSiteURLPlaceholder = "__CALBRIDGE_PUBLIC_SITE_URL__"
+
 // newSPAHandler serves the embedded Vue build: a real static asset when
 // the request path names one, and index.html for everything else so the
 // SPA's own client-side router can take over, matching how a single page
@@ -28,11 +38,13 @@ const apiPathPrefix = "/api/"
 // envelope every other endpoint in this package uses, never the SPA's
 // HTML, so a client calling a mistyped or removed API path gets something
 // it can actually parse.
-func newSPAHandler(distFS fs.FS) (http.Handler, error) {
-	index, err := fs.ReadFile(distFS, "index.html")
+func newSPAHandler(distFS fs.FS, publicSiteURL string) (http.Handler, error) {
+	rawIndex, err := fs.ReadFile(distFS, "index.html")
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: read embedded index.html: %w", err)
 	}
+
+	index := []byte(strings.ReplaceAll(string(rawIndex), publicSiteURLPlaceholder, publicSiteURL))
 
 	fileServer := http.FileServer(http.FS(distFS))
 

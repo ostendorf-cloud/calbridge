@@ -207,11 +207,32 @@ services:
       # ever sending it back, breaking login outright. See
       # internal/config.Config.SessionAllowPlainHTTP's own doc comment.
       SESSION_ALLOW_PLAIN_HTTP: "true"
+      # Points at the calbridge-landing service below, reachable from a
+      # browser on the host through the port it already publishes.
+      PUBLIC_SITE_URL: "http://localhost:8090"
     ports:
       # Bound to loopback only: "8080:8080" alone binds every interface,
       # which on a shared network would expose this service to anyone
       # else on it.
       - "127.0.0.1:8080:8080"
+
+  # The public landing page, built and run from its own Dockerfile and
+  # image, independent of the calbridge service above: a correction to
+  # the privacy policy's text rebuilds this service alone. It opens no
+  # database connection and depends on nothing else in this file.
+  calbridge-landing:
+    build:
+      context: .
+      dockerfile: Dockerfile.landing
+    restart: unless-stopped
+    environment:
+      LISTEN_ADDR: ":8080"
+      LOG_LEVEL: info
+      # Points at the calbridge service above, reachable from a browser
+      # on the host through the port it already publishes.
+      APP_URL: "http://localhost:8080"
+    ports:
+      - "127.0.0.1:8090:8080"
 
 volumes:
   postgres-data:

@@ -11,6 +11,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 
 import { apiClient, csrfToken } from '../api'
+import { publicSiteUrl } from '../publicSiteUrl'
 
 interface MeResponse {
   email: string
@@ -19,6 +20,11 @@ interface MeResponse {
 
 const { t } = useI18n()
 const router = useRouter()
+
+// Empty for a deployment that configured no PUBLIC_SITE_URL, which
+// hides the link rather than rendering one that goes nowhere; see
+// publicSiteUrl.ts's own comment.
+const siteUrl = computed(() => publicSiteUrl())
 
 const navItems = computed(() => [
   { href: '/', label: t('nav.home'), current: true },
@@ -92,5 +98,9 @@ async function logout(): Promise<void> {
     </GovueCard>
 
     <p v-if="logoutError" role="alert" class="text-danger-text">{{ logoutError }}</p>
+
+    <p v-if="siteUrl">
+      <a :href="siteUrl" class="text-accent-text hover:underline">{{ t('common.backToSite') }}</a>
+    </p>
   </GovuePage>
 </template>
