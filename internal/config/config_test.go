@@ -434,11 +434,14 @@ func TestLoad(t *testing.T) {
 		// refuses user information, and a value accepted on one host and
 		// refused on the other is a deployment that half starts.
 		tests := map[string]string{
-			"not absolute":        "calbridge.example.com",
-			"carries a path":      "https://calbridge.example.com/imprint",
-			"carries a query":     "https://calbridge.example.com?ref=app",
-			"carries a fragment":  "https://calbridge.example.com#imprint",
-			"carries credentials": "https://user:a-password@calbridge.example.com",
+			"not absolute":                        "calbridge.example.com",
+			"carries a path":                      "https://calbridge.example.com/imprint",
+			"carries a query":                     "https://calbridge.example.com?ref=app",
+			"carries a fragment":                  "https://calbridge.example.com#imprint",
+			"carries credentials":                 "https://user:a-password@calbridge.example.com",
+			"carries credentials with no scheme":  "user:a-password@calbridge.example.com",
+			"carries a bare user with no scheme":  "user@calbridge.example.com",
+			"carries credentials and a path only": "https://user:a-password@calbridge.example.com/imprint",
 		}
 
 		for name, value := range tests {
@@ -456,21 +459,85 @@ func TestLoad(t *testing.T) {
 		}
 	})
 
-	t.Run("the credentials refusal does not repeat the credentials", func(t *testing.T) {
+	// A value that forgot its scheme is covered alongside the complete
+	// one: url.Parse reads "user" as the scheme there and leaves User
+	// nil, so the refusal has to come from a check of its own, and
+	// without one the generic "not an absolute URL" message quotes the
+	// password.
+	t.Run("the credentials refusal names credentials and repeats none of them", func(t *testing.T) {
 		t.Parallel()
 
 		const password = "not-for-a-log-line"
 
-		_, err := Load(validEnv(map[string]string{
-			"PUBLIC_SITE_URL": "https://user:" + password + "@calbridge.example.com",
-		}))
-		if err == nil {
-			t.Fatal("Load() error = nil, want a refusal")
+		values := map[string]string{
+			"with a scheme":    "https://user:" + password + "@calbridge.example.com",
+			"with no scheme":   "user:" + password + "@calbridge.example.com",
+			"with a path, too": "user:" + password + "@calbridge.example.com/imprint",
 		}
-		if strings.Contains(err.Error(), password) {
-			t.Errorf("error %q repeats the password out of the URL", err)
+
+		for name, value := range values {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+
+				_, err := Load(validEnv(map[string]string{"PUBLIC_SITE_URL": value}))
+				if err == nil {
+					t.Fatal("Load() error = nil, want a refusal")
+				}
+				if !strings.Contains(err.Error(), "must not contain credentials") {
+					t.Errorf("error %q does not name the credentials as the problem", err)
+				}
+				if strings.Contains(err.Error(), password) {
+					t.Errorf("error %q repeats the password out of the URL", err)
+				}
+			})
 		}
 	})
+}
+
+// TestCheckPublicSiteURLAcceptsATrailingSlash pins the direction the two
+// validators agree on, and does it against checkPublicSiteURL itself
+// rather than through Load: Load trims a trailing slash before calling
+// this function, so a Load test alone would keep passing while the check
+// drifted away from envconf's Loader.URL, which the landing server's
+// APP_URL goes through and which accepts the same value. The landing
+// side's TestLoadDropsATrailingSlashFromAppURL is this test's other
+// half.
+func TestCheckPublicSiteURLAcceptsATrailingSlash(t *testing.T) {
+	t.Parallel()
+
+	if err := checkPublicSiteURL("https://calbridge.example.com/"); err != nil {
+		t.Errorf("checkPublicSiteURL() error = %v, want a trailing slash accepted", err)
+	}
+}
+
+// TestNamesCredentialsBeforeHost covers the shapes the credentials check
+// has to tell apart, the scheme-less one above all.
+func TestNamesCredentialsBeforeHost(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]bool{
+		"https://calbridge.example.com":         false,
+		"https://calbridge.example.com/imprint": false,
+		"calbridge.example.com":                 false,
+		"":                                      false,
+		"https://calbridge.example.com/mail@example.com":     false,
+		"https://calbridge.example.com?reply-to=a@example.c": false,
+		"https://user:secret@calbridge.example.com":          true,
+		"user:secret@calbridge.example.com":                  true,
+		"user@calbridge.example.com":                         true,
+		"  user:secret@calbridge.example.com  ":              true,
+		"http://user:secret@calbridge.example.com/imprint":   true,
+	}
+
+	for value, want := range cases {
+		t.Run(value, func(t *testing.T) {
+			t.Parallel()
+
+			if got := namesCredentialsBeforeHost(value); got != want {
+				t.Errorf("namesCredentialsBeforeHost(%q) = %v, want %v", value, got, want)
+			}
+		})
+	}
 }
 
 // TestLoadWithNilGetenvReadsTheRealProcessEnvironment is its own top

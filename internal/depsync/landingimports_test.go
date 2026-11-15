@@ -5,7 +5,6 @@ package depsync
 
 import (
 	"fmt"
-	"os/exec"
 	"strings"
 	"testing"
 )
@@ -22,29 +21,17 @@ import (
 // internal/httpapi or internal/storage does break the image build, but
 // that is a side effect of a COPY list rather than a check, it reports
 // as a compile error inside a container build, and it says nothing at
-// all on a machine with no docker. The two tests below are the check.
-const (
-	// modulePath is this module's import path prefix, which is how a
-	// calbridge package is told apart from a dependency in go list's
-	// output.
-	modulePath = "github.com/ostendorf-cloud/calbridge"
-	// landingCommand is the landing server's own main package.
-	landingCommand = "./cmd/calbridge-landing"
-	// repositoryRoot is where a go list invocation has to run, relative
-	// to this package.
-	repositoryRoot = "../.."
-)
-
-// landingPackages is every package of this module the landing binary is
-// allowed to reach. The landing server is the public site and nothing
-// else: its configuration (internal/landingconfig) and its handler
-// (internal/landingapi), neither of which knows a database, a session
-// or a sign-in provider.
-var landingPackages = map[string]bool{
-	modulePath + "/cmd/calbridge-landing":  true,
-	modulePath + "/internal/landingapi":    true,
-	modulePath + "/internal/landingconfig": true,
-}
+// all on a machine with no docker.
+// landingimports_builtfrontend_test.go is the check.
+//
+// This file holds the filter over go list's output and its unit tests,
+// which need nothing built. The two tests that call go list live in
+// landingimports_builtfrontend_test.go, behind a build tag, because
+// loading cmd/calbridge-landing needs its embedded dist and no job may
+// run them without having built it.
+// modulePath is this module's import path prefix, which is how a
+// calbridge package is told apart from a dependency in go list's output.
+const modulePath = "github.com/ostendorf-cloud/calbridge"
 
 // calbridgeDependencies picks this module's own packages out of the
 // output of "go list -deps", one import path per line, discarding every
@@ -102,61 +89,5 @@ func TestCalbridgeDependencies(t *testing.T) {
 				t.Fatalf("calbridgeDependencies() = %v, want %v", got, tc.want)
 			}
 		})
-	}
-}
-
-// TestTheLandingBinaryReachesNoApplicationPackage fails the moment
-// cmd/calbridge-landing's transitive imports name a calbridge package
-// outside landingPackages. An import of internal/httpapi or
-// internal/storage puts the application's session handling, its store
-// and its encryption into the public site's binary, which is what this
-// split exists to prevent.
-func TestTheLandingBinaryReachesNoApplicationPackage(t *testing.T) {
-	t.Parallel()
-
-	cmd := exec.CommandContext(t.Context(), "go", "list", "-deps", landingCommand)
-	cmd.Dir = repositoryRoot
-
-	output, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("go list -deps %s: %v", landingCommand, err)
-	}
-
-	for _, pkg := range calbridgeDependencies(string(output)) {
-		if !landingPackages[pkg] {
-			t.Errorf(
-				"the landing binary imports %s. The public site's binary carries %s and %s only, "+
-					"so no database pool, session key or encryption key reaches the host serving it; "+
-					"move what is needed into one of those two packages instead.",
-				pkg, modulePath+"/internal/landingapi", modulePath+"/internal/landingconfig",
-			)
-		}
-	}
-}
-
-// TestTheLandingBinaryStillReachesItsOwnPackages is the other half: a
-// list the binary no longer reaches at all would make the test above
-// pass for the wrong reason, a refactor having moved the handler
-// somewhere else without anybody noticing the guard went quiet.
-func TestTheLandingBinaryStillReachesItsOwnPackages(t *testing.T) {
-	t.Parallel()
-
-	cmd := exec.CommandContext(t.Context(), "go", "list", "-deps", landingCommand)
-	cmd.Dir = repositoryRoot
-
-	output, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("go list -deps %s: %v", landingCommand, err)
-	}
-
-	reached := make(map[string]bool)
-	for _, pkg := range calbridgeDependencies(string(output)) {
-		reached[pkg] = true
-	}
-
-	for pkg := range landingPackages {
-		if !reached[pkg] {
-			t.Errorf("the landing binary no longer imports %s, so this file's own guard checks nothing", pkg)
-		}
 	}
 }

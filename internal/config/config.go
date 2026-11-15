@@ -374,9 +374,25 @@ func checkAuthBaseURL(baseURL string) error {
 // side taken on purpose: a base URL is pasted into a document and
 // followed by a reader, and credentials in it are either a mistake or an
 // attempt to make the link go somewhere else.
+//
+// A path of exactly "/" is accepted rather than refused, which is the
+// direction both sides agree on: envconf's Loader.URL, which this
+// repository does not own, trims a trailing slash and accepts the value,
+// so refusing it here would be a URL the application rejects and the
+// landing server starts on. Load trims it off the stored value anyway,
+// so nothing downstream sees the slash either way.
 func checkPublicSiteURL(publicSiteURL string) error {
 	if publicSiteURL == "" {
 		return nil
+	}
+
+	// Checked before the scheme, because the shape this catches is one
+	// url.Parse does not report as credentials at all: in
+	// "user:secret@host" with no scheme, "user" parses as the scheme and
+	// User stays nil, so the generic refusal below would name the wrong
+	// problem and quote the password while doing it.
+	if namesCredentialsBeforeHost(publicSiteURL) {
+		return errors.New("PUBLIC_SITE_URL: must not contain credentials")
 	}
 
 	parsed, err := url.Parse(publicSiteURL)
@@ -392,11 +408,41 @@ func checkPublicSiteURL(publicSiteURL string) error {
 		return errors.New("PUBLIC_SITE_URL: must not contain credentials")
 	}
 
-	if parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+	if strings.TrimSuffix(parsed.Path, "/") != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return fmt.Errorf("PUBLIC_SITE_URL: %q must carry scheme and host only, no path", publicSiteURL)
 	}
 
 	return nil
+}
+
+// namesCredentialsBeforeHost reports whether a value puts user
+// information in front of its host, whether or not it carries a scheme.
+// url.Parse only fills User for a value with a "//" authority, so
+// "https://user:secret@host" is caught by parsed.User while
+// "user:secret@host", the same value with the scheme forgotten, is not:
+// that one parses as the scheme "user" with the opaque part
+// "secret@host". Both are the same deployment mistake and both are
+// refused by the same message, which names no part of the value.
+//
+// internal/landingconfig carries this function too, for APP_URL, rather
+// than importing it: the landing binary reaches internal/landingapi and
+// internal/landingconfig and nothing else of this module, and
+// internal/depsync/landingimports_builtfrontend_test.go fails if that
+// changes. The two
+// copies are kept honest by a refusal test on each side.
+func namesCredentialsBeforeHost(raw string) bool {
+	rest := strings.TrimSpace(raw)
+
+	if scheme, afterScheme, found := strings.Cut(rest, "://"); found && !strings.ContainsAny(scheme, "/?#@") {
+		rest = afterScheme
+	}
+
+	authority := rest
+	if end := strings.IndexAny(authority, "/?#"); end >= 0 {
+		authority = authority[:end]
+	}
+
+	return strings.Contains(authority, "@")
 }
 
 // decodeHexKey decodes raw as hex and checks that it is exactly

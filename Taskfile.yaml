@@ -78,6 +78,20 @@ tasks:
     cmds:
       - go test -tags=integration -race -count=1 ./internal/...
 
+  # Needs both frontends on disk, so it is its own target rather than
+  # part of test:go or check:govue-version: the two tests behind the
+  # builtfrontend tag read cmd/calbridge/dist and cmd/calbridge-landing/dist,
+  # and loading cmd/calbridge-landing at all needs its embedded dist. This
+  # is the same shape test:integration has for its Postgres: a precondition
+  # the cheap jobs cannot meet gets its own target and its own CI job,
+  # never a skip inside the test. The deps below are what makes the
+  # precondition hold wherever this target runs.
+  test:builtfrontend:
+    desc: Go test over the checks that read the built frontends, building both first
+    deps: [web:build, landing-web:build]
+    cmds:
+      - go test -tags=builtfrontend -race -count=1 ./internal/depsync/...
+
   build:
     desc: Compile the calbridge binary
     deps: [web:build]
@@ -281,6 +295,7 @@ tasks:
       - task: landing:build
       - task: landing:build:image
       - task: test:go
+      - task: test:builtfrontend
       - task: check:govue-version
       - task: lint:helm
       - task: validate:kubeconform

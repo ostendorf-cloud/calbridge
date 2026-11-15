@@ -5,9 +5,6 @@ package depsync
 
 import (
 	"fmt"
-	"io/fs"
-	"os"
-	"path"
 	"regexp"
 	"slices"
 	"sort"
@@ -22,20 +19,14 @@ import (
 // about the built output, not about the source: a theme or a component
 // pulling in a Google Fonts stylesheet, or an index.html gaining a
 // script tag, changes what a browser fetches without changing anything
-// a linter reads. The two tests below are what makes the claim
-// checkable.
+// a linter reads. bundleassets_builtfrontend_test.go is what makes the
+// claim checkable.
 //
-// They read the build output, so they need it to exist: "task test:go"
-// depends on "task web:build" and "task landing-web:build", both of
-// which are required anyway because each binary embeds its own dist.
-const (
-	// landingDistPath is the landing server's built site, relative to
-	// this package.
-	landingDistPath = "../../cmd/calbridge-landing/dist"
-	// appDistPath is the application's own built SPA. The privacy
-	// policy's claim covers both, so both are scanned.
-	appDistPath = "../../cmd/calbridge/dist"
-)
+// This file holds the scan and its unit tests, which need nothing built.
+// The two tests that read the real build output live in
+// bundleassets_builtfrontend_test.go, behind a build tag, because they
+// need both frontends on disk and no job may run them without having
+// built them.
 
 // allowedAbsoluteHosts is every host an absolute URL in either bundle
 // may name. None of them is fetched: each appears as text.
@@ -49,11 +40,6 @@ var allowedAbsoluteHosts = map[string]string{
 	// runtime error code.
 	"vuejs.org": "Vue's own error-reference link in an error message",
 }
-
-// scannedExtensions are the files worth reading: the document, the
-// stylesheets and the scripts. A font or an image in the bundle is
-// already a local file by the time it is there.
-var scannedExtensions = []string{".html", ".css", ".js", ".mjs"}
 
 // Each pattern captures the target of something a browser fetches:
 // a tag's src or href, a stylesheet's url(), and an @import.
@@ -220,104 +206,6 @@ func TestForeignHosts(t *testing.T) {
 			got := foreignHosts(tc.content)
 			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
 				t.Fatalf("foreignHosts() = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-// scannedFiles reads every document, stylesheet and script in a build
-// directory, keyed by its path inside that directory.
-func scannedFiles(t *testing.T, distPath string) map[string]string {
-	t.Helper()
-
-	if _, err := os.Stat(distPath); err != nil {
-		t.Fatalf(
-			"%s is not readable: %v. Run \"task web:build\" and \"task landing-web:build\" first; "+
-				"\"task test:go\" depends on both.",
-			distPath, err,
-		)
-	}
-
-	files := make(map[string]string)
-
-	err := fs.WalkDir(os.DirFS(distPath), ".", func(name string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() || !slices.Contains(scannedExtensions, strings.ToLower(path.Ext(name))) {
-			return nil
-		}
-
-		content, err := os.ReadFile(path.Join(distPath, name))
-		if err != nil {
-			return err
-		}
-		files[name] = string(content)
-
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk %s: %v", distPath, err)
-	}
-
-	if len(files) == 0 {
-		t.Fatalf("%s holds no document, stylesheet or script, so this scan checks nothing", distPath)
-	}
-
-	return files
-}
-
-// TestTheBuiltSitesFetchNothingOffTheirOwnOrigin is the privacy
-// policy's noAnalytics claim as a test: a tracking script, a
-// third-party embed or a stylesheet pulling a font off another server
-// all land in the built output as an off-origin reference, and all of
-// them fail here.
-func TestTheBuiltSitesFetchNothingOffTheirOwnOrigin(t *testing.T) {
-	t.Parallel()
-
-	for name, distPath := range map[string]string{"landing": landingDistPath, "application": appDistPath} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			for file, content := range scannedFiles(t, distPath) {
-				for _, reference := range offOriginReferences(content) {
-					t.Errorf(
-						"%s/%s fetches %s from another origin. "+
-							"Both sites' privacy policy states that neither loads an analytics service, "+
-							"a third-party embed or a runtime font; bundle the asset instead, "+
-							"or correct privacy.noAnalytics in both locales.",
-						distPath, file, reference,
-					)
-				}
-			}
-		})
-	}
-}
-
-// TestTheBuiltSitesNameNoHostOutsideTheAllowList is the same claim read
-// from the other side, and it is the half that catches a fetch no tag
-// and no stylesheet declares: a script assembling a request at runtime
-// still has to carry the host as text. Every host either bundle names
-// today appears in a namespace, a comment or an error message, which is
-// why the allow list spells out why each is there. A new host is a new
-// decision: either it is not fetched and belongs in the list with its
-// reason, or it is, and the policy's claim no longer holds.
-func TestTheBuiltSitesNameNoHostOutsideTheAllowList(t *testing.T) {
-	t.Parallel()
-
-	for name, distPath := range map[string]string{"landing": landingDistPath, "application": appDistPath} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			for file, content := range scannedFiles(t, distPath) {
-				for _, host := range foreignHosts(content) {
-					t.Errorf(
-						"%s/%s names the host %s. Add it to allowedAbsoluteHosts with the reason it is "+
-							"text rather than a request, or, if it is fetched, correct privacy.noAnalytics "+
-							"in both locales.",
-						distPath, file, host,
-					)
-				}
 			}
 		})
 	}

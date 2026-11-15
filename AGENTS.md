@@ -213,13 +213,19 @@ on; every other path already exists.
   names only the two landing packages, and that is a guard as much as a
   copy.
 - Two properties the landing split exists for are checked rather than
-  described: `internal/depsync/landingimports_test.go` fails when
-  `cmd/calbridge-landing`'s transitive imports name a calbridge package
-  outside `internal/landingapi` and `internal/landingconfig`, and
-  `internal/depsync/bundleassets_test.go` fails when either build's
-  output fetches anything off its own origin or names a host outside its
-  allow list, which is the privacy policy's "no analytics, no third
-  parties" claim. On the Vue side `web-landing/eslint.config.ts` refuses
+  described: `internal/depsync/landingimports_builtfrontend_test.go`
+  fails when `cmd/calbridge-landing`'s transitive imports name a
+  calbridge package outside `internal/landingapi` and
+  `internal/landingconfig`, and
+  `internal/depsync/bundleassets_builtfrontend_test.go` fails when
+  either build's output fetches anything off its own origin or names a
+  host outside its allow list, which is the privacy policy's "no
+  analytics, no third parties" claim. Both need the two frontends built,
+  so both sit behind the `builtfrontend` build tag and run from
+  `task test:builtfrontend`; see "Verify before committing". The filter
+  and the scan each tested on their own, which need nothing built, stay
+  in `landingimports_test.go` and `bundleassets_test.go` and run in the
+  ordinary suite. On the Vue side `web-landing/eslint.config.ts` refuses
   govue's `createClient` and any import reaching into `web/`.
 
 ## Deliberate gaps
@@ -273,6 +279,7 @@ build, the same four checks and build for `web-landing/`, a check that
 `go.mod` and `web/package.json` pin the same govue tag, markdown lint,
 YAML lint, a GitHub Actions workflow lint, a secret scan, the Go build,
 both container image builds (`Dockerfile` and `Dockerfile.landing`),
+the two checks over the built frontends (`task test:builtfrontend`),
 Helm chart lint and schema validation, and the Helm chart's own
 `helm-unittest` suite.
 
@@ -283,6 +290,21 @@ on an empty `dist/` for either. `task landing:build` and
 `task landing:build:image` are their own targets, not folded into
 `build`/`build:image`: a correction to the landing server's own copy
 builds and verifies without touching the application's binary or image.
+
+`task test:builtfrontend` is the Go suite's other half, behind the
+`builtfrontend` build tag: the two checks in
+`internal/depsync/*_builtfrontend_test.go` read `cmd/calbridge/dist` and
+`cmd/calbridge-landing/dist`, and neither directory is committed. The
+target depends on `web:build` and `landing-web:build`, so the
+precondition holds wherever it runs, and the `built-frontend` CI job
+runs that target rather than a bare `go test`. Running
+`go test -tags=builtfrontend ./internal/depsync/...` by hand with either
+`dist/` absent fails and names the target to run instead. The tag is
+there so that a job running `go test ./internal/depsync/...` straight
+after a checkout, `check:govue-version` and `integration` both do, is
+not asked for a build it never made; neither test skips itself when the
+directory is missing, because a guard that passes quietly checks
+nothing.
 
 `task test:integration` is deliberately not part of `check`: it needs a
 reachable Postgres, and `check` runs with no network and no port binding.

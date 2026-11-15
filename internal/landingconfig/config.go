@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/ostendorf-cloud/govue/envconf"
@@ -84,11 +85,22 @@ func Load(getenv func(string) string) (Config, error) {
 	// AUTH_BASE_URL. The one check it leaves to this package is the
 	// path: a landing link must carry scheme and host only, since
 	// nothing in this build knows a sub-path to append one to.
-	appURL := l.URL("APP_URL", "")
-	if appURL != nil && appURL.Path != "" {
-		fail(fmt.Errorf("APP_URL: %q must carry scheme and host only, no path", appURL.String()))
-	} else if appURL != nil {
-		cfg.AppURL = appURL.String()
+	//
+	// The one shape l.URL reports as the wrong problem is a value that
+	// forgot its scheme and carries credentials anyway
+	// ("user:secret@host"): url.Parse reads "user" as the scheme, leaves
+	// User nil, and l.URL then refuses it for not starting with http://
+	// while quoting the whole value, password included. That shape is
+	// caught here first, and the value never reaches l.URL, so only the
+	// one refusal naming the right problem is reported.
+	if raw := l.String("APP_URL", ""); namesCredentialsBeforeHost(raw) {
+		fail(errors.New("APP_URL: must not contain credentials"))
+	} else if appURL := l.URL("APP_URL", ""); appURL != nil {
+		if appURL.Path != "" {
+			fail(fmt.Errorf("APP_URL: %q must carry scheme and host only, no path", appURL.String()))
+		} else {
+			cfg.AppURL = appURL.String()
+		}
 	}
 
 	if err := errors.Join(append(problems, l.Err())...); err != nil {
@@ -96,4 +108,35 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// namesCredentialsBeforeHost reports whether a value puts user
+// information in front of its host, whether or not it carries a scheme.
+// url.Parse only fills User for a value with a "//" authority, so
+// "https://user:secret@host" is caught by envconf's own check while
+// "user:secret@host", the same value with the scheme forgotten, is not:
+// that one parses as the scheme "user" with the opaque part
+// "secret@host". Both are the same deployment mistake, both are refused
+// with the same message, and the message names no part of the value.
+//
+// internal/config carries the same function for PUBLIC_SITE_URL rather
+// than this package importing it or the other way round: the landing
+// binary reaches internal/landingapi and internal/landingconfig and
+// nothing else of this module, and
+// internal/depsync/landingimports_builtfrontend_test.go fails if that
+// changes. The two
+// copies are kept honest by a refusal test on each side.
+func namesCredentialsBeforeHost(raw string) bool {
+	rest := strings.TrimSpace(raw)
+
+	if scheme, afterScheme, found := strings.Cut(rest, "://"); found && !strings.ContainsAny(scheme, "/?#@") {
+		rest = afterScheme
+	}
+
+	authority := rest
+	if end := strings.IndexAny(authority, "/?#"); end >= 0 {
+		authority = authority[:end]
+	}
+
+	return strings.Contains(authority, "@")
 }
