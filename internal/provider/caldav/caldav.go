@@ -25,13 +25,18 @@
 // # Identities
 //
 // provider.Calendar.ID is the collection's absolute URL, and an event id
-// is the resource's own name inside that collection. Both stay opaque
-// above this package. A URL is only followed when its scheme is https
-// and its host matches the profile's HostSuffixes, so a server's own
-// answer cannot aim the account's credential somewhere else. That holds
-// for an href in a response body and for the Location of a redirect
-// alike: the HTTP client follows no redirect of its own, and every hop
-// goes through the same check as the first request.
+// is the resource's own name inside that collection, escaped by
+// provider.EventIDOf. Both stay opaque above this package. A resource
+// name is the server's to choose and may carry the separator
+// internal/provider reserves, so decodeEvent escapes it on the way out
+// and resourceURL is the one way back.
+//
+// A URL is only followed when its scheme is https and its host matches
+// the profile's HostSuffixes, so a server's own answer cannot aim the
+// account's credential somewhere else. That holds for an href in a
+// response body and for the Location of a redirect alike: the HTTP
+// client follows no redirect of its own, and every hop goes through the
+// same check as the first request.
 //
 // # Text from a source calendar
 //
@@ -311,12 +316,16 @@ func (c *Connector) NormaliseEvent(event provider.Event) (provider.Event, error)
 		return provider.Event{}, err
 	}
 
-	name := event.ID
-	if name == "" {
-		// decodeEvent names every event it returns after the resource it
-		// came from, and an event on its way to a create has no id yet.
-		// Any name does here, because the result's is overwritten below.
-		name = "unwritten" + resourceSuffix
+	// decodeEvent names every event it returns after the resource it came
+	// from, so what goes in is a resource name and not an Event.ID. An
+	// event on its way to a create has no id yet, and any name does here,
+	// because the result's is overwritten below.
+	name := "unwritten" + resourceSuffix
+	if event.ID != "" {
+		name, err = provider.NativeIDOf(event.ID)
+		if err != nil {
+			return provider.Event{}, fmt.Errorf("caldav: %w", err)
+		}
 	}
 	decoded, err := decodeResource(name, object)
 	if err != nil {

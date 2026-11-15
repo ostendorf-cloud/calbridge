@@ -37,9 +37,13 @@
 //     occupies. For an all-day event that is the day after its last day.
 //  6. Start and End carry the same TimeKind. Their zones may differ, for
 //     an event that starts in one zone and ends in another.
-//  7. Identity. Event.ID is the provider's own id for the event in that
-//     calendar and stays opaque outside the connector. Event.UID is the
-//     RFC 5545 UID where the provider exposes one and is empty otherwise.
+//  7. Identity. Event.ID names the event in that calendar and stays
+//     opaque outside the connector. It is the provider's own id put
+//     through EventIDOf, which escapes InstanceSeparator, so a plain id
+//     never reads as one derived under rule 11; a connector calls
+//     NativeIDOf before an id reaches the provider again. Event.UID is
+//     the RFC 5545 UID where the provider exposes one and is empty
+//     otherwise.
 //  8. Recurrence. A recurring master carries Recurrence.Rule. One
 //     occurrence carries Recurrence.MasterID and Recurrence.OriginalStart
 //     and carries no rule. A connector that cannot express its provider's
@@ -55,10 +59,13 @@
 //     enum, such as TimeKind or PageState, has an invalid zero value,
 //     because an omitted one would silently lose data.
 //  11. Instance identity. A provider that gives an overridden occurrence
-//     an id of its own reports that id as Event.ID. A provider that
-//     stores its overrides inside the master's own object has no such id
-//     to report, and the connector derives one with InstanceIDOf, which
-//     is what makes rule 9's implication readable from the ids alone.
+//     an id of its own reports that id as Event.ID, through EventIDOf
+//     like any other. A provider that stores its overrides inside the
+//     master's own object has no such id to report, and the connector
+//     derives one with InstanceIDOf, which is what makes rule 9's
+//     implication readable from the ids alone. Because rule 7 escapes the
+//     separator in a plain id, the two shapes cannot be confused: an id
+//     CutInstanceID reads is a derived one.
 //  12. Content. A connector that does not store an event exactly as it
 //     was written reports Capabilities.NormalisesContent and implements
 //     ContentNormaliser. Rewriting content without declaring it is what
@@ -394,15 +401,16 @@ type Connector interface {
 	// write. An id the calendar does not hold returns ErrUnknownEvent. A
 	// connector whose Capabilities report InstanceWrites as false returns
 	// ErrUnsupported for an instance, named either by a Recurrence that
-	// carries a MasterID or by an id IsInstanceIDOf matches, and writes
-	// nothing.
+	// carries a MasterID or by an id CutInstanceID reads as a derived
+	// one, and writes nothing.
 	UpdateEvent(ctx context.Context, cred Credential, calendarID string, event Event) (Event, error)
 
 	// DeleteEvent removes the event from the calendar. Deleting an event
 	// that is already gone succeeds, so an interrupted run is safe to
 	// repeat. A connector whose Capabilities report InstanceWrites as
-	// false returns ErrUnsupported for an id IsInstanceIDOf matches
-	// against a master, and deletes nothing: deleting the master's id
-	// removes the instance with it.
+	// false returns ErrUnsupported for an id CutInstanceID reads as a
+	// derived one, and deletes nothing: deleting the master's id removes
+	// the instance with it. It refuses nothing else, so a master whose
+	// own id carries the separator is deleted like any other event.
 	DeleteEvent(ctx context.Context, cred Credential, calendarID, eventID string) error
 }

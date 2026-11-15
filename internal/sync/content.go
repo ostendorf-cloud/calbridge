@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -116,19 +115,6 @@ func instant(t provider.EventTime) (time.Time, error) {
 	return time.Date(w.Year(), w.Month(), w.Day(), w.Hour(), w.Minute(), w.Second(), 0, loc), nil
 }
 
-// occurrenceSeparator joins a recurring master's event id to one
-// occurrence's start, forming the source event id an expanded instance is
-// mapped under.
-//
-// It is provider.InstanceSeparator rather than a separator of this
-// package's own, so one rule covers both key spaces under a master. A
-// connector that derives an overridden occurrence's id from its master's
-// uses the same byte, and the engine's own expansion keys sit under the
-// master in exactly the same shape. A copy whose source is gone is then
-// found the same way whichever of the two produced its key, which is what
-// lets one deletion of a master clear everything under it.
-const occurrenceSeparator = provider.InstanceSeparator
-
 // occurrenceLayout is how a wall clock reading is written into an
 // occurrence's key and read back out of it.
 const occurrenceLayout = "20060102T150405"
@@ -136,18 +122,27 @@ const occurrenceLayout = "20060102T150405"
 // occurrenceID is the source event id one expanded occurrence is mapped
 // under. It is stable for the occurrence's place in the series, so an
 // occurrence moved to another time keeps the same mapping row.
+//
+// The key is built by provider.InstanceIDOf rather than by this package's
+// own joining, so one rule covers both key spaces under a master. A
+// connector that derives an overridden occurrence's id from its master's
+// uses the same function, and the engine's own expansion keys sit under
+// the master in exactly the same shape. A copy whose source is gone is
+// then found the same way whichever of the two produced its key, which is
+// what lets one deletion of a master clear everything under it.
 func occurrenceID(masterID string, start provider.EventTime) string {
-	return masterID + occurrenceSeparator + start.Wall.Format(occurrenceLayout)
+	return provider.InstanceIDOf(masterID, start.Wall.Format(occurrenceLayout))
 }
 
 // occurrenceStart reads the wall clock reading back out of an
 // occurrence's key, and reports whether the key is one of masterID's.
 func occurrenceStart(sourceEventID, masterID string) (time.Time, bool) {
-	if !isOccurrenceOf(sourceEventID, masterID) {
+	master, stamp, derived := provider.CutInstanceID(sourceEventID)
+	if !derived || master != masterID {
 		return time.Time{}, false
 	}
 
-	at, err := time.ParseInLocation(occurrenceLayout, strings.TrimPrefix(sourceEventID, masterID+occurrenceSeparator), time.UTC)
+	at, err := time.ParseInLocation(occurrenceLayout, stamp, time.UTC)
 	if err != nil {
 		return time.Time{}, false
 	}
@@ -157,7 +152,9 @@ func occurrenceStart(sourceEventID, masterID string) (time.Time, bool) {
 
 // isOccurrenceOf reports whether a mapped source event id sits under
 // masterID: one occurrence the expansion of masterID produced, or one
-// overridden occurrence the source provider reported under it.
+// overridden occurrence the source provider reported under it. A key
+// naming a source event of its own never does, whatever that event's id
+// holds.
 func isOccurrenceOf(sourceEventID, masterID string) bool {
 	return provider.IsInstanceIDOf(sourceEventID, masterID)
 }

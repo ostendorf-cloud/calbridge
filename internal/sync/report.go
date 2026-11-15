@@ -91,10 +91,11 @@ const (
 	// ReasonNoDeletableID means no id the target accepts names the event:
 	// its own id reads as an overridden occurrence, which a target
 	// declaring no instance writes refuses, and the event names no master
-	// whose object would remove it. A plain event id carrying
-	// provider.InstanceSeparator is what produces that pair, and issue #29
-	// is where it is closed. The event stays where it is and is reported
-	// again on every pass.
+	// whose object would remove it. Only a connector breaking
+	// internal/provider's eleventh normalisation rule produces that pair,
+	// because an id derived for an occurrence comes with the master it
+	// was derived from. The event stays where it is and is reported again
+	// on every pass.
 	ReasonNoDeletableID
 	// ReasonEdgeRemoved means the edge was torn down and gave back
 	// everything it wrote.

@@ -72,7 +72,13 @@ on; every other path already exists.
   everything provider-shaped stays inside its package. A connector also
   declares whether it writes one overridden occurrence and whether it
   rewrites content on write, and answers what a write turns an event into
-  where it does.
+  where it does. It owns the event id space as well: a provider's own
+  identifier becomes an `Event.ID` through `EventIDOf`, which escapes the
+  separator a derived occurrence id is joined with, and `NativeIDOf` is
+  the one way back, so a plain event id can never read as an occurrence
+  of another event whatever a server names a resource. A caller that has
+  the event reads `Recurrence.MasterID`; one that has only an id cuts it
+  with `CutInstanceID`.
 - `internal/provider/caldav` is the generic CalDAV connector, driven by
   one profile per server with iCloud as the first. It is the only
   connector so far.

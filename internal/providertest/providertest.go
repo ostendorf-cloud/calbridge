@@ -474,10 +474,14 @@ func (c *Connector) rewrite(event provider.Event) provider.Event {
 }
 
 // namesAnInstance reports whether an event id is one an overridden
-// occurrence carries. The ids this connector issues hold no separator, so
-// one that does was derived from a master's.
+// occurrence carries, which is one provider.InstanceIDOf derived from a
+// master's. An id of an event of its own never answers true, whatever it
+// holds, so a master whose own id carries the separator is written and
+// deleted like any other event, here as in a real connector.
 func namesAnInstance(eventID string) bool {
-	return strings.Contains(eventID, provider.InstanceSeparator)
+	_, _, derived := provider.CutInstanceID(eventID)
+
+	return derived
 }
 
 // DecodeCredential implements provider.CredentialDecoder. The stored form
