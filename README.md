@@ -13,16 +13,18 @@ while a private calendar keeps the real appointment. See
 architecture and the delivery order.
 
 `cmd/calbridge` serves liveness, readiness and metrics on an administrative
-listener, and on the public one a login shell and an authenticated shell that
-prove the session and CSRF contract; the Vue SPA in `web/` is embedded into the
-binary at build time. The login accepts any email with no account behind it
-yet; issue #5 replaces it with real local accounts and provider sign-in.
+listener, and on the public one local accounts with TOTP, sign in with
+Google, Microsoft or Apple, and the sync graph API the Vue Flow canvas in
+`web/` is a view of; that SPA is embedded into the binary at build time.
 `db/migrations` and `internal/storage` hold the database foundation: users,
 identities, connections, calendars, edges, calendar grants and the event
 mapping, with row level security enforced by a database role that is
-`NOSUPERUSER NOBYPASSRLS`. `charts/calbridge` installs all of it; see
-`AGENTS.md` for what each package does and what is still ahead. No provider
-connector has been written yet.
+`NOSUPERUSER NOBYPASSRLS`. `charts/calbridge` installs all of it, and
+alongside it `cmd/calbridge-landing`, the public landing page on
+`calbridge.de`: its own static build, own container and own deployment, so
+a correction to its privacy policy never redeploys the application on
+`app.calbridge.de`. See `AGENTS.md` for what each package does and what is
+still ahead.
 
 ## Install
 
@@ -41,7 +43,8 @@ docker compose up --build
 ```
 
 Builds and starts `calbridge` and a Postgres with `db/migrations` already applied, reachable
-at `http://localhost:8080`.
+at `http://localhost:8080`, and the landing server, reachable at `http://localhost:8090`,
+each linking to the other.
 
 ## Development
 
@@ -51,11 +54,12 @@ task check
 
 Runs every check this repository has: Go format, vet and lint, a check that
 the committed sqlc output still matches `db/migrations`, the Go test suite,
-the `web/` package's ESLint, Prettier, TypeScript and Vitest checks, the
-`web/` SPA build, a check that `go.mod` and `web/package.json` pin the same
-govue tag, markdown lint, YAML lint, a GitHub Actions workflow lint, a secret
-scan, the Go build, the container image build, Helm chart lint and schema
-validation, and the Helm chart's own `helm-unittest` suite.
+the `web/` and `web-landing/` packages' ESLint, Prettier, TypeScript and
+Vitest checks and SPA builds, a check that `go.mod` and `web/package.json`
+pin the same govue tag, markdown lint, YAML lint, a GitHub Actions workflow
+lint, a secret scan, the Go build, both container image builds (`Dockerfile`
+and `Dockerfile.landing`), Helm chart lint and schema validation, and the
+Helm chart's own `helm-unittest` suite.
 
 `task test:integration` runs the row level security isolation test against a
 live Postgres and is deliberately not part of `check`, which runs with no
