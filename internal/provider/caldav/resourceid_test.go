@@ -4,7 +4,10 @@
 package caldav
 
 import (
+	"io"
+	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/ostendorf-cloud/calbridge/internal/provider"
@@ -39,12 +42,15 @@ func TestResourceURL_RoundTripsAResourceNameThroughAnEventID(t *testing.T) {
 			}
 			eventID := events[0].ID
 
-			at, err := resourceURL(collection, eventID)
+			at, got, err := resourceURL(collection, eventID)
 			if err != nil {
 				t.Fatalf("resourceURL(%q) error = %v", eventID, err)
 			}
-			if got := lastSegment(at.Path); got != resourceName {
+			if got != resourceName {
 				t.Errorf("the resource name came back as %q, want %q", got, resourceName)
+			}
+			if inPath := lastSegment(at.Path); inPath != resourceName {
+				t.Errorf("the URL names the resource %q, want %q", inPath, resourceName)
 			}
 			if provider.IsInstanceIDOf(eventID, "a") {
 				t.Errorf("the resource %q reads as an occurrence of an event named \"a\"", resourceName)
@@ -66,8 +72,65 @@ func TestResourceURL_RefusesAnIDDerivedForAnOverriddenOccurrence(t *testing.T) {
 
 	derived := provider.InstanceIDOf(provider.EventIDOf("a#b.ics"), "20260304T090000")
 
-	if _, err := resourceURL(collection, derived); err == nil {
+	if _, _, err := resourceURL(collection, derived); err == nil {
 		t.Errorf("resourceURL(%q) built a URL for an id that names no resource", derived)
+	}
+}
+
+// answerWith is the HTTP surface of a test that replays one response.
+type answerWith func(*http.Request) (*http.Response, error)
+
+func (f answerWith) Do(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestReadEvent_NamesTheEventAfterTheResourceAndNotAfterTheIDItWasAskedFor(t *testing.T) {
+	t.Parallel()
+
+	// readEvent is handed an Event.ID and decodeResource is handed a
+	// resource name, so the id has to be decoded exactly once on the way
+	// between them. Escaping it a second time yields an id no other read
+	// path of this connector produces, and the caller's own fields say
+	// nothing about it.
+	const resourceName = "a#b.ics"
+
+	var asked string
+	connector := New(WithClient(answerWith(func(req *http.Request) (*http.Response, error) {
+		asked = req.URL.Path
+		header := http.Header{}
+		header.Set("ETag", `"C=12@U=20241234/1"`)
+		body := wrap("UID:probe\r\nDTSTART:20260301T170000Z\r\nDTEND:20260301T190000Z\r\n")
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     header,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})))
+
+	cred, err := NewCredential("conn-1", "icloud", "anna.beispiel@example.com", "aaaa-bbbb-cccc-dddd")
+	if err != nil {
+		t.Fatalf("build credential: %v", err)
+	}
+	p, own, err := connector.profileFor(cred)
+	if err != nil {
+		t.Fatalf("read the profile: %v", err)
+	}
+	calendar, err := parseCalendarURL(p, "https://p42-caldav.icloud.com:443/20241234/calendars/home/")
+	if err != nil {
+		t.Fatalf("parse the calendar: %v", err)
+	}
+
+	eventID := provider.EventIDOf(resourceName)
+
+	held, err := connector.readEvent(t.Context(), p, own, calendar, eventID)
+	if err != nil {
+		t.Fatalf("readEvent(%q) error = %v", eventID, err)
+	}
+	if want := "/20241234/calendars/home/" + resourceName; asked != want {
+		t.Errorf("the connector read %q, want %q", asked, want)
+	}
+	if held.ID != eventID {
+		t.Errorf("readEvent(%q) returned the event under id %q, want the id it was asked for", eventID, held.ID)
 	}
 }
 

@@ -274,7 +274,7 @@ func (c *Connector) DeleteEvent(ctx context.Context, cred provider.Credential, c
 	if err != nil {
 		return err
 	}
-	at, err := resourceURL(calendar, eventID)
+	at, _, err := resourceURL(calendar, eventID)
 	if err != nil {
 		return err
 	}
@@ -300,14 +300,18 @@ const ifNoneMatchNew = "*"
 // put writes one calendar object resource and returns its entity tag.
 // The condition is "*" for a creation, an entity tag for an update, and
 // empty for a write with no condition at all.
+//
+// It takes an Event.ID and reports a failure under the resource name
+// resourceURL decoded from it, because that is the name the server knows
+// the object by and the one a log line has to match.
 func (c *Connector) put(
 	ctx context.Context,
 	p Profile,
 	cred Credential,
 	calendar *url.URL,
-	name, object, condition string,
+	eventID, object, condition string,
 ) (string, error) {
-	at, err := resourceURL(calendar, name)
+	at, name, err := resourceURL(calendar, eventID)
 	if err != nil {
 		return "", err
 	}
@@ -377,16 +381,21 @@ func (c *Connector) fetchETag(ctx context.Context, p Profile, cred Credential, a
 	return "", nil
 }
 
-// readEvent fetches one resource and returns the master event in it,
-// which is what an update overwrites.
+// readEvent fetches the resource eventID names and returns the master
+// event in it, which is what an update overwrites.
+//
+// The resource name comes from resourceURL, the one place an Event.ID is
+// decoded back into one, so the name decodeResource names its events
+// after is the server's own and the ids it hands back are the ids every
+// other read path hands back for that resource.
 func (c *Connector) readEvent(
 	ctx context.Context,
 	p Profile,
 	cred Credential,
 	calendar *url.URL,
-	name string,
+	eventID string,
 ) (provider.Event, error) {
-	at, err := resourceURL(calendar, name)
+	at, name, err := resourceURL(calendar, eventID)
 	if err != nil {
 		return provider.Event{}, err
 	}

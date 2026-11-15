@@ -438,9 +438,20 @@ func InstanceIDOf(masterEventID, occurrence string) string {
 // that has nothing else to recover it from. A caller holding the event
 // reads Recurrence.MasterID instead, which the connector set. A plain
 // event id never answers true here, whatever it holds.
+//
+// Both halves are decoded, so the master this returns is an Event.ID
+// NativeIDOf reads back and not merely the text before the first
+// separator. An id carrying the escape byte outside an escape sequence
+// in its master half is one InstanceIDOf cannot have derived, because
+// the master it is given is itself an id EventIDOf produced, so such an
+// id answers false rather than returning a master a connector would
+// refuse.
 func CutInstanceID(eventID string) (masterEventID, occurrence string, ok bool) {
 	master, rest, found := strings.Cut(eventID, InstanceSeparator)
 	if !found || master == "" {
+		return "", "", false
+	}
+	if _, err := NativeIDOf(master); err != nil {
 		return "", "", false
 	}
 	native, err := NativeIDOf(rest)

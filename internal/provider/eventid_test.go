@@ -140,6 +140,26 @@ func TestCutInstanceID_readsNoDerivedIDInAPlainOne(t *testing.T) {
 	}
 }
 
+func TestCutInstanceID_readsNoDerivedIDWhereTheMasterHalfDoesNotDecode(t *testing.T) {
+	t.Parallel()
+
+	// The master half is what this function exists to recover, so it is
+	// an Event.ID a connector can act on or it is no derived id at all.
+	// InstanceIDOf is handed a master EventIDOf produced, which carries
+	// the escape byte only inside an escape sequence, so nothing it
+	// derives is refused here.
+	unreadable := "a%" + provider.InstanceSeparator + "b"
+
+	master, occurrence, derived := provider.CutInstanceID(unreadable)
+	if derived {
+		t.Fatalf("CutInstanceID(%q) reads occurrence %q of the master %q, which NativeIDOf refuses",
+			unreadable, occurrence, master)
+	}
+	if _, err := provider.NativeIDOf(master); master != "" && err != nil {
+		t.Errorf("CutInstanceID(%q) returned the master %q, which NativeIDOf refuses", unreadable, master)
+	}
+}
+
 func TestIsInstanceIDOf_answersNoForAnEventOfItsOwn(t *testing.T) {
 	t.Parallel()
 

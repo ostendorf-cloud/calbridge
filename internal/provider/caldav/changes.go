@@ -274,7 +274,7 @@ func (c *Connector) readResources(
 
 	body := calendarMultiget{}
 	for _, eventID := range eventIDs {
-		at, err := resourceURL(calendar, eventID)
+		at, _, err := resourceURL(calendar, eventID)
 		if err != nil {
 			return nil, err
 		}
@@ -341,24 +341,27 @@ func (c *Connector) readResources(
 }
 
 // resourceURL builds the URL of one object resource inside a collection,
-// and refuses an id that names no resource in it.
+// and refuses an id that names no resource in it. It returns the resource
+// name alongside the URL, for the caller that needs the name itself.
 //
 // It is the one place an Event.ID becomes a resource name again, so the
-// one place the escaping decodeEvent applied is undone. An id that
-// carries an unescaped separator is one derived for an overridden
-// occurrence and names no resource of its own; provider.NativeIDOf
-// refuses it, and so does an id no connector of this package issued.
-func resourceURL(calendar *url.URL, eventID string) (*url.URL, error) {
+// one place the escaping decodeEvent applied is undone. A caller wanting
+// the name takes it from here rather than decoding the id a second time,
+// so the boundary keeps one escape and one unescape. An id that carries
+// an unescaped separator is one derived for an overridden occurrence and
+// names no resource of its own; provider.NativeIDOf refuses it, and so
+// does an id no connector of this package issued.
+func resourceURL(calendar *url.URL, eventID string) (*url.URL, string, error) {
 	name, err := provider.NativeIDOf(eventID)
 	if err != nil {
-		return nil, fmt.Errorf("caldav event id %q is not a resource name: %w", eventID, provider.ErrUnknownEvent)
+		return nil, "", fmt.Errorf("caldav event id %q is not a resource name: %w", eventID, provider.ErrUnknownEvent)
 	}
 	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
-		return nil, fmt.Errorf("caldav event id %q is not a resource name: %w", eventID, provider.ErrUnknownEvent)
+		return nil, "", fmt.Errorf("caldav event id %q is not a resource name: %w", eventID, provider.ErrUnknownEvent)
 	}
 	out := *calendar
 	out.Path = calendar.Path + name
 	out.RawPath = ""
 
-	return &out, nil
+	return &out, name, nil
 }
