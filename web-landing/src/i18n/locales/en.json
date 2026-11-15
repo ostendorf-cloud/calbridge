@@ -1,0 +1,145 @@
+{
+  "common": {
+    "appName": "calbridge",
+    "skipToContent": "Skip to content"
+  },
+  "nav": {
+    "ariaLabel": "Main navigation",
+    "home": "Home",
+    "pricing": "Pricing",
+    "imprint": "Imprint",
+    "privacy": "Privacy policy",
+    "openApp": "Open the application"
+  },
+  "footer": {
+    "ariaLabel": "Footer",
+    "note": "calbridge is privately operated."
+  },
+  "home": {
+    "hero": {
+      "title": "See what is on, without seeing what is private",
+      "lead": "calbridge mirrors calendars across Google, Microsoft 365 and iCloud, at exactly the amount of detail each recipient should see.",
+      "cta": "Open the application"
+    },
+    "problem": {
+      "title": "One person, several calendars, no shared view",
+      "body": "Work, private life and the people you share a calendar with each live in their own account. No provider shows all of them in one place, and none lets a work calendar see only that a slot is busy while a private calendar keeps the full details. Typing placeholder events by hand drifts out of date within a day and hides real conflicts."
+    },
+    "detailLevels": {
+      "title": "One connection, three levels of detail",
+      "lead": "A connection between two calendars copies events in one direction, at a detail level chosen for that connection alone.",
+      "full": {
+        "title": "Full",
+        "body": "Title, time, description, location and attendees copy across unchanged."
+      },
+      "titleTime": {
+        "title": "Title and time",
+        "body": "Only the title and the time copy across. Nobody downstream sees the description, the location or who else is invited."
+      },
+      "busyBlock": {
+        "title": "Busy or free only",
+        "body": "Only whether the time is busy or free copies across: no title, no description, nothing else. A work calendar can show a slot is taken without ever learning why."
+      }
+    },
+    "cta": {
+      "title": "Ready to connect your calendars?",
+      "body": "Sign in or create an account in the application to start connecting calendars.",
+      "button": "Open the application"
+    }
+  },
+  "pricing": {
+    "title": "Pricing",
+    "lead": "calbridge is privately operated today.",
+    "body": "There are no prices yet, because there is nothing to buy yet: the service runs for its operator's own use. This page carries real pricing once that changes."
+  },
+  "imprint": {
+    "title": "Imprint",
+    "lead": "Information about the operator of this deployment.",
+    "operator": {
+      "heading": "Operator",
+      "placeholder": "[Operator name — filled in by the owner of this deployment]"
+    },
+    "address": {
+      "heading": "Address",
+      "placeholder": "[Postal address — filled in by the owner of this deployment]"
+    },
+    "contact": {
+      "heading": "Contact",
+      "emailPlaceholder": "[Contact email address — filled in by the owner of this deployment]",
+      "phonePlaceholder": "[Telephone number — filled in by the owner of this deployment]"
+    },
+    "representative": {
+      "heading": "Represented by",
+      "placeholder": "[Name of the representative — filled in by the owner of this deployment]"
+    },
+    "register": {
+      "heading": "Register entry",
+      "placeholder": "[Register court and registration number, if any — filled in by the owner of this deployment]"
+    },
+    "vat": {
+      "heading": "VAT identification number",
+      "placeholder": "[VAT identification number, if any — filled in by the owner of this deployment]"
+    },
+    "responsibleContent": {
+      "heading": "Responsible for content",
+      "placeholder": "[Name and address of the person responsible for the content — filled in by the owner of this deployment]"
+    },
+    "disputeResolution": {
+      "heading": "Dispute resolution",
+      "placeholder": "[Whether the operator takes part in a consumer arbitration board procedure, and which one — filled in by the owner of this deployment]"
+    }
+  },
+  "privacy": {
+    "title": "Privacy policy",
+    "lead": "What calbridge stores, why, and what this application never sees.",
+    "intro": {
+      "heading": "About this text",
+      "body": "This text describes what calbridge's own source code actually stores, encrypts, shares and deletes. It is not a legal review and not a data processing agreement; whoever operates this deployment is responsible for running it and for this text."
+    },
+    "operator": {
+      "heading": "Controller",
+      "body": "[Name and address of the controller — filled in by the owner of this deployment. See the imprint.]",
+      "contactPlaceholder": "[Contact for privacy questions, for example an email address — filled in by the owner of this deployment]",
+      "dpoPlaceholder": "[Data protection officer, where one is appointed — filled in by the owner of this deployment]"
+    },
+    "account": {
+      "heading": "A local account with a password",
+      "body": "A local account stores its email address, a password hash computed with Argon2id, and, once set up, the two-factor (TOTP) secret and the counter of the last accepted code. The password itself is never stored, only its hash. These fields live in the users table."
+    },
+    "providerSignIn": {
+      "heading": "Signing in with Google, Microsoft or Apple",
+      "body": "Signing in with a provider asks for identity only, never for calendar access: Google and Microsoft are asked for the openid, profile and email scopes, Apple for openid alone. Only the provider's own fixed identifier for the account (its \"subject\") is stored, in the identities table. Google supplies a verified email address, which the account then uses. Microsoft never marks an email address as verified, and Apple is never asked for one at all; in both cases the account gets a placeholder address instead, under the dedicated, unreachable domain sign-in.calbridge.invalid, derived from a hash of the provider and the subject, never from the real address.",
+      "linkBody": "A provider sign-in is never linked to a calendar connection someone else made with the same provider account: that separation is structural in the code, not only a rule, because the part of the application handling sign-in has no access to the calendar connections table at all."
+    },
+    "calendarConnections": {
+      "heading": "Connected calendar accounts",
+      "body": "Connecting a calendar is a second, separate step after signing in, and asks for its own, wider scopes (for example reading and writing calendars). The credentials this stores — an OAuth refresh token for Google or Microsoft, or an Apple ID with an app-specific password for iCloud — are stored only encrypted, with AES-256-GCM, at the database boundary in internal/storage/postgres. The key for that lives with the owner of this deployment and is supplied through the ENCRYPTION_KEY environment variable; no code above that boundary ever handles these credentials unencrypted."
+    },
+    "syncData": {
+      "heading": "What a connection between two calendars stores",
+      "body": "For every connection (edge), calbridge keeps one small mapping row (event_mapping): the connection's id, the event's id in the source, the id of its copy in the target, the event's start and end, and a content hash. An additional, encrypted cache of the title or description is created only when the chosen detail level copies that content at all.",
+      "busyBlockBody": "At the \"busy or free only\" detail level, calbridge copies nothing but whether a time range is busy and whether the event is happening at all; the title, description, location, attendees and recurrence rule are never read, never copied and never stored for that connection. The encrypted cache stays empty for such a connection, because there is nothing to put in it."
+    },
+    "handEdits": {
+      "heading": "A copy edited by hand",
+      "body": "Editing a copy calbridge wrote into a target calendar by hand does not keep that edit: the next sync overwrites it without comment, because a copy is a projection of its source, and only the source counts as the truth. A note added to a mirrored copy does not survive."
+    },
+    "sharing": {
+      "heading": "Sharing a calendar with someone else",
+      "body": "Sharing one of your own calendars with someone else sets the maximum detail level that share allows. Revoking a share removes every connection built on it completely: first every event that connection wrote into its target, then the matching rows in the mapping table, the target calendar calbridge created for it where it created one, and finally the connection itself. Restoring the share afterwards does not bring the connection back; it has to be rebuilt."
+    },
+    "deletion": {
+      "heading": "Deleting your account",
+      "body": "Deleting your own account removes, in one transaction: every row in the mapping table, every connection, every share you gave and every one you received, every calendar, every connected calendar account together with its encrypted credentials, every sign-in identity, and finally the account itself. Every signed-in session for that account ends at the same time.",
+      "limitBody": "One limit remains: an event a connection already wrote into a calendar at Google, Microsoft or iCloud is not automatically removed there when the account is deleted, because that would need reaching that provider, which deleting an account does not do. Delete the connection itself first if you want its copies removed before deleting the account; deleting one connection removes every event it wrote."
+    },
+    "noAnalytics": {
+      "heading": "No analytics, no third parties",
+      "body": "Neither this site nor the application loads an analytics or tracking service, a third-party embed, or a font fetched from another server at runtime. There is nothing of that kind to disclose, because none of it is included."
+    },
+    "session": {
+      "heading": "Session cookie",
+      "body": "Once signed in, the application sets a session cookie whose only purpose is to recognise that signed-in session. It is never used for any other account or any other site, and it ends at the latest when you log out or delete your account."
+    }
+  }
+}

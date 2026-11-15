@@ -9,6 +9,8 @@ ignore:
   # Matches solobill's own .yamllint.yaml.
   - web/node_modules/
   - web/pnpm-lock.yaml
+  - web-landing/node_modules/
+  - web-landing/pnpm-lock.yaml
 
 rules:
   line-length:

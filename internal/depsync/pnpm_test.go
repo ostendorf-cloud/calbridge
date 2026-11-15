@@ -14,6 +14,10 @@ const (
 	// dockerfilePath is where the web build stage pins pnpm by hand,
 	// relative to this package.
 	dockerfilePath = "../../Dockerfile"
+	// landingDockerfilePath is the landing server's own Dockerfile,
+	// pinning pnpm by hand a second time, independently of the one
+	// above.
+	landingDockerfilePath = "../../Dockerfile.landing"
 	// miseTOMLPath is where every tool this repository needs is pinned,
 	// pnpm's major included, relative to this package.
 	miseTOMLPath = "../../mise.toml"
@@ -156,6 +160,40 @@ func TestDockerfilePnpmPinMatchesMise(t *testing.T) {
 		t.Fatalf(
 			"pnpm major mismatch: Dockerfile pins pnpm %s.x, mise.toml pins pnpm %s. "+
 				"Pin both files to the same major, or the image no longer builds with the toolchain task web:build does.",
+			dockerfileMajor, miseMajor,
+		)
+	}
+}
+
+// TestLandingDockerfilePnpmPinMatchesMise is TestDockerfilePnpmPinMatchesMise's
+// own check, repeated for Dockerfile.landing: a second hand-written pin,
+// independent of the application's own Dockerfile and just as able to
+// drift from mise.toml.
+func TestLandingDockerfilePnpmPinMatchesMise(t *testing.T) {
+	t.Parallel()
+
+	dockerfile, err := os.ReadFile(landingDockerfilePath)
+	if err != nil {
+		t.Fatalf("read Dockerfile.landing: %v", err)
+	}
+	dockerfileMajor, err := dockerfilePnpmMajor(string(dockerfile))
+	if err != nil {
+		t.Fatalf("resolve Dockerfile.landing's pnpm major: %v", err)
+	}
+
+	miseTOML, err := os.ReadFile(miseTOMLPath)
+	if err != nil {
+		t.Fatalf("read mise.toml: %v", err)
+	}
+	miseMajor, err := miseTOMLPnpmMajor(string(miseTOML))
+	if err != nil {
+		t.Fatalf("resolve mise.toml's pnpm major: %v", err)
+	}
+
+	if dockerfileMajor != miseMajor {
+		t.Fatalf(
+			"pnpm major mismatch: Dockerfile.landing pins pnpm %s.x, mise.toml pins pnpm %s. "+
+				"Pin both files to the same major, or the image no longer builds with the toolchain task landing-web:build does.",
 			dockerfileMajor, miseMajor,
 		)
 	}

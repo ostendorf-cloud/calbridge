@@ -1,0 +1,145 @@
+{
+  "common": {
+    "appName": "calbridge",
+    "skipToContent": "Zum Inhalt springen"
+  },
+  "nav": {
+    "ariaLabel": "Navigation",
+    "home": "Start",
+    "pricing": "Preise",
+    "imprint": "Impressum",
+    "privacy": "Datenschutz",
+    "openApp": "Zur Anwendung"
+  },
+  "footer": {
+    "ariaLabel": "Fußzeile",
+    "note": "calbridge wird privat betrieben."
+  },
+  "home": {
+    "hero": {
+      "title": "Sehen, dass ein Termin belegt ist, ohne zu sehen, worum es geht",
+      "lead": "calbridge spiegelt Kalender zwischen Google, Microsoft 365 und iCloud, genau im Detailgrad, den jede Empfängerin oder jeder Empfänger sehen soll.",
+      "cta": "Zur Anwendung"
+    },
+    "problem": {
+      "title": "Eine Person, mehrere Kalender, keine gemeinsame Ansicht",
+      "body": "Beruf, Privatleben und die Menschen, mit denen ein Kalender geteilt wird, leben jeweils in einem eigenen Konto. Kein Anbieter zeigt alle an einem Ort, und keiner lässt einen Arbeitskalender nur sehen, dass ein Termin belegt ist, während ein privater Kalender die vollen Details behält. Platzhaltertermine von Hand einzutragen veraltet innerhalb eines Tages und verdeckt echte Konflikte."
+    },
+    "detailLevels": {
+      "title": "Eine Verbindung, drei Detailgrade",
+      "lead": "Eine Verbindung zwischen zwei Kalendern kopiert Termine in eine Richtung, im Detailgrad, der für genau diese Verbindung gewählt wird.",
+      "full": {
+        "title": "Vollständig",
+        "body": "Titel, Zeit, Beschreibung, Ort und Teilnehmende werden unverändert übernommen."
+      },
+      "titleTime": {
+        "title": "Titel und Zeit",
+        "body": "Nur Titel und Zeit werden übernommen. Niemand weiter unten sieht die Beschreibung, den Ort oder wer sonst eingeladen ist."
+      },
+      "busyBlock": {
+        "title": "Nur belegt oder frei",
+        "body": "Nur ob die Zeit belegt oder frei ist, wird übernommen: kein Titel, keine Beschreibung, sonst nichts. Ein Arbeitskalender kann zeigen, dass ein Termin belegt ist, ohne je zu erfahren, warum."
+      }
+    },
+    "cta": {
+      "title": "Bereit, Kalender zu verbinden?",
+      "body": "In der Anwendung anmelden oder ein Konto anlegen, um Kalender zu verbinden.",
+      "button": "Zur Anwendung"
+    }
+  },
+  "pricing": {
+    "title": "Preise",
+    "lead": "calbridge wird heute privat betrieben.",
+    "body": "Es gibt noch keine Preise, weil es noch nichts zu kaufen gibt: Der Dienst läuft für den eigenen Gebrauch des Betreibers. Diese Seite trägt echte Preise, sobald sich das ändert."
+  },
+  "imprint": {
+    "title": "Impressum",
+    "lead": "Angaben zum Betreiber dieser Installation.",
+    "operator": {
+      "heading": "Betreiber",
+      "placeholder": "[Name des Betreibers — vom Betreiber dieser Installation auszufüllen]"
+    },
+    "address": {
+      "heading": "Anschrift",
+      "placeholder": "[Postanschrift — vom Betreiber dieser Installation auszufüllen]"
+    },
+    "contact": {
+      "heading": "Kontakt",
+      "emailPlaceholder": "[E-Mail-Adresse — vom Betreiber dieser Installation auszufüllen]",
+      "phonePlaceholder": "[Telefonnummer — vom Betreiber dieser Installation auszufüllen]"
+    },
+    "representative": {
+      "heading": "Vertreten durch",
+      "placeholder": "[Name der vertretungsberechtigten Person — vom Betreiber dieser Installation auszufüllen]"
+    },
+    "register": {
+      "heading": "Registereintrag",
+      "placeholder": "[Registergericht und Registernummer, falls vorhanden — vom Betreiber dieser Installation auszufüllen]"
+    },
+    "vat": {
+      "heading": "Umsatzsteuer-Identifikationsnummer",
+      "placeholder": "[Umsatzsteuer-Identifikationsnummer, falls vorhanden — vom Betreiber dieser Installation auszufüllen]"
+    },
+    "responsibleContent": {
+      "heading": "Verantwortlich für den Inhalt",
+      "placeholder": "[Name und Anschrift der inhaltlich verantwortlichen Person — vom Betreiber dieser Installation auszufüllen]"
+    },
+    "disputeResolution": {
+      "heading": "Streitschlichtung",
+      "placeholder": "[Ob und bei welcher Verbraucherschlichtungsstelle der Betreiber teilnimmt — vom Betreiber dieser Installation auszufüllen]"
+    }
+  },
+  "privacy": {
+    "title": "Datenschutz",
+    "lead": "Was calbridge speichert, wofür, und was diese Anwendung nicht sieht.",
+    "intro": {
+      "heading": "Zu diesem Text",
+      "body": "Dieser Text beschreibt, was der Quellcode von calbridge tatsächlich speichert, verschlüsselt, teilt und löscht. Er ersetzt keine rechtliche Prüfung und keinen Vertrag zur Auftragsverarbeitung; wer diese Installation betreibt, trägt die Verantwortung für den Betrieb und für diesen Text."
+    },
+    "operator": {
+      "heading": "Verantwortliche Stelle",
+      "body": "[Name und Anschrift der verantwortlichen Stelle — vom Betreiber dieser Installation auszufüllen. Siehe Impressum.]",
+      "contactPlaceholder": "[Kontakt für Anfragen zum Datenschutz, zum Beispiel eine E-Mail-Adresse — vom Betreiber dieser Installation auszufüllen]",
+      "dpoPlaceholder": "[Datenschutzbeauftragte oder Datenschutzbeauftragter, falls bestellt — vom Betreiber dieser Installation auszufüllen]"
+    },
+    "account": {
+      "heading": "Konto mit Passwort",
+      "body": "Ein lokales Konto speichert die E-Mail-Adresse, einen mit Argon2id berechneten Passwort-Hash und, nach der Einrichtung, das Geheimnis der Zwei-Faktor-Authentifizierung (TOTP) sowie den Zähler des zuletzt akzeptierten Codes. Das Passwort selbst wird nicht gespeichert, nur sein Hash. Diese Angaben liegen in der Tabelle users."
+    },
+    "providerSignIn": {
+      "heading": "Anmeldung über Google, Microsoft oder Apple",
+      "body": "Die Anmeldung mit einem Anbieter fragt ausschließlich nach der Identität, nie nach Kalenderzugriff: Google und Microsoft erhalten die Berechtigungen openid, profile und email, Apple ausschließlich openid. Gespeichert wird nur der feste Identifikator (\"subject\"), den der Anbieter für das Konto vergibt, in der Tabelle identities. Google liefert eine bestätigte E-Mail-Adresse, die dann für das Konto verwendet wird. Microsoft übermittelt keine als bestätigt gekennzeichnete E-Mail-Adresse, Apple fragt diese Angabe gar nicht erst ab; in beiden Fällen erhält das Konto stattdessen eine Platzhalteradresse unter der eigens dafür reservierten und nicht erreichbaren Domain sign-in.calbridge.invalid, abgeleitet aus einem Hash des Anbieters und des Identifikators, nie aus der echten Adresse selbst.",
+      "linkBody": "Eine Anmeldung über einen Anbieter wird nie mit einer Kalenderverbindung verknüpft, die eine andere Person mit demselben Anbieterkonto hergestellt hat: Diese Trennung ist im Code struktureller Natur, nicht nur eine Regel, da der für die Anmeldung zuständige Teil der Anwendung gar keinen Zugriff auf die Tabelle der Kalenderverbindungen hat."
+    },
+    "calendarConnections": {
+      "heading": "Verbundene Kalenderkonten",
+      "body": "Eine Kalenderverbindung ist ein zweiter, eigenständiger Schritt nach der Anmeldung und fragt eigene, weitergehende Berechtigungen ab (zum Beispiel Lese- und Schreibzugriff auf Kalender). Die dabei gespeicherten Zugangsdaten — ein OAuth-Aktualisierungstoken für Google oder Microsoft, oder eine Apple-ID mit einem app-spezifischen Passwort für iCloud — werden ausschließlich verschlüsselt abgelegt, mit AES-256-GCM, an der Datenbankgrenze in internal/storage/postgres. Der Schlüssel dafür liegt beim Betreiber dieser Installation und wird über die Umgebungsvariable ENCRYPTION_KEY bereitgestellt; kein darüberliegender Code dieser Anwendung verarbeitet diese Zugangsdaten je unverschlüsselt."
+    },
+    "syncData": {
+      "heading": "Was eine Verbindung zwischen zwei Kalendern speichert",
+      "body": "Zu jeder Verbindung (edge) führt calbridge eine schlanke Zuordnungstabelle (event_mapping): die ID der Verbindung, die ID des Termins in der Quelle, die ID der Kopie im Ziel, Anfang und Ende des Termins sowie einen Prüfwert (Hash) des Inhalts. Ein zusätzlicher, verschlüsselter Zwischenspeicher für Titel oder Beschreibung wird nur angelegt, wenn der gewählte Detailgrad überhaupt solche Inhalte kopiert.",
+      "busyBlockBody": "Bei der Detailstufe \"Nur belegt oder frei\" kopiert calbridge ausschließlich, ob ein Zeitraum belegt ist und ob der Termin stattfindet; Titel, Beschreibung, Ort, Teilnehmende und die Wiederholungsregel werden für diese Verbindung nicht gelesen, nicht kopiert und nicht gespeichert. Für eine solche Verbindung bleibt der verschlüsselte Zwischenspeicher leer, weil es nichts zu speichern gibt."
+    },
+    "handEdits": {
+      "heading": "Von Hand geänderte Kopien",
+      "body": "Wer eine von calbridge geschriebene Kopie im Zielkalender von Hand ändert, muss wissen: Die nächste Synchronisierung überschreibt diese Änderung kommentarlos, weil eine Kopie als Abbild der Quelle gilt und nur die Quelle als Wahrheit zählt. Eine Notiz an einer gespiegelten Kopie bleibt also nicht bestehen."
+    },
+    "sharing": {
+      "heading": "Freigaben an andere Personen",
+      "body": "Wer einen eigenen Kalender für eine andere Person freigibt, legt dabei den höchsten erlaubten Detailgrad fest. Wird eine solche Freigabe zurückgezogen, entfernt calbridge jede darauf aufgebaute Verbindung vollständig: zuerst jeden damit geschriebenen Termin im Zielkalender, dann die zugehörigen Einträge in der Zuordnungstabelle, bei Bedarf den von calbridge angelegten Zielkalender selbst, und zuletzt die Verbindung. Das Wiederherstellen der Freigabe bringt die Verbindung nicht zurück; sie muss neu angelegt werden."
+    },
+    "deletion": {
+      "heading": "Konto löschen",
+      "body": "Über die Funktion zum Löschen des eigenen Kontos entfernt calbridge in einer einzigen Transaktion: jeden Eintrag in der Zuordnungstabelle, jede Verbindung, jede erteilte und jede empfangene Freigabe, jeden erfassten Kalender, jede verbundene Kalenderverbindung samt ihrer verschlüsselten Zugangsdaten, jede Anmeldeidentität und zuletzt das Konto selbst. Jede angemeldete Sitzung dieses Kontos wird dabei ebenfalls beendet.",
+      "limitBody": "Eine Einschränkung bleibt: Termine, die eine Verbindung bereits in einen fremden Kalender bei Google, Microsoft oder iCloud geschrieben hat, werden beim Löschen des Kontos dort nicht automatisch wieder entfernt, weil dafür ein Zugriff auf den jeweiligen Anbieter nötig wäre, den das Löschen eines Kontos nicht vornimmt. Wer solche Kopien zuerst entfernt haben möchte, löscht die jeweilige Verbindung, bevor das Konto gelöscht wird; das Löschen einer einzelnen Verbindung entfernt alle damit geschriebenen Termine."
+    },
+    "noAnalytics": {
+      "heading": "Keine Analyse, keine Drittanbieter",
+      "body": "Diese Seite und die Anwendung laden keine Analyse- oder Tracking-Dienste, keine Einbettungen von Drittanbietern und keine Schriftarten zur Laufzeit von einem fremden Server. Es gibt nichts zu offenlegen, weil nichts dieser Art eingebunden ist."
+    },
+    "session": {
+      "heading": "Sitzungs-Cookie",
+      "body": "Nach einer Anmeldung setzt die Anwendung ein Sitzungs-Cookie, das ausschließlich dazu dient, eine angemeldete Sitzung wiederzuerkennen. Es wird für kein anderes Konto und für keine andere Seite verwendet und endet spätestens mit der Abmeldung oder der Löschung des Kontos."
+    }
+  }
+}

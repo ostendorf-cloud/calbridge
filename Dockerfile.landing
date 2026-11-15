@@ -1,0 +1,49 @@
+# syntax=docker/dockerfile:1
+
+# The public landing server's own image, separate from the application's
+# own Dockerfile: a correction to the privacy policy's text rebuilds and
+# redeploys this image alone, never cmd/calbridge's. Every stage below
+# mirrors the application's own Dockerfile line for line, built from
+# web-landing/ and cmd/calbridge-landing instead of web/ and
+# cmd/calbridge; see that file's own comments for the full reasoning
+# behind each pin.
+FROM node:26.13.0-bookworm-slim AS web
+
+WORKDIR /src
+
+RUN npm install -g corepack@0.36.0 && corepack enable && corepack prepare pnpm@12.19.0 --activate
+
+COPY web-landing/package.json web-landing/pnpm-lock.yaml web-landing/pnpm-workspace.yaml web-landing/
+RUN cd web-landing && pnpm install --frozen-lockfile
+
+COPY web-landing/ web-landing/
+RUN mkdir -p cmd/calbridge-landing && cd web-landing && pnpm run build
+
+FROM golang:1.27.0-bookworm AS build
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cmd/calbridge-landing/ cmd/calbridge-landing/
+COPY internal/landingapi/ internal/landingapi/
+COPY internal/landingconfig/ internal/landingconfig/
+COPY --from=web /src/cmd/calbridge-landing/dist/ cmd/calbridge-landing/dist/
+
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/calbridge-landing ./cmd/calbridge-landing
+
+# Same base image as the application's own runtime stage, for the same
+# reasons: no shell, no package manager, a minimal trust store for the
+# admin listener's own metrics scrape (no outbound call of its own
+# today, kept anyway for consistency with the application's image).
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=build /out/calbridge-landing /usr/local/bin/calbridge-landing
+
+# Matches LISTEN_ADDR's default (":8080", internal/landingconfig.Load).
+EXPOSE 8080
+
+USER 65532:65532
+
+ENTRYPOINT ["/usr/local/bin/calbridge-landing"]

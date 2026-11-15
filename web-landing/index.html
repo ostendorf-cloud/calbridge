@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- internal/landingapi's newStaticHandler substitutes this content
+         attribute for the configured APP_URL once, at startup, so the
+         same built bundle serves any deployment's own application host.
+         src/appUrl.ts reads it back out at runtime; see that file's own
+         comment. -->
+    <meta name="calbridge-app-url" content="__CALBRIDGE_APP_URL__" />
+    <title>calbridge</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

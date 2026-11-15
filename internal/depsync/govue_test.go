@@ -27,6 +27,10 @@ const (
 	packageJSONName = "@ostendorf-cloud/govue"
 	// packageJSONPath is where that pin lives, relative to this package.
 	packageJSONPath = "../../web/package.json"
+	// landingPackageJSONPath is web-landing/'s own copy of that pin: a
+	// second build depending on the same git tag, which can drift from
+	// the other two independently of either.
+	landingPackageJSONPath = "../../web-landing/package.json"
 )
 
 // pnpmGitSpec matches the pnpm git dependency specifier web/package.json uses to pin
@@ -102,7 +106,7 @@ func TestGovueVersionsMatch(t *testing.T) {
 		t.Fatalf("resolve go.mod's %s version: %v", goModulePath, err)
 	}
 
-	webVersion, err := packageJSONGovueTag(t)
+	webVersion, err := packageJSONGovueTag(t, packageJSONPath)
 	if err != nil {
 		t.Fatalf("resolve %s's version in web/package.json: %v", packageJSONName, err)
 	}
@@ -112,6 +116,32 @@ func TestGovueVersionsMatch(t *testing.T) {
 			"govue version mismatch: go.mod requires %s@%s, web/package.json pins %s to %s. "+
 				"govue ships its Go module and Vue package under one tag; pin both files to the same version.",
 			goModulePath, goVersion, packageJSONName, webVersion,
+		)
+	}
+}
+
+// TestLandingGovueVersionsMatch is TestGovueVersionsMatch's own check,
+// repeated for web-landing/package.json: a second build pinning the same
+// git tag, independent of web/'s own pin and just as able to drift from
+// go.mod.
+func TestLandingGovueVersionsMatch(t *testing.T) {
+	t.Parallel()
+
+	goVersion, err := goModGovueVersion(t)
+	if err != nil {
+		t.Fatalf("resolve go.mod's %s version: %v", goModulePath, err)
+	}
+
+	landingVersion, err := packageJSONGovueTag(t, landingPackageJSONPath)
+	if err != nil {
+		t.Fatalf("resolve %s's version in web-landing/package.json: %v", packageJSONName, err)
+	}
+
+	if goVersion != landingVersion {
+		t.Fatalf(
+			"govue version mismatch: go.mod requires %s@%s, web-landing/package.json pins %s to %s. "+
+				"govue ships its Go module and Vue package under one tag; pin both files to the same version.",
+			goModulePath, goVersion, packageJSONName, landingVersion,
 		)
 	}
 }
@@ -138,25 +168,26 @@ func goModGovueVersion(t *testing.T) (string, error) {
 	return mod.Version, nil
 }
 
-// packageJSONGovueTag reads the git tag web/package.json pins packageJSONName to.
-func packageJSONGovueTag(t *testing.T) (string, error) {
+// packageJSONGovueTag reads the git tag the package.json at path pins
+// packageJSONName to.
+func packageJSONGovueTag(t *testing.T, path string) (string, error) {
 	t.Helper()
 
-	raw, err := os.ReadFile(packageJSONPath)
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("read web/package.json: %w", err)
+		return "", fmt.Errorf("read %s: %w", path, err)
 	}
 
 	var pkg struct {
 		Dependencies map[string]string `json:"dependencies"`
 	}
 	if err := json.Unmarshal(raw, &pkg); err != nil {
-		return "", fmt.Errorf("parse web/package.json: %w", err)
+		return "", fmt.Errorf("parse %s: %w", path, err)
 	}
 
 	spec, ok := pkg.Dependencies[packageJSONName]
 	if !ok {
-		return "", fmt.Errorf("web/package.json has no %s dependency", packageJSONName)
+		return "", fmt.Errorf("%s has no %s dependency", path, packageJSONName)
 	}
 
 	return govueTag(spec)
