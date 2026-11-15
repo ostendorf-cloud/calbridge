@@ -426,6 +426,13 @@ func NativeIDOf(eventID string) (string, error) {
 // outside the connector; it is escaped the same way a plain id is, so the
 // derived id carries exactly one unescaped separator and both halves read
 // back.
+//
+// An empty masterEventID is the one input whose result CutInstanceID
+// does not read back, because an id starting with the separator names no
+// master. A connector has a master to name whenever it derives an
+// occurrence id, so the case does not arise; it is stated here rather
+// than guarded, so a caller that reaches it learns why from the function
+// it called.
 func InstanceIDOf(masterEventID, occurrence string) string {
 	return masterEventID + InstanceSeparator + EventIDOf(occurrence)
 }
