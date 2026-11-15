@@ -3,6 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- internal/httpapi's newSPAHandler substitutes this content
+         attribute for the configured PUBLIC_SITE_URL once, at startup,
+         so the same built bundle links back to whatever public landing
+         page a deployment configured. src/publicSiteUrl.ts reads it
+         back out at runtime; see that file's own comment. -->
+    <meta name="calbridge-public-site-url" content="__CALBRIDGE_PUBLIC_SITE_URL__" />
     <title>calbridge</title>
   </head>
   <body>

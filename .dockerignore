@@ -7,3 +7,6 @@ bin
 web/node_modules
 web/.pnpm-store
 cmd/calbridge/dist
+web-landing/node_modules
+web-landing/.pnpm-store
+cmd/calbridge-landing/dist

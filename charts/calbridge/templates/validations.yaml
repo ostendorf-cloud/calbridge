@@ -68,6 +68,36 @@ the actual cause, is strictly better than reproducing that error.
 {{- end -}}
 
 {{/*
+The same two guards as above, for the landing server's own route and
+ports: landing.ingress.enabled and landing.httproute.enabled are
+mutually exclusive, and landing.config.listenAddr/adminListenAddr must
+each agree with their matching landing.service port. The application's
+own route choice and the landing server's are independent of each
+other: nothing here stops the application rendering an Ingress while
+the landing server renders an HTTPRoute, or either on its own.
+*/}}
+{{- if and .Values.landing.ingress.enabled .Values.landing.httproute.enabled -}}
+{{ fail "landing.ingress.enabled and landing.httproute.enabled cannot both be true: enable at most one route to the landing Service." }}
+{{- end -}}
+
+{{- if ne (include "calbridge.portFromAddr" .Values.landing.config.listenAddr) (.Values.landing.service.port | toString) -}}
+{{ fail (printf "landing.config.listenAddr (%s) and landing.service.port (%v) disagree on the port: both must name the same container port." .Values.landing.config.listenAddr .Values.landing.service.port) }}
+{{- end -}}
+
+{{- if ne (include "calbridge.portFromAddr" .Values.landing.config.adminListenAddr) (.Values.landing.service.adminPort | toString) -}}
+{{ fail (printf "landing.config.adminListenAddr (%s) and landing.service.adminPort (%v) disagree on the port: both must name the same container port." .Values.landing.config.adminListenAddr .Values.landing.service.adminPort) }}
+{{- end -}}
+
+{{/*
+The same podLabels guard as above, for the landing server's own selector.
+*/}}
+{{- range $key, $_ := .Values.landing.podLabels -}}
+{{- if or (eq $key "app.kubernetes.io/name") (eq $key "app.kubernetes.io/instance") -}}
+{{ fail (printf "landing.podLabels must not set %s: it collides with the landing server's own immutable selector label." $key) }}
+{{- end -}}
+{{- end -}}
+
+{{/*
 A provider's client secret, like DATABASE_PASSWORD and ENCRYPTION_KEY, is
 only ever read from the Secret existingSecret.name points at, never from a
 default value. There is deliberately no guard here for a clientId set

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -36,8 +37,17 @@ import (
 const generousRateLimit = 1000
 
 // indexHTML is the SPA shell's own content, distinct from any API error
-// body, so a test can tell the fallback and a JSON answer apart.
-const indexHTML = "<!doctype html><title>calbridge test shell</title>"
+// body, so a test can tell the fallback and a JSON answer apart. It
+// carries the public site URL placeholder the committed web/index.html
+// carries, because newSPAHandler refuses a build without one.
+const indexHTML = `<!doctype html><title>calbridge test shell</title>` +
+	`<meta name="calbridge-public-site-url" content="__CALBRIDGE_PUBLIC_SITE_URL__">`
+
+// servedIndexHTML is indexHTML as the handler serves it under testDeps's
+// own empty PublicSiteURL: the placeholder substituted for nothing,
+// which is what web/'s own composable reads as "render no link back".
+const servedIndexHTML = `<!doctype html><title>calbridge test shell</title>` +
+	`<meta name="calbridge-public-site-url" content="">`
 
 // testDistFS is a minimal embedded-build stand-in: an index.html and one
 // real asset, matching what vite's own build always produces.
@@ -404,7 +414,7 @@ func TestUnmatchedNonAPIRouteServesTheSPAShell(t *testing.T) {
 			if rec.Code != http.StatusOK {
 				t.Errorf("status = %d, want %d for the SPA fallback", rec.Code, http.StatusOK)
 			}
-			if rec.Body.String() != indexHTML {
+			if rec.Body.String() != servedIndexHTML {
 				t.Errorf("body = %q, want the embedded index.html", rec.Body.String())
 			}
 		})
@@ -864,6 +874,188 @@ func TestSessionCookieDropsSecureWhenPlainHTTPIsAllowed(t *testing.T) {
 	}
 	if got := resp.Header.Get("Strict-Transport-Security"); got != "" {
 		t.Errorf("Strict-Transport-Security header = %q, want it omitted when plain HTTP is allowed", got)
+	}
+}
+
+// indexHTMLWithPublicSiteURLPlaceholder is a minimal embedded build
+// carrying nothing but the placeholder web/index.html carries, so
+// TestPublicSiteURLIsRenderedIntoTheSPAShell can assert the served body
+// exactly, without testDistFS's own title in the way.
+const indexHTMLWithPublicSiteURLPlaceholder = `<!doctype html><meta name="calbridge-public-site-url" content="__CALBRIDGE_PUBLIC_SITE_URL__">`
+
+// committedIndexHTMLPath is web/'s own index.html as committed, the file
+// vite copies into the build output and the one the substitution has to
+// find its placeholder in.
+const committedIndexHTMLPath = "../../web/index.html"
+
+// TestNewHandlerFailsOnAnIndexWithNoPlaceholder is the refusal that
+// makes the placeholder a contract rather than a convention: dropping
+// the meta tag from web/index.html would otherwise remove the link back
+// to the public site from every deployment, silently and with every
+// check still green.
+func TestNewHandlerFailsOnAnIndexWithNoPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	deps.DistFS = fstest.MapFS{
+		"index.html": {Data: []byte("<!doctype html><title>no placeholder here</title>")},
+	}
+
+	_, err := httpapi.NewHandler(deps)
+	if err == nil {
+		t.Fatal("NewHandler accepted an index.html with no public site URL placeholder")
+	}
+	if !strings.Contains(err.Error(), "placeholder") {
+		t.Errorf("error %q does not mention the missing placeholder", err)
+	}
+}
+
+// TestTheCommittedIndexCarriesThePlaceholder reads web/index.html
+// itself. Every other test here builds its markup in Go, so all of them
+// keep passing if the meta tag is dropped from the committed file: the
+// refusal above would then fire in production and nowhere else. This is
+// the one test that ties the two together.
+func TestTheCommittedIndexCarriesThePlaceholder(t *testing.T) {
+	t.Parallel()
+
+	committed, err := os.ReadFile(committedIndexHTMLPath)
+	if err != nil {
+		t.Fatalf("read the committed index.html: %v", err)
+	}
+
+	if !strings.Contains(string(committed), "__CALBRIDGE_PUBLIC_SITE_URL__") {
+		t.Errorf(
+			"%s carries no __CALBRIDGE_PUBLIC_SITE_URL__ placeholder; newSPAHandler refuses such a build at startup",
+			committedIndexHTMLPath,
+		)
+	}
+}
+
+// TestTheCommittedIndexIsSubstitutedAsMarkup serves the committed
+// index.html itself, so the substitution is exercised against the real
+// file and not only against a hand-written approximation of it.
+func TestTheCommittedIndexIsSubstitutedAsMarkup(t *testing.T) {
+	t.Parallel()
+
+	committed, err := os.ReadFile(committedIndexHTMLPath)
+	if err != nil {
+		t.Fatalf("read the committed index.html: %v", err)
+	}
+
+	deps := testDeps(t)
+	deps.DistFS = fstest.MapFS{"index.html": {Data: committed}}
+	deps.PublicSiteURL = "https://calbridge.example.com"
+	handlers := build(t, deps)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handlers.Public.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "__CALBRIDGE_PUBLIC_SITE_URL__") {
+		t.Error("the placeholder is still present in the served committed shell")
+	}
+	if !strings.Contains(body, `content="https://calbridge.example.com"`) {
+		t.Errorf("body = %q, want the public site URL inside the meta tag's content attribute", body)
+	}
+}
+
+// TestAPublicSiteURLWithMarkupInItIsEscaped is about the substitution
+// being an escape and not a paste. net/url accepts a double quote, an
+// angle bracket and an ampersand inside a host and url.URL.String
+// re-emits each of them verbatim, so internal/config's own
+// checkPublicSiteURL lets every value below through. Unescaped, the
+// first of them ends the content attribute early and the rest of the tag
+// is reparsed as attribute names; the served document has to stay
+// well-formed for whatever a deployment configures.
+func TestAPublicSiteURLWithMarkupInItIsEscaped(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		publicSiteURL string
+		want          string
+	}{
+		"a double quote ends the attribute": {
+			publicSiteURL: `https://x"`,
+			want:          `<!doctype html><meta name="calbridge-public-site-url" content="https://x&#34;">`,
+		},
+		"an angle bracket opens a tag": {
+			publicSiteURL: `https://x"><script>alert(1)</script>`,
+			want: `<!doctype html><meta name="calbridge-public-site-url" ` +
+				`content="https://x&#34;&gt;&lt;script&gt;alert(1)&lt;/script&gt;">`,
+		},
+		"an ampersand starts an entity": {
+			publicSiteURL: `https://x&y`,
+			want:          `<!doctype html><meta name="calbridge-public-site-url" content="https://x&amp;y">`,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			deps := testDeps(t)
+			deps.DistFS = fstest.MapFS{
+				"index.html": {Data: []byte(indexHTMLWithPublicSiteURLPlaceholder)},
+			}
+			deps.PublicSiteURL = tc.publicSiteURL
+			handlers := build(t, deps)
+
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+			rec := httptest.NewRecorder()
+			handlers.Public.ServeHTTP(rec, req)
+
+			if rec.Body.String() != tc.want {
+				t.Errorf("body = %q, want %q", rec.Body.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestPublicSiteURLIsRenderedIntoTheSPAShell(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name          string
+		publicSiteURL string
+		want          string
+	}{
+		{
+			name:          "configured",
+			publicSiteURL: "https://calbridge.example.com",
+			want:          `<!doctype html><meta name="calbridge-public-site-url" content="https://calbridge.example.com">`,
+		},
+		{
+			name:          "a different host renders too, proving the value is not hardcoded",
+			publicSiteURL: "https://landing.staging.example.org",
+			want:          `<!doctype html><meta name="calbridge-public-site-url" content="https://landing.staging.example.org">`,
+		},
+		{
+			name:          "left unset",
+			publicSiteURL: "",
+			want:          `<!doctype html><meta name="calbridge-public-site-url" content="">`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			deps := testDeps(t)
+			deps.DistFS = fstest.MapFS{
+				"index.html": {Data: []byte(indexHTMLWithPublicSiteURLPlaceholder)},
+			}
+			deps.PublicSiteURL = tc.publicSiteURL
+			handlers := build(t, deps)
+
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+			rec := httptest.NewRecorder()
+			handlers.Public.ServeHTTP(rec, req)
+
+			if rec.Body.String() != tc.want {
+				t.Errorf("body = %q, want %q", rec.Body.String(), tc.want)
+			}
+		})
 	}
 }
 

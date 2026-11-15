@@ -46,13 +46,18 @@ on; every other path already exists.
   adds the webhook endpoint Google and Microsoft Graph push change
   notifications to.
 - `charts/calbridge/` is the Helm chart for the real deployment, with no
-  Postgres subchart, the shape `charts/solobill` uses. It exposes the
-  service through either an `Ingress` or a Gateway API `HTTPRoute`, chosen
-  in values, neither enabled by default.
+  Postgres subchart, the shape `charts/solobill` uses. It renders two
+  workloads, not one: the application (`templates/deployment.yaml` and
+  friends) and, under the `landing` values key, the public landing
+  server (`templates/landing-deployment.yaml` and friends). Each exposes
+  its own service through either an `Ingress` or a Gateway API
+  `HTTPRoute`, chosen in values, neither enabled by default on either
+  workload, and each pair is independent of the other's.
 - `scripts/validate-chart.sh` renders `charts/calbridge` for its default
-  values and every documented non-default combination, shared by
-  `task lint:helm` and `task validate:kubeconform` so CI and a local run
-  check the exact same combinations.
+  values and every documented non-default combination, application and
+  landing server alike, shared by `task lint:helm` and
+  `task validate:kubeconform` so CI and a local run check the exact same
+  combinations.
 - `db/migrations/` holds the dbmate migrations: users, identities,
   connections, calendars, edges, calendar grants and the event mapping
   table, with the row level security policies that keep one user's rows
@@ -174,7 +179,54 @@ on; every other path already exists.
   which is not a refinement: an edge that can only be created by dragging
   cannot be created from a keyboard, and drawing edges is the product.
   The grant screen is the ledger of what was shared out and in, and
-  where a share is revoked.
+  where a share is revoked. `LoginView` and the authenticated shell both
+  carry a "back to the public site" link, read from `config.publicSiteUrl`
+  the same way described below, rendering no link where that is empty.
+- `cmd/calbridge-landing` is the public landing server on `calbridge.de`,
+  issue #44: `internal/landingconfig` loads its own, much smaller
+  configuration (no database, no session, no sign-in provider), and
+  `internal/landingapi` builds its handler, served with govue's
+  `httpserver` through the same two-listener shape (public, and an
+  admin listener for liveness, readiness and metrics) `cmd/calbridge`
+  uses. It is a static build with no session, no CSRF protector and no
+  database connection at all, so a correction to the privacy policy's
+  text never redeploys the application. `web-landing/` is its own Vue
+  SPA on govue, a separate package from `web/` with its own
+  `pnpm-lock.yaml`, routed to the home page (the problem and the three
+  detail levels), pricing (privately operated, no prices yet), the
+  imprint and the privacy policy. It carries German and English i18n
+  like `web/`, and the same generated theme, kept as its own copy under
+  `web-landing/src/theme/` rather than an import across the two
+  packages. Every outbound link to the application reads
+  `internal/landingconfig.Config.AppURL`, substituted into the served
+  `index.html` by `internal/landingapi`'s `newStaticHandler` in place of
+  a placeholder, the same mechanism `internal/httpapi`'s `newSPAHandler`
+  uses for `config.publicSiteUrl` on the application side; neither
+  reads a host fixed at image build time. Both substitute the value
+  escaped for the attribute it lands in, and both refuse a build whose
+  `index.html` carries no placeholder, since a dropped meta tag would
+  otherwise remove the link from every deployment silently.
+  `PUBLIC_SITE_URL` and `APP_URL` are checked to the same strictness on
+  both sides, credentials in the URL included. `Dockerfile.landing`
+  builds this binary's own image, separate from the application's
+  `Dockerfile`, so the two are released independently; its `COPY` list
+  names only the two landing packages, and that is a guard as much as a
+  copy.
+- Two properties the landing split exists for are checked rather than
+  described: `internal/depsync/landingimports_builtfrontend_test.go`
+  fails when `cmd/calbridge-landing`'s transitive imports name a
+  calbridge package outside `internal/landingapi` and
+  `internal/landingconfig`, and
+  `internal/depsync/bundleassets_builtfrontend_test.go` fails when
+  either build's output fetches anything off its own origin or names a
+  host outside its allow list, which is the privacy policy's "no
+  analytics, no third parties" claim. Both need the two frontends built,
+  so both sit behind the `builtfrontend` build tag and run from
+  `task test:builtfrontend`; see "Verify before committing". The filter
+  and the scan each tested on their own, which need nothing built, stay
+  in `landingimports_test.go` and `bundleassets_test.go` and run in the
+  ordinary suite. On the Vue side `web-landing/eslint.config.ts` refuses
+  govue's `createClient` and any import reaching into `web/`.
 
 ## Deliberate gaps
 
@@ -190,15 +242,25 @@ on; every other path already exists.
   the edges belong to the grantee and are out of the owner's scope, so no
   API handler could do it even in principle. See
   `docs/adr/0002-a-revoked-grant-deletes-the-edge.md`.
+- No connector is wired into the running service and no route creates a
+  provider connection, so no calendar credentials are stored and no
+  event is written into a provider calendar yet. Nothing outside
+  `internal/sync` calls `EnforceGrants`, `DeleteEdge` or `Teardown`
+  either, so deleting an edge or revoking a grant removes the row and
+  nothing more. The landing server's privacy policy says all of this in
+  its own "What is not in operation yet" section rather than describing
+  the design as if it ran; keep the two together when the engine is
+  wired.
 
 ## Deviations
 
-- The `Dockerfile`'s web stage installs corepack with `npm install -g`, the one
-  place in this repository where a tool does not come from `mise`. Node stopped
-  distributing corepack with v25, so the pinned node image carries none, and
-  there is no `mise` inside that stage to resolve one. The pnpm version it then
-  activates is still the exact version `mise.toml` resolves to, so the image and
-  a local run use the same pnpm.
+- The `Dockerfile`'s web stage, and `Dockerfile.landing`'s own equivalent stage,
+  install corepack with `npm install -g`, the one place in this repository
+  where a tool does not come from `mise`. Node stopped distributing corepack
+  with v25, so the pinned node image carries none, and there is no `mise`
+  inside that stage to resolve one. The pnpm version it then activates is
+  still the exact version `mise.toml` resolves to, so the image and a local
+  run use the same pnpm.
 - yamllint's line-length limit here is 140, not the default 120. A pinned
   reusable workflow reference then fits on one line with its version
   comment. This matches most of the organisation's own repositories.
@@ -213,13 +275,36 @@ task check
 this repository has: Go format, vet and lint, a check that the committed
 sqlc output still matches `db/migrations`, the Go test suite, the `web/`
 package's ESLint, Prettier, TypeScript and Vitest checks, the `web/` SPA
-build, a check that `go.mod` and `web/package.json` pin the same govue
-tag, markdown lint, YAML lint, a GitHub Actions workflow lint, a secret
-scan, the Go build, the container image build, Helm chart lint and schema
-validation, and the Helm chart's own `helm-unittest` suite.
+build, the same four checks and build for `web-landing/`, a check that
+`go.mod` and `web/package.json` pin the same govue tag, markdown lint,
+YAML lint, a GitHub Actions workflow lint, a secret scan, the Go build,
+both container image builds (`Dockerfile` and `Dockerfile.landing`),
+the two checks over the built frontends (`task test:builtfrontend`),
+Helm chart lint and schema validation, and the Helm chart's own
+`helm-unittest` suite.
 
-`task build` and `task test:go` depend on `task web:build`: `cmd/calbridge`
-embeds `web/`'s build output, and `go:embed` fails on an empty `dist/`.
+`task build` and `task test:go` depend on `task web:build` and
+`task landing-web:build`: `cmd/calbridge` embeds `web/`'s build output
+and `cmd/calbridge-landing` embeds `web-landing/`'s, and `go:embed` fails
+on an empty `dist/` for either. `task landing:build` and
+`task landing:build:image` are their own targets, not folded into
+`build`/`build:image`: a correction to the landing server's own copy
+builds and verifies without touching the application's binary or image.
+
+`task test:builtfrontend` is the Go suite's other half, behind the
+`builtfrontend` build tag: the two checks in
+`internal/depsync/*_builtfrontend_test.go` read `cmd/calbridge/dist` and
+`cmd/calbridge-landing/dist`, and neither directory is committed. The
+target depends on `web:build` and `landing-web:build`, so the
+precondition holds wherever it runs, and the `built-frontend` CI job
+runs that target rather than a bare `go test`. Running
+`go test -tags=builtfrontend ./internal/depsync/...` by hand with either
+`dist/` absent fails and names the target to run instead. The tag is
+there so that a job running `go test ./internal/depsync/...` straight
+after a checkout, `check:govue-version` and `integration` both do, is
+not asked for a build it never made; neither test skips itself when the
+directory is missing, because a guard that passes quietly checks
+nothing.
 
 `task test:integration` is deliberately not part of `check`: it needs a
 reachable Postgres, and `check` runs with no network and no port binding.
@@ -227,3 +312,8 @@ The `integration` CI job runs it against a real `postgres` service
 container instead. A later issue adds its own `lint:*`, `test:*` or
 `validate` target and extends `check` with it, rather than folding its
 check into an existing target.
+
+The landing server's imprint and privacy policy pages are a draft written
+from the code, not legal advice; issue #44's acceptance criteria require a
+person to review both before the site is published, which this task list
+does not automate.

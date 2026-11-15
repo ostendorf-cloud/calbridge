@@ -48,7 +48,8 @@ Selective calendar mirroring across providers, one detail level per edge.
   engine must detect rather than a supported mode.
 - No providers beyond the three named: the CalDAV connector is generic, but iCloud is the only
   profile shipped and tested in the first version, and Exchange on-premises is out entirely.
-- No billing, no plans, no public landing page beyond what Google's verification requires.
+- No billing, no plans with real prices, no checkout: the public landing page states today that
+  calbridge is privately operated and has no prices yet, and carries no payment processing.
 - No mobile application; the web UI is responsive and that is all.
 
 ## Approach
@@ -110,8 +111,15 @@ Selective calendar mirroring across providers, one detail level per edge.
   scheduled full reconcile for all three, because channels expire and notifications are lossy.
 - The UI is a Vue Flow canvas: calendars are nodes grouped by account, an edge is drawn by dragging
   one onto another, and the detail level is edited on the edge.
-- The public face lives on `calbridge.de`: the application itself and, on the same domain, the
-  homepage and privacy policy that Google's brand and domain validation checks.
+- The domain is split: `calbridge.de` is the public landing page (what calbridge does, pricing,
+  the imprint and the privacy policy), and `app.calbridge.de` is the application itself.
+  `calbridge.de` is what Google's brand and domain validation checks, linked from the OAuth
+  consent screen. The landing page is its own static build, `cmd/calbridge-landing` (see
+  `internal/landingapi` and `internal/landingconfig`), with its own container and its own
+  `charts/calbridge` deployment, so a correction to the privacy policy's text never redeploys
+  the application. It carries no session, no CSRF protector and no database connection, and
+  links to `app.calbridge.de`; the application links back to `calbridge.de` in turn, both
+  through a value each deployment configures rather than a host fixed in either build.
 - A grant is its own record (owner, grantee, calendar, maximum detail level) and is checked on every
   edge write, so revoking it stops the sync without the grantee's cooperation.
 - A separate MCP server, its own binary and deployment, lets an AI agent read the sync topology and

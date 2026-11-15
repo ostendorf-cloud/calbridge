@@ -4,6 +4,9 @@ templates:
 set:
   existingSecret:
     name: calbridge-secrets
+  landing:
+    config:
+      appUrl: "https://app.calbridge.example.org"
   config:
     databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
     databaseUser: calbridge_app

@@ -10,6 +10,9 @@ templates:
 set:
   existingSecret:
     name: calbridge-secrets
+  landing:
+    config:
+      appUrl: "https://app.calbridge.example.org"
   config:
     databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
     databaseUser: calbridge_app
@@ -69,6 +72,27 @@ tests:
           content:
             name: LOG_LEVEL
             value: "info"
+
+  - it: renders no public site link by default
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PUBLIC_SITE_URL
+            value: ""
+
+  - it: passes a configured public site url through to the application
+    template: templates/deployment.yaml
+    set:
+      config:
+        publicSiteUrl: "https://calbridge.example.com"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PUBLIC_SITE_URL
+            value: "https://calbridge.example.com"
 
   - it: wires the required secret-backed database and encryption env vars with no fallback
     template: templates/deployment.yaml

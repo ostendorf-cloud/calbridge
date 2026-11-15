@@ -1,0 +1,152 @@
+{
+  "common": {
+    "appName": "calbridge",
+    "skipToContent": "Zum Inhalt springen"
+  },
+  "nav": {
+    "ariaLabel": "Navigation",
+    "home": "Start",
+    "pricing": "Preise",
+    "imprint": "Impressum",
+    "privacy": "Datenschutz",
+    "openApp": "Zur Anwendung"
+  },
+  "footer": {
+    "ariaLabel": "Fußzeile",
+    "note": "calbridge wird privat betrieben."
+  },
+  "home": {
+    "hero": {
+      "title": "Sehen, dass ein Termin belegt ist, ohne zu sehen, worum es geht",
+      "lead": "calbridge spiegelt Kalender zwischen Google, Microsoft 365 und iCloud, genau im Detailgrad, den jede Empfängerin oder jeder Empfänger sehen soll.",
+      "cta": "Zur Anwendung"
+    },
+    "problem": {
+      "title": "Eine Person, mehrere Kalender, keine gemeinsame Ansicht",
+      "body": "Beruf, Privatleben und die Menschen, mit denen ein Kalender geteilt wird, leben jeweils in einem eigenen Konto. Kein Anbieter zeigt alle an einem Ort, und keiner lässt einen Arbeitskalender nur sehen, dass ein Termin belegt ist, während ein privater Kalender die vollen Details behält. Platzhaltertermine von Hand einzutragen veraltet innerhalb eines Tages und verdeckt echte Konflikte."
+    },
+    "detailLevels": {
+      "title": "Eine Verbindung, drei Detailgrade",
+      "lead": "Eine Verbindung zwischen zwei Kalendern kopiert Termine in eine Richtung, im Detailgrad, der für genau diese Verbindung gewählt wird.",
+      "full": {
+        "title": "Vollständig",
+        "body": "Titel, Zeit, Beschreibung, Ort und Teilnehmende werden unverändert übernommen."
+      },
+      "titleTime": {
+        "title": "Titel und Zeit",
+        "body": "Nur Titel und Zeit werden übernommen. Niemand weiter unten sieht die Beschreibung, den Ort oder wer sonst eingeladen ist."
+      },
+      "busyBlock": {
+        "title": "Nur belegt oder frei",
+        "body": "Nur ob die Zeit belegt oder frei ist, wird übernommen: kein Titel, keine Beschreibung, sonst nichts. Ein Arbeitskalender kann zeigen, dass ein Termin belegt ist, ohne je zu erfahren, warum."
+      }
+    },
+    "cta": {
+      "title": "Bereit, Kalender zu verbinden?",
+      "body": "In der Anwendung anmelden oder ein Konto anlegen, um Kalender zu verbinden.",
+      "button": "Zur Anwendung"
+    }
+  },
+  "pricing": {
+    "title": "Preise",
+    "lead": "calbridge wird heute privat betrieben.",
+    "body": "Es gibt noch keine Preise, weil es noch nichts zu kaufen gibt: Der Dienst läuft für den eigenen Gebrauch des Betreibers. Diese Seite trägt echte Preise, sobald sich das ändert."
+  },
+  "imprint": {
+    "title": "Impressum",
+    "lead": "Angaben zum Betreiber dieser Installation.",
+    "operator": {
+      "heading": "Betreiber",
+      "placeholder": "[Name des Betreibers — vom Betreiber dieser Installation auszufüllen]"
+    },
+    "address": {
+      "heading": "Anschrift",
+      "placeholder": "[Postanschrift — vom Betreiber dieser Installation auszufüllen]"
+    },
+    "contact": {
+      "heading": "Kontakt",
+      "emailPlaceholder": "[E-Mail-Adresse — vom Betreiber dieser Installation auszufüllen]",
+      "phonePlaceholder": "[Telefonnummer — vom Betreiber dieser Installation auszufüllen]"
+    },
+    "representative": {
+      "heading": "Vertreten durch",
+      "placeholder": "[Name der vertretungsberechtigten Person — vom Betreiber dieser Installation auszufüllen]"
+    },
+    "register": {
+      "heading": "Registereintrag",
+      "placeholder": "[Registergericht und Registernummer, falls vorhanden — vom Betreiber dieser Installation auszufüllen]"
+    },
+    "vat": {
+      "heading": "Umsatzsteuer-Identifikationsnummer",
+      "placeholder": "[Umsatzsteuer-Identifikationsnummer, falls vorhanden — vom Betreiber dieser Installation auszufüllen]"
+    },
+    "responsibleContent": {
+      "heading": "Verantwortlich für den Inhalt",
+      "placeholder": "[Name und Anschrift der inhaltlich verantwortlichen Person — vom Betreiber dieser Installation auszufüllen]"
+    },
+    "disputeResolution": {
+      "heading": "Streitschlichtung",
+      "placeholder": "[Ob und bei welcher Verbraucherschlichtungsstelle der Betreiber teilnimmt — vom Betreiber dieser Installation auszufüllen]"
+    }
+  },
+  "privacy": {
+    "title": "Datenschutz",
+    "lead": "Was calbridge speichert, wofür, und was diese Anwendung nicht sieht.",
+    "intro": {
+      "heading": "Zu diesem Text",
+      "body": "Dieser Text beschreibt, was der Quellcode von calbridge tatsächlich speichert, verschlüsselt, teilt und löscht. Er ersetzt keine rechtliche Prüfung und keinen Vertrag zur Auftragsverarbeitung; wer diese Installation betreibt, trägt die Verantwortung für den Betrieb und für diesen Text."
+    },
+    "notInOperation": {
+      "heading": "Was noch nicht in Betrieb ist",
+      "body": "calbridge entsteht in Schritten, und dieser Text beschreibt die Software, wie sie heute läuft, nicht wie sie entworfen ist. Drei Teile des Entwurfs sind im laufenden Dienst noch nicht angeschlossen: Es gibt noch keinen Weg, ein Kalenderkonto zu verbinden, also werden auch noch keine Zugangsdaten für Kalender gespeichert; es wird folglich kein Termin in einen Kalender kopiert; und der Teil, der eine Verbindung abbaut und die damit geschriebenen Termine zurücknimmt, ist vorhanden und getestet, wird vom laufenden Dienst aber nicht aufgerufen. Jeder Abschnitt unten sagt, was davon heute gilt."
+    },
+    "operator": {
+      "heading": "Verantwortliche Stelle",
+      "body": "[Name und Anschrift der verantwortlichen Stelle — vom Betreiber dieser Installation auszufüllen. Siehe Impressum.]",
+      "contactPlaceholder": "[Kontakt für Anfragen zum Datenschutz, zum Beispiel eine E-Mail-Adresse — vom Betreiber dieser Installation auszufüllen]",
+      "dpoPlaceholder": "[Datenschutzbeauftragte oder Datenschutzbeauftragter, falls bestellt — vom Betreiber dieser Installation auszufüllen]"
+    },
+    "account": {
+      "heading": "Konto mit Passwort",
+      "body": "Ein lokales Konto speichert die E-Mail-Adresse, einen mit Argon2id berechneten Passwort-Hash und, nach der Einrichtung, das Geheimnis der Zwei-Faktor-Authentifizierung (TOTP) sowie den Zähler des zuletzt akzeptierten Codes. Dazu kommen der Status des Kontos (aktiv oder gesperrt) und die Zeitpunkte der Anlage und der letzten Änderung. Das Passwort selbst wird nicht gespeichert, nur sein Hash. Diese Angaben liegen in der Tabelle users."
+    },
+    "providerSignIn": {
+      "heading": "Anmeldung über Google, Microsoft oder Apple",
+      "body": "Die Anmeldung mit einem Anbieter fragt ausschließlich nach der Identität, nie nach Kalenderzugriff: Google und Microsoft erhalten die Berechtigungen openid, profile und email, Apple ausschließlich openid. In der Tabelle identities liegen der feste Identifikator (\"subject\"), den der Anbieter für das Konto vergibt, der Name des Anbieters und der Zeitpunkt der Eintragung. Google liefert eine bestätigte E-Mail-Adresse, die dann für das Konto verwendet wird. Microsoft übermittelt keine als bestätigt gekennzeichnete E-Mail-Adresse, und calbridge fragt Apple diese Angabe gar nicht erst ab; in beiden Fällen erhält das Konto stattdessen eine Platzhalteradresse unter der nicht erreichbaren Domain sign-in.calbridge.invalid, abgeleitet aus einem Hash des Anbieters und des Identifikators, nie aus der echten Adresse selbst.",
+      "linkBody": "Eine Anmeldung über einen Anbieter wird nie mit einer Kalenderverbindung verknüpft, die eine andere Person mit demselben Anbieterkonto hergestellt hat: Diese Trennung ist im Code struktureller Natur, nicht nur eine Regel, da der für die Anmeldung zuständige Teil der Anwendung gar keinen Zugriff auf die Tabelle der Kalenderverbindungen hat."
+    },
+    "calendarConnections": {
+      "heading": "Verbundene Kalenderkonten",
+      "body": "Ein Kalenderkonto zu verbinden ist ein zweiter, eigenständiger Schritt nach der Anmeldung. Der einzige Konnektor, den calbridge hat, ist CalDAV, mit iCloud als erstem Serverprofil: Verbinden ließe sich heute also ein CalDAV-Konto, für iCloud eine Apple-ID mit einem app-spezifischen Passwort, weil Apple für Kalender keinen OAuth-Weg anbietet. Der laufende Dienst hat für das Anlegen einer solchen Verbindung noch keinen Endpunkt, es werden hier derzeit also keine Zugangsdaten für Kalenderkonten gespeichert.",
+      "encryptionBody": "Wird eines gespeichert, dann verschlüsselt: Die Speicherschicht verschlüsselt es mit AES-256-GCM, bevor es in die Datenbank gelangt, und entschlüsselt es beim Lesen wieder, sodass in der Datenbank selbst nie die Klartextform liegt. Der Schlüssel liegt beim Betreiber dieser Installation und wird über die Umgebungsvariable ENCRYPTION_KEY bereitgestellt. Das ist Verschlüsselung im Ruhezustand, keine Ende-zu-Ende-Verschlüsselung: Ein Konnektor braucht das Passwort, um den Server zu erreichen, also liegt das entschlüsselte Zugangsdatum währenddessen im Arbeitsspeicher der Anwendung. Unverschlüsselt geschrieben wird es nirgends, und in Protokollzeilen und Fehlermeldungen erscheint es nicht: Der Code, der es hält, ersetzt es dort durch einen Platzhalter."
+    },
+    "syncData": {
+      "heading": "Was eine Verbindung zwischen zwei Kalendern speichert",
+      "body": "Zu jedem Termin, den eine Verbindung (edge) kopiert, führt calbridge eine schlanke Zeile in einer Zuordnungstabelle (event_mapping): die ID der Verbindung, die ID des Termins in der Quelle, die ID der Kopie im Ziel, Anfang und Ende des Termins, einen Prüfwert (Hash) des Inhalts sowie das zugehörige Konto und die Zeitpunkte der Anlage und der letzten Änderung. In derselben Zeile liegt ein verschlüsselter Zwischenspeicher für den kopierten Titel und die kopierte Beschreibung; er wird nur gefüllt, wenn der gewählte Detailgrad solche Inhalte überhaupt kopiert.",
+      "busyBlockBody": "Bei der Detailstufe \"Nur belegt oder frei\" kopiert calbridge ausschließlich, ob ein Zeitraum belegt ist und ob der Termin stattfindet: Für eine solche Verbindung werden Titel, Beschreibung, Ort, Teilnehmende und Wiederholungsregel nicht in den Zielkalender geschrieben und nicht gespeichert, und der verschlüsselte Zwischenspeicher der Zuordnungszeile bleibt leer. Vom Konnektor erhält die Synchronisierung den vollständigen Termin: Er wird im Arbeitsspeicher gelesen, um zu entscheiden, was zu kopieren ist, und um den Prüfwert zu bilden, an dem eine Änderung von einem unveränderten Lauf zu unterscheiden ist. Der Detailgrad bestimmt, was geschrieben und was gespeichert wird, nicht, was die Synchronisierung zu sehen bekommt."
+    },
+    "handEdits": {
+      "heading": "Von Hand geänderte Kopien",
+      "body": "Wer eine von calbridge geschriebene Kopie im Zielkalender von Hand ändert, muss wissen: Die nächste Synchronisierung überschreibt diese Änderung kommentarlos, weil eine Kopie als Abbild der Quelle gilt und nur die Quelle als Wahrheit zählt. Eine Notiz an einer gespiegelten Kopie bleibt also nicht bestehen.",
+      "exceptionBody": "Eine Änderung bleibt bestehen, aus einem technischen Grund und nicht als Zusage: eine einzeln geänderte Wiederholung eines wiederkehrenden Termins in einem Kalender, der solche Änderungen im Objekt des wiederkehrenden Termins selbst führt. Eine solche Wiederholung lässt sich dort nicht einzeln ansprechen, also lässt der Abgleich sie unberührt."
+    },
+    "sharing": {
+      "heading": "Freigaben an andere Personen",
+      "body": "Wer einen eigenen Kalender für eine andere Person freigibt, legt dabei den höchsten erlaubten Detailgrad fest. Wird eine solche Freigabe zurückgezogen, entfernt calbridge sofort die Freigabe selbst.",
+      "teardownBody": "Die darauf aufgebauten Verbindungen abzubauen und die damit geschriebenen Termine zurückzunehmen, ist ein eigener Schritt, den der laufende Dienst noch nicht ausführt. Der Teil, der eine Verbindung abbaut — zuerst jeden damit geschriebenen Termin im Zielkalender, dann die zugehörigen Zeilen der Zuordnungstabelle, bei Bedarf den von calbridge angelegten Zielkalender selbst und zuletzt die Verbindung —, ist vorhanden und getestet, wird aber von keiner Stelle des laufenden Dienstes aufgerufen. Bis das angeschlossen ist, bleiben die Verbindungen nach dem Zurückziehen einer Freigabe bestehen. Geschrieben wurde bisher nichts, weil noch kein Kalenderkonto verbunden werden kann. Sobald der Schritt angeschlossen ist, bringt ein erneutes Freigeben die Verbindung nicht zurück; sie muss neu angelegt werden."
+    },
+    "deletion": {
+      "heading": "Konto löschen",
+      "body": "Über die Funktion zum Löschen des eigenen Kontos entfernt calbridge in einer einzigen Transaktion: jeden Eintrag in der Zuordnungstabelle, jede Verbindung, jede erteilte und jede empfangene Freigabe, jeden erfassten Kalender, jede verbundene Kalenderverbindung samt ihrer verschlüsselten Zugangsdaten, jede Anmeldeidentität und zuletzt das Konto selbst. Jede angemeldete Sitzung dieses Kontos wird dabei ebenfalls beendet.",
+      "limitBody": "Eine Einschränkung bleibt: Termine, die eine Verbindung bereits in einen Kalender beim Anbieter geschrieben hat, werden beim Löschen des Kontos dort nicht entfernt, weil dafür ein Zugriff auf den jeweiligen Anbieter nötig wäre, den das Löschen eines Kontos nicht vornimmt. Das Löschen einer einzelnen Verbindung soll ihre Kopien mitnehmen, und der Teil, der das tut, ist vorhanden und getestet; auch ihn ruft der laufende Dienst noch nicht auf. Heute entfernt also keiner der beiden Wege etwas aus einem Kalender beim Anbieter. Geschrieben wurde dorthin bisher nichts, weil noch kein Kalenderkonto verbunden werden kann."
+    },
+    "noAnalytics": {
+      "heading": "Keine Analyse, keine Drittanbieter",
+      "body": "Diese Seite und die Anwendung laden keine Analyse- oder Tracking-Dienste, keine Einbettungen von Drittanbietern und keine Schriftarten zur Laufzeit von einem fremden Server. Es gibt nichts zu offenlegen, weil nichts dieser Art eingebunden ist."
+    },
+    "session": {
+      "heading": "Sitzungs-Cookie",
+      "body": "Nach einer Anmeldung setzt die Anwendung ein Sitzungs-Cookie, das ausschließlich dazu dient, eine angemeldete Sitzung wiederzuerkennen. Es wird für kein anderes Konto und für keine andere Seite verwendet und endet spätestens mit der Abmeldung oder der Löschung des Kontos."
+    }
+  }
+}

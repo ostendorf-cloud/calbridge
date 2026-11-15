@@ -199,6 +199,17 @@ config:
   # See README.md's "Provider sign-in" section.
   authBaseUrl: ""
 
+  # PUBLIC_SITE_URL: the public landing page's own base URL, for example
+  # "https://calbridge.example.com", matching landing.config.appUrl's
+  # deployment one level up when both are installed together.
+  # internal/httpapi renders it into the login screen and the signed-in
+  # shell as the link back to the public site; internal/config.Config's
+  # own PublicSiteURL doc comment carries the full reasoning. Empty by
+  # default, which is correct for a deployment that has not published a
+  # landing page (or runs this application standalone, as
+  # docker-compose.yaml does): the frontend then renders no such link.
+  publicSiteUrl: ""
+
   # Google, Microsoft and Apple sign-in, each independent and off by
   # default: a provider is offered only once its clientId below is set, at
   # which point its client secret becomes required too (see
@@ -321,6 +332,137 @@ existingSecret:
 # idempotent (it tracks applied migrations in its own schema_migrations
 # table), so re-running it against an already-migrated database on every
 # upgrade is safe, not merely tolerated.
+# The public landing page on calbridge.de: issue #44's own deployment,
+# a static build with no session, no CSRF and no database, so a
+# correction to the privacy policy's text never redeploys the
+# application above. One deployment, one service, and either an
+# Ingress or an HTTPRoute, mirroring the application's own shape one
+# level down, under this key, rather than a second chart: the two
+# ship from one image build and one release together, and a reader
+# looking for "the other half of calbridge.de" finds it here instead
+# of in a sibling chart nobody thought to look for.
+landing:
+  replicaCount: 1
+
+  image:
+    repository: ghcr.io/ostendorf-cloud/calbridge-landing
+    # Defaults to .Chart.AppVersion when left empty.
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  imagePullSecrets: []
+
+  serviceAccount:
+    # No RBAC is created: this build makes no Kubernetes API calls of
+    # its own either.
+    create: true
+    annotations: {}
+    name: ""
+
+  podAnnotations: {}
+  podLabels: {}
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+
+  # Safe for the same reason the application's own securityContext is:
+  # cmd/calbridge-landing keeps no state on disk, and the distroless
+  # base image needs no writable path of its own.
+  securityContext:
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+  service:
+    type: ClusterIP
+    # Also the public container port: must match the port encoded in
+    # landing.config.listenAddr (default ":8080" for both).
+    port: 8080
+    # The administrative container port, matching landing.config.adminListenAddr
+    # (default ":8081" for both). Liveness, readiness and metrics live
+    # here; templates/landing-ingress.yaml and templates/landing-httproute.yaml
+    # only ever route to port above. See values.yaml's own service.adminPort
+    # comment on the application above for the full reasoning, reproduced
+    # here unchanged.
+    adminPort: 8081
+
+  # Disabled by default, mutually exclusive, exactly like the
+  # application's own ingress/httproute pair above: the render fails
+  # with a readable message when both are enabled (see
+  # templates/validations.yaml).
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: calbridge.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+
+  httproute:
+    enabled: false
+    annotations: {}
+    parentRefs:
+      - name: ""
+        namespace: ""
+        sectionName: ""
+    hostnames: []
+
+  resources:
+    requests:
+      # Lighter than the application's own: this build serves static
+      # files and nothing else, no database pool and no session store.
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+
+  startupProbe:
+    enabled: false
+    initialDelaySeconds: 0
+    periodSeconds: 5
+    failureThreshold: 30
+
+  livenessProbe:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    failureThreshold: 3
+
+  readinessProbe:
+    initialDelaySeconds: 5
+    periodSeconds: 2
+    failureThreshold: 1
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  terminationGracePeriodSeconds: 30
+
+  # Plain, non-secret configuration, mapped 1:1 from
+  # internal/landingconfig.Config.
+  config:
+    listenAddr: ":8080"
+    adminListenAddr: ":8081"
+    drainDelay: "5s"
+    logLevel: "info"
+    # APP_URL: the application's own public base URL, for example
+    # "https://app.calbridge.example.com". Required: internal/landingconfig.Load
+    # refuses to start without it, and values.schema.json's own minLength
+    # fails this chart's render before that ever runs. See
+    # internal/landingconfig.Config.AppURL for what every page builds
+    # from this value.
+    appUrl: ""
+
 migrationJob:
   enabled: true
   # Required: a separate, higher-privileged role that OWNS every table

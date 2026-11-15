@@ -279,6 +279,12 @@ type Deps struct {
 	// any unmatched GET that is not under apiPathPrefix.
 	DistFS fs.FS
 
+	// PublicSiteURL mirrors config.Config.PublicSiteURL: calbridge.de's
+	// own public base URL, rendered into the served SPA shell so the
+	// application can link back to the public landing page. Empty by
+	// default, which leaves that link out.
+	PublicSiteURL string
+
 	// AllowPlainHTTP mirrors config.Config.SessionAllowPlainHTTP: it drops
 	// the session cookie's Secure attribute and the security headers'
 	// HSTS, for a plain HTTP development run. Left false, the default,
@@ -433,7 +439,7 @@ func NewHandler(d Deps) (Handlers, error) {
 
 	var spaHandler http.Handler
 	if d.DistFS != nil {
-		spaHandler, err = newSPAHandler(d.DistFS)
+		spaHandler, err = newSPAHandler(d.DistFS, d.PublicSiteURL)
 		fail(err)
 	}
 

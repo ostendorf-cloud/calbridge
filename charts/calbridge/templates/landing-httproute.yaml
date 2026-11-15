@@ -1,0 +1,50 @@
+{{- if .Values.landing.httproute.enabled -}}
+{{/*
+Mirrors templates/httproute.yaml's own guard: a parentRefs entry naming
+no Gateway renders a syntactically valid but useless HTTPRoute.
+*/}}
+{{- $hasParent := false -}}
+{{- range .Values.landing.httproute.parentRefs -}}
+{{- if .name -}}
+{{- $hasParent = true -}}
+{{- end -}}
+{{- end -}}
+{{- if not $hasParent -}}
+{{ fail "landing.httproute.enabled is true but landing.httproute.parentRefs names no Gateway: set at least one parentRefs entry's name." }}
+{{- end -}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "calbridge.landing.fullname" . }}
+  labels:
+    {{- include "calbridge.landing.labels" . | nindent 4 }}
+  {{- with .Values.landing.httproute.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  parentRefs:
+    {{- range .Values.landing.httproute.parentRefs }}
+    {{- if .name }}
+    - name: {{ .name }}
+      {{- with .namespace }}
+      namespace: {{ . }}
+      {{- end }}
+      {{- with .sectionName }}
+      sectionName: {{ . }}
+      {{- end }}
+    {{- end }}
+    {{- end }}
+  {{- with .Values.landing.httproute.hostnames }}
+  hostnames:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ include "calbridge.landing.fullname" . }}
+          port: {{ .Values.landing.service.port }}
+{{- end -}}

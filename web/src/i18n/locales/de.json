@@ -1,7 +1,8 @@
 {
   "common": {
     "appName": "calbridge",
-    "skipToContent": "Zum Inhalt springen"
+    "skipToContent": "Zum Inhalt springen",
+    "backToSite": "Zur Startseite von calbridge"
   },
   "login": {
     "title": "Anmelden",

@@ -1,0 +1,14 @@
+/*
+ * The token contract plus calbridge's own theme, the same import shape
+ * web/styles.css uses for the application. Tailwind does not scan a git
+ * dependency's sources by default, so @source points it at govue's own
+ * component files.
+ *
+ * theme/calbridge.css is this build's own copy of the application's
+ * theme; see that file's own comment for where it is generated from and
+ * why it is a copy rather than a cross-package import.
+ */
+@import '@ostendorf-cloud/govue/styles.css';
+@import './theme/calbridge.css';
+
+@source '../node_modules/@ostendorf-cloud/govue/src';

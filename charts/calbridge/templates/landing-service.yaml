@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "calbridge.landing.fullname" . }}
+  labels:
+    {{- include "calbridge.landing.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.landing.service.type }}
+  ports:
+    - port: {{ .Values.landing.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+    # The admin listener (liveness, readiness, metrics), as on the
+    # application's own Service. templates/landing-ingress.yaml and
+    # templates/landing-httproute.yaml only ever reference
+    # .Values.landing.service.port, never this one, so routing to it
+    # still requires being inside the cluster; see values.yaml's own
+    # landing.service.adminPort comment.
+    - port: {{ .Values.landing.service.adminPort }}
+      targetPort: admin
+      protocol: TCP
+      name: admin
+  selector:
+    {{- include "calbridge.landing.selectorLabels" . | nindent 4 }}

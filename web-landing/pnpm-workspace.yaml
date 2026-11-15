@@ -1,0 +1,6 @@
+# pnpm 12 reads "overrides" from here, not from a "pnpm" field in package.json
+# (that field is no longer read; see https://pnpm.io/settings). Without this,
+# @testing-library/vue can pull in two incompatible @testing-library/dom
+# majors at once the same way web/pnpm-workspace.yaml's own comment explains.
+overrides:
+  '@testing-library/dom': '^10'

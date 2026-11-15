@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "calbridge.landing.fullname" . }}
+  labels:
+    {{- include "calbridge.landing.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.landing.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "calbridge.landing.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "calbridge.landing.labels" . | nindent 8 }}
+        {{- with .Values.landing.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.landing.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.landing.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "calbridge.landing.serviceAccountName" . }}
+      # This build makes no Kubernetes API call of its own, no database
+      # call and no outbound call beyond serving its own static site; see
+      # values.yaml's own landing.serviceAccount.create comment.
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.landing.podSecurityContext | nindent 8 }}
+      containers:
+        - name: calbridge-landing
+          securityContext:
+            {{- toYaml .Values.landing.securityContext | nindent 12 }}
+          image: "{{ .Values.landing.image.repository }}:{{ .Values.landing.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.landing.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.landing.service.port }}
+              protocol: TCP
+            - name: admin
+              containerPort: {{ .Values.landing.service.adminPort }}
+              protocol: TCP
+          env:
+            - name: LISTEN_ADDR
+              value: {{ .Values.landing.config.listenAddr | quote }}
+            - name: ADMIN_LISTEN_ADDR
+              value: {{ .Values.landing.config.adminListenAddr | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.landing.config.logLevel | quote }}
+            - name: DRAIN_DELAY
+              value: {{ .Values.landing.config.drainDelay | quote }}
+            # APP_URL: the application's own public base URL, which
+            # internal/landingapi substitutes into every served page in
+            # place of its own placeholder; see internal/landingconfig's
+            # Config.AppURL. Required: values.schema.json fails the
+            # render before this template ever runs when it is empty.
+            - name: APP_URL
+              value: {{ .Values.landing.config.appUrl | quote }}
+          {{- if .Values.landing.startupProbe.enabled }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            initialDelaySeconds: {{ .Values.landing.startupProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.landing.startupProbe.periodSeconds }}
+            failureThreshold: {{ .Values.landing.startupProbe.failureThreshold }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            initialDelaySeconds: {{ .Values.landing.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.landing.livenessProbe.periodSeconds }}
+            failureThreshold: {{ .Values.landing.livenessProbe.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: admin
+            initialDelaySeconds: {{ .Values.landing.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.landing.readinessProbe.periodSeconds }}
+            failureThreshold: {{ .Values.landing.readinessProbe.failureThreshold }}
+          resources:
+            {{- toYaml .Values.landing.resources | nindent 12 }}
+      terminationGracePeriodSeconds: {{ .Values.landing.terminationGracePeriodSeconds }}
+      {{- with .Values.landing.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.landing.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.landing.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

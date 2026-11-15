@@ -85,6 +85,7 @@ func run() error {
 		HealthRegistry:      healthRegistry,
 		MetricsRegistry:     metricsRegistry,
 		DistFS:              distFS,
+		PublicSiteURL:       cfg.PublicSiteURL,
 		AllowPlainHTTP:      cfg.SessionAllowPlainHTTP,
 		RateLimitBurst:      cfg.RateLimitBurst,
 		RateLimitPer:        cfg.RateLimitPer,

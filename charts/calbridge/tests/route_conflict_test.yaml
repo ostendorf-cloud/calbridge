@@ -2,9 +2,13 @@ suite: ingress and httproute both enabled
 templates:
   - templates/validations.yaml
   - templates/deployment.yaml
+  - templates/landing-deployment.yaml
 set:
   existingSecret:
     name: calbridge-secrets
+  landing:
+    config:
+      appUrl: "https://app.calbridge.example.org"
   config:
     databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
     databaseUser: calbridge_app
@@ -52,6 +56,36 @@ tests:
 
   - it: renders fine when neither route is enabled
     template: templates/deployment.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: fails the render when both landing.ingress and landing.httproute are enabled
+    template: templates/validations.yaml
+    set:
+      landing:
+        ingress:
+          enabled: true
+        httproute:
+          enabled: true
+          parentRefs:
+            - name: eg
+    asserts:
+      - failedTemplate:
+          errorMessage: >-
+            landing.ingress.enabled and landing.httproute.enabled cannot both be true:
+            enable at most one route to the landing Service.
+
+  - it: lets the application and the landing server choose different routes independently
+    template: templates/landing-deployment.yaml
+    set:
+      ingress:
+        enabled: true
+      landing:
+        httproute:
+          enabled: true
+          parentRefs:
+            - name: eg
     asserts:
       - hasDocuments:
           count: 1

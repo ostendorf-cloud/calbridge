@@ -1,0 +1,161 @@
+suite: default landing deployment
+templates:
+  - templates/landing-deployment.yaml
+  - templates/landing-service.yaml
+  - templates/landing-serviceaccount.yaml
+  - templates/landing-ingress.yaml
+  - templates/landing-httproute.yaml
+set:
+  existingSecret:
+    name: calbridge-secrets
+  landing:
+    config:
+      appUrl: "https://app.calbridge.example.org"
+  config:
+    databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
+    databaseUser: calbridge_app
+  migrationJob:
+    databaseUser: calbridge_migrator
+tests:
+  - it: renders exactly one landing Deployment
+    template: templates/landing-deployment.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: renders exactly one landing Service
+    template: templates/landing-service.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: renders exactly one landing ServiceAccount
+    template: templates/landing-serviceaccount.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: renders no landing Ingress by default
+    template: templates/landing-ingress.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders no landing HTTPRoute by default
+    template: templates/landing-httproute.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: names the landing Deployment distinctly from the application's own
+    template: templates/landing-deployment.yaml
+    asserts:
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-calbridge-landing
+
+  - it: carries a selector that never collides with the application's own
+    template: templates/landing-deployment.yaml
+    asserts:
+      - notEqual:
+          path: spec.selector.matchLabels["app.kubernetes.io/name"]
+          value: calbridge
+
+  - it: sets the configured listen addresses, drain delay, log level and app url
+    template: templates/landing-deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LISTEN_ADDR
+            value: ":8080"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ADMIN_LISTEN_ADDR
+            value: ":8081"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DRAIN_DELAY
+            value: "5s"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LOG_LEVEL
+            value: "info"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: APP_URL
+            value: "https://app.calbridge.example.org"
+
+  - it: passes a different configured app url through unchanged
+    template: templates/landing-deployment.yaml
+    set:
+      landing:
+        config:
+          appUrl: "https://app.staging.example.org"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: APP_URL
+            value: "https://app.staging.example.org"
+
+  - it: runs as non root with a read only root filesystem and no capabilities
+    template: templates/landing-deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+      - contains:
+          path: spec.template.spec.containers[0].securityContext.capabilities.drop
+          content: ALL
+
+  - it: mounts no service account token
+    template: templates/landing-deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+
+  - it: has no startup probe but has liveness and readiness probes on the admin port
+    template: templates/landing-deployment.yaml
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].startupProbe
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /healthz
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.port
+          value: admin
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /readyz
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.port
+          value: admin
+
+  - it: has both the public and the admin container port
+    template: templates/landing-deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: http
+            containerPort: 8080
+            protocol: TCP
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: admin
+            containerPort: 8081
+            protocol: TCP

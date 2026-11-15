@@ -48,8 +48,10 @@ chart="charts/calbridge"
 # config.databaseUrl, config.databaseUser, migrationJob.databaseUser and
 # existingSecret.name have no usable default (see values.yaml) and are
 # required by values.schema.json, so every combination below needs them
-# set, the default values combination included.
-baseline="existingSecret.name=calbridge-secrets,config.databaseUrl=postgres://postgres.example.svc:5432/calbridge?sslmode=require,config.databaseUser=calbridge_app,migrationJob.databaseUser=calbridge_migrator"
+# set, the default values combination included. landing.config.appUrl is
+# the landing server's own equivalent: no usable default either, and
+# required the same way.
+baseline="existingSecret.name=calbridge-secrets,config.databaseUrl=postgres://postgres.example.svc:5432/calbridge?sslmode=require,config.databaseUser=calbridge_app,migrationJob.databaseUser=calbridge_migrator,landing.config.appUrl=https://app.calbridge.example.com"
 
 names=(
   "default values"
@@ -57,6 +59,11 @@ names=(
   "httproute enabled"
   "startup probe enabled"
   "service account disabled"
+  "landing ingress enabled"
+  "landing httproute enabled"
+  "landing startup probe enabled"
+  "landing service account disabled"
+  "application ingress and landing httproute together"
 )
 
 # Each entry is one combination's --set arguments, matching the corresponding
@@ -68,6 +75,11 @@ sets=(
   "${baseline},httproute.enabled=true,httproute.parentRefs[0].name=eg,httproute.parentRefs[0].namespace=gateway-system,httproute.parentRefs[0].sectionName=https,httproute.hostnames[0]=calbridge.example.org"
   "${baseline},startupProbe.enabled=true"
   "${baseline},serviceAccount.create=false"
+  "${baseline},landing.ingress.enabled=true,landing.ingress.className=nginx,landing.ingress.hosts[0].host=calbridge.example.org,landing.ingress.hosts[0].paths[0].path=/,landing.ingress.hosts[0].paths[0].pathType=Prefix"
+  "${baseline},landing.httproute.enabled=true,landing.httproute.parentRefs[0].name=eg,landing.httproute.parentRefs[0].namespace=gateway-system,landing.httproute.parentRefs[0].sectionName=https,landing.httproute.hostnames[0]=calbridge.example.org"
+  "${baseline},landing.startupProbe.enabled=true"
+  "${baseline},landing.serviceAccount.create=false"
+  "${baseline},ingress.enabled=true,ingress.className=nginx,ingress.hosts[0].host=app.calbridge.example.org,ingress.hosts[0].paths[0].path=/,ingress.hosts[0].paths[0].pathType=Prefix,landing.httproute.enabled=true,landing.httproute.parentRefs[0].name=eg"
 )
 
 for i in "${!names[@]}"; do
@@ -108,6 +120,12 @@ if [ "$mode" = "lint" ]; then
     "migrationJob.databaseUser equal to config.databaseUser"
     "podLabels setting the reserved app.kubernetes.io/name selector key"
     "podLabels setting the reserved app.kubernetes.io/instance selector key"
+    "both landing.ingress.enabled and landing.httproute.enabled true"
+    "landing.httproute.enabled true with parentRefs naming no Gateway"
+    "landing.config.listenAddr disagreeing with landing.service.port"
+    "landing.config.adminListenAddr disagreeing with landing.service.adminPort"
+    "landing.podLabels setting the reserved app.kubernetes.io/name selector key"
+    "landing.podLabels setting the reserved app.kubernetes.io/instance selector key"
   )
 
   fail_sets=(
@@ -118,6 +136,12 @@ if [ "$mode" = "lint" ]; then
     "${baseline},migrationJob.databaseUser=calbridge_app"
     "${baseline},podLabels.app\.kubernetes\.io/name=evil"
     "${baseline},podLabels.app\.kubernetes\.io/instance=evil"
+    "${baseline},landing.ingress.enabled=true,landing.ingress.className=nginx,landing.ingress.hosts[0].host=calbridge.example.org,landing.ingress.hosts[0].paths[0].path=/,landing.ingress.hosts[0].paths[0].pathType=Prefix,landing.httproute.enabled=true,landing.httproute.parentRefs[0].name=eg"
+    "${baseline},landing.httproute.enabled=true"
+    "${baseline},landing.config.listenAddr=:9000"
+    "${baseline},landing.config.adminListenAddr=:9001"
+    "${baseline},landing.podLabels.app\.kubernetes\.io/name=evil"
+    "${baseline},landing.podLabels.app\.kubernetes\.io/instance=evil"
   )
 
   fail_messages=(
@@ -128,6 +152,12 @@ if [ "$mode" = "lint" ]; then
     "migrationJob.databaseUser (calbridge_app) must not equal config.databaseUser: the application's own role must never own the tables row level security protects it from. See README.md."
     "podLabels must not set app.kubernetes.io/name: it collides with calbridge's own immutable selector label."
     "podLabels must not set app.kubernetes.io/instance: it collides with calbridge's own immutable selector label."
+    "landing.ingress.enabled and landing.httproute.enabled cannot both be true: enable at most one route to the landing Service."
+    "landing.httproute.enabled is true but landing.httproute.parentRefs names no Gateway: set at least one parentRefs entry's name."
+    "landing.config.listenAddr (:9000) and landing.service.port (8080) disagree on the port: both must name the same container port."
+    "landing.config.adminListenAddr (:9001) and landing.service.adminPort (8081) disagree on the port: both must name the same container port."
+    "landing.podLabels must not set app.kubernetes.io/name: it collides with the landing server's own immutable selector label."
+    "landing.podLabels must not set app.kubernetes.io/instance: it collides with the landing server's own immutable selector label."
   )
 
   for i in "${!fail_names[@]}"; do
