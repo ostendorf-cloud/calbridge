@@ -359,10 +359,21 @@ func checkAuthBaseURL(baseURL string) error {
 	return nil
 }
 
-// checkPublicSiteURL requires an absolute http or https URL with a host
-// and no path, the same shape checkAuthBaseURL enforces, but only once
-// PublicSiteURL is actually set: unlike AUTH_BASE_URL, nothing else
-// configured by this deployment makes PUBLIC_SITE_URL required.
+// checkPublicSiteURL requires an absolute http or https URL with a host,
+// no credentials and no path, but only once PublicSiteURL is actually
+// set: unlike AUTH_BASE_URL, nothing else configured by this deployment
+// makes PUBLIC_SITE_URL required.
+//
+// PUBLIC_SITE_URL and the landing server's own APP_URL are the two ends
+// of one link between the two hosts, so the two deployments have to
+// agree on what a usable value for it is. The landing side reads APP_URL
+// through envconf's Loader.URL, which refuses a URL carrying user
+// information on top of the shape checkAuthBaseURL enforces here by
+// hand; the credentials check below is that refusal, so a value one side
+// accepts is not one the other rejects. The stricter of the two is the
+// side taken on purpose: a base URL is pasted into a document and
+// followed by a reader, and credentials in it are either a mistake or an
+// attempt to make the link go somewhere else.
 func checkPublicSiteURL(publicSiteURL string) error {
 	if publicSiteURL == "" {
 		return nil
@@ -375,6 +386,10 @@ func checkPublicSiteURL(publicSiteURL string) error {
 
 	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 		return fmt.Errorf("PUBLIC_SITE_URL: %q is not an absolute http or https URL", publicSiteURL)
+	}
+
+	if parsed.User != nil {
+		return errors.New("PUBLIC_SITE_URL: must not contain credentials")
 	}
 
 	if parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {

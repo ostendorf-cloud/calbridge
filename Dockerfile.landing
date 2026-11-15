@@ -26,6 +26,13 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
+# These three paths are the whole of this binary, and the list is a
+# guard as much as a copy: an import of internal/httpapi or
+# internal/storage from either landing package fails this build stage
+# outright, because the source it would need is not in the context.
+# internal/depsync's own landingimports_test.go is the check that
+# reports the same mistake as a test failure rather than a compile error
+# inside a container build; keep the two lists together.
 COPY cmd/calbridge-landing/ cmd/calbridge-landing/
 COPY internal/landingapi/ internal/landingapi/
 COPY internal/landingconfig/ internal/landingconfig/

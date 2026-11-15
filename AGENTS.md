@@ -202,9 +202,25 @@ on; every other path already exists.
   `index.html` by `internal/landingapi`'s `newStaticHandler` in place of
   a placeholder, the same mechanism `internal/httpapi`'s `newSPAHandler`
   uses for `config.publicSiteUrl` on the application side; neither
-  reads a host fixed at image build time. `Dockerfile.landing` builds
-  this binary's own image, separate from the application's `Dockerfile`,
-  so the two are released independently.
+  reads a host fixed at image build time. Both substitute the value
+  escaped for the attribute it lands in, and both refuse a build whose
+  `index.html` carries no placeholder, since a dropped meta tag would
+  otherwise remove the link from every deployment silently.
+  `PUBLIC_SITE_URL` and `APP_URL` are checked to the same strictness on
+  both sides, credentials in the URL included. `Dockerfile.landing`
+  builds this binary's own image, separate from the application's
+  `Dockerfile`, so the two are released independently; its `COPY` list
+  names only the two landing packages, and that is a guard as much as a
+  copy.
+- Two properties the landing split exists for are checked rather than
+  described: `internal/depsync/landingimports_test.go` fails when
+  `cmd/calbridge-landing`'s transitive imports name a calbridge package
+  outside `internal/landingapi` and `internal/landingconfig`, and
+  `internal/depsync/bundleassets_test.go` fails when either build's
+  output fetches anything off its own origin or names a host outside its
+  allow list, which is the privacy policy's "no analytics, no third
+  parties" claim. On the Vue side `web-landing/eslint.config.ts` refuses
+  govue's `createClient` and any import reaching into `web/`.
 
 ## Deliberate gaps
 
@@ -220,6 +236,15 @@ on; every other path already exists.
   the edges belong to the grantee and are out of the owner's scope, so no
   API handler could do it even in principle. See
   `docs/adr/0002-a-revoked-grant-deletes-the-edge.md`.
+- No connector is wired into the running service and no route creates a
+  provider connection, so no calendar credentials are stored and no
+  event is written into a provider calendar yet. Nothing outside
+  `internal/sync` calls `EnforceGrants`, `DeleteEdge` or `Teardown`
+  either, so deleting an edge or revoking a grant removes the row and
+  nothing more. The landing server's privacy policy says all of this in
+  its own "What is not in operation yet" section rather than describing
+  the design as if it ran; keep the two together when the engine is
+  wired.
 
 ## Deviations
 

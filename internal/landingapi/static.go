@@ -5,6 +5,7 @@ package landingapi
 
 import (
 	"fmt"
+	"html"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -41,7 +42,17 @@ func newStaticHandler(distFS fs.FS, appURL string) (http.Handler, error) {
 			"landingapi: embedded index.html does not carry the %q placeholder", appURLPlaceholder)
 	}
 
-	index := []byte(strings.ReplaceAll(string(rawIndex), appURLPlaceholder, appURL))
+	// Escaped for the context the placeholder sits in: the value of a
+	// double-quoted HTML attribute. internal/landingconfig refuses a URL
+	// that is not absolute http or https with a host and no path, but a
+	// validator answers whether a value is a usable URL, not whether it
+	// is safe to paste into markup, and the two answers differ: net/url
+	// accepts a double quote inside a host and url.URL.String re-emits
+	// it, so an unescaped substitution of https://x" ends the attribute
+	// early and the remainder of the tag is reparsed as attribute names.
+	// The document has to come out well-formed for whatever the
+	// configuration holds, which is this escape and not the validator.
+	index := []byte(strings.ReplaceAll(string(rawIndex), appURLPlaceholder, html.EscapeString(appURL)))
 
 	fileServer := http.FileServer(http.FS(distFS))
 

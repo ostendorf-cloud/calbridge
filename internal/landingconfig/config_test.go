@@ -83,6 +83,26 @@ func TestLoadRejectsANonURLAppURL(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsAnAppURLWithCredentials states on this side what
+// internal/config's own checkPublicSiteURL states on the other: the two
+// hosts link to each other, so they have to agree on what a usable base
+// URL is. envconf's Loader.URL is what refuses it here.
+func TestLoadRejectsAnAppURLWithCredentials(t *testing.T) {
+	t.Parallel()
+
+	const password = "not-for-a-log-line"
+
+	_, err := Load(validEnv(map[string]string{
+		"APP_URL": "https://user:" + password + "@app.calbridge.example",
+	}))
+	if err == nil {
+		t.Fatal("Load accepted an AppURL carrying credentials")
+	}
+	if strings.Contains(err.Error(), password) {
+		t.Errorf("error %q repeats the password out of the URL", err)
+	}
+}
+
 func TestLoadRejectsAnUnknownLogLevel(t *testing.T) {
 	t.Parallel()
 

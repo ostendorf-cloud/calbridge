@@ -428,9 +428,17 @@ func TestLoad(t *testing.T) {
 	t.Run("public site url refusals", func(t *testing.T) {
 		t.Parallel()
 
+		// "carries credentials" is the case that keeps this check and the
+		// landing server's own APP_URL check at one strictness: the
+		// landing side reads its URL through envconf's Loader.URL, which
+		// refuses user information, and a value accepted on one host and
+		// refused on the other is a deployment that half starts.
 		tests := map[string]string{
-			"not absolute":   "calbridge.example.com",
-			"carries a path": "https://calbridge.example.com/imprint",
+			"not absolute":        "calbridge.example.com",
+			"carries a path":      "https://calbridge.example.com/imprint",
+			"carries a query":     "https://calbridge.example.com?ref=app",
+			"carries a fragment":  "https://calbridge.example.com#imprint",
+			"carries credentials": "https://user:a-password@calbridge.example.com",
 		}
 
 		for name, value := range tests {
@@ -445,6 +453,22 @@ func TestLoad(t *testing.T) {
 					t.Errorf("error %q does not mention PUBLIC_SITE_URL", err)
 				}
 			})
+		}
+	})
+
+	t.Run("the credentials refusal does not repeat the credentials", func(t *testing.T) {
+		t.Parallel()
+
+		const password = "not-for-a-log-line"
+
+		_, err := Load(validEnv(map[string]string{
+			"PUBLIC_SITE_URL": "https://user:" + password + "@calbridge.example.com",
+		}))
+		if err == nil {
+			t.Fatal("Load() error = nil, want a refusal")
+		}
+		if strings.Contains(err.Error(), password) {
+			t.Errorf("error %q repeats the password out of the URL", err)
 		}
 	})
 }

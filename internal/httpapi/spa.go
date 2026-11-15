@@ -5,6 +5,7 @@ package httpapi
 
 import (
 	"fmt"
+	"html"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -28,6 +29,13 @@ const apiPathPrefix = "/api/"
 // deployment configured, rather than one fixed at image build time. An
 // empty PublicSiteURL leaves the tag's content empty, and web/'s own
 // composable renders no link for that.
+//
+// An index.html carrying no placeholder at all is a different case and
+// newSPAHandler refuses it, the same refusal internal/landingapi makes:
+// an empty configured value is a deployment's own choice not to link
+// back, while a missing placeholder is the tag having been dropped from
+// web/index.html, which would silently remove the link from every
+// deployment instead.
 const publicSiteURLPlaceholder = "__CALBRIDGE_PUBLIC_SITE_URL__"
 
 // newSPAHandler serves the embedded Vue build: a real static asset when
@@ -44,7 +52,25 @@ func newSPAHandler(distFS fs.FS, publicSiteURL string) (http.Handler, error) {
 		return nil, fmt.Errorf("httpapi: read embedded index.html: %w", err)
 	}
 
-	index := []byte(strings.ReplaceAll(string(rawIndex), publicSiteURLPlaceholder, publicSiteURL))
+	if !strings.Contains(string(rawIndex), publicSiteURLPlaceholder) {
+		return nil, fmt.Errorf(
+			"httpapi: embedded index.html does not carry the %q placeholder", publicSiteURLPlaceholder)
+	}
+
+	// Escaped for the context the placeholder sits in: the value of a
+	// double-quoted HTML attribute. internal/config's own
+	// checkPublicSiteURL refuses a URL that is not absolute http or
+	// https with a host, credentials, a path, a query or a fragment, but
+	// a validator answers whether a value is a usable URL, not whether
+	// it is safe to paste into markup, and the two answers differ:
+	// net/url accepts a double quote inside a host and url.URL.String
+	// re-emits it, so an unescaped substitution of https://x" ends the
+	// attribute early and the remainder of the tag is reparsed as
+	// attribute names. The document has to come out well-formed for
+	// whatever the configuration holds, which is this escape and not the
+	// validator. internal/landingapi's newStaticHandler escapes its own
+	// APP_URL the same way.
+	index := []byte(strings.ReplaceAll(string(rawIndex), publicSiteURLPlaceholder, html.EscapeString(publicSiteURL)))
 
 	fileServer := http.FileServer(http.FS(distFS))
 

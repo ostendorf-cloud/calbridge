@@ -29,6 +29,11 @@ const { t } = useI18n()
     </section>
 
     <section class="flex flex-col gap-2">
+      <h2 class="text-lg font-semibold text-text">{{ t('privacy.notInOperation.heading') }}</h2>
+      <p class="text-base text-text-muted">{{ t('privacy.notInOperation.body') }}</p>
+    </section>
+
+    <section class="flex flex-col gap-2">
       <h2 class="text-lg font-semibold text-text">{{ t('privacy.operator.heading') }}</h2>
       <p class="text-base text-text-muted">{{ t('privacy.operator.body') }}</p>
       <p class="text-base text-text-muted">{{ t('privacy.operator.contactPlaceholder') }}</p>
@@ -51,6 +56,9 @@ const { t } = useI18n()
         {{ t('privacy.calendarConnections.heading') }}
       </h2>
       <p class="text-base text-text-muted">{{ t('privacy.calendarConnections.body') }}</p>
+      <p class="text-base text-text-muted">
+        {{ t('privacy.calendarConnections.encryptionBody') }}
+      </p>
     </section>
 
     <section class="flex flex-col gap-2">
@@ -62,11 +70,13 @@ const { t } = useI18n()
     <section class="flex flex-col gap-2">
       <h2 class="text-lg font-semibold text-text">{{ t('privacy.handEdits.heading') }}</h2>
       <p class="text-base text-text-muted">{{ t('privacy.handEdits.body') }}</p>
+      <p class="text-base text-text-muted">{{ t('privacy.handEdits.exceptionBody') }}</p>
     </section>
 
     <section class="flex flex-col gap-2">
       <h2 class="text-lg font-semibold text-text">{{ t('privacy.sharing.heading') }}</h2>
       <p class="text-base text-text-muted">{{ t('privacy.sharing.body') }}</p>
+      <p class="text-base text-text-muted">{{ t('privacy.sharing.teardownBody') }}</p>
     </section>
 
     <section class="flex flex-col gap-2">
