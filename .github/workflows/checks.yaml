@@ -265,4 +265,4 @@ jobs:
       - run: task lint:secrets
 
   renovate-config:
-    uses: ostendorf-cloud/workflows/.github/workflows/reusable-renovate-config.yaml@v0.2.1
+    uses: ostendorf-cloud/workflows/.github/workflows/reusable-renovate-config.yaml@v0

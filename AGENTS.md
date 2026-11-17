@@ -262,8 +262,8 @@ on; every other path already exists.
   still the exact version `mise.toml` resolves to, so the image and a local
   run use the same pnpm.
 - yamllint's line-length limit here is 140, not the default 120. A pinned
-  reusable workflow reference then fits on one line with its version
-  comment. This matches most of the organisation's own repositories.
+  action reference then fits on one line with its version comment. This
+  matches most of the organisation's own repositories.
 
 ## Verify before committing
 
