@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
 
 # The public landing server's own image, separate from the application's
 # own Dockerfile: a correction to the privacy policy's text rebuilds and
@@ -44,7 +44,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/calbridge-landing 
 # reasons: no shell, no package manager, a minimal trust store for the
 # admin listener's own metrics scrape (no outbound call of its own
 # today, kept anyway for consistency with the application's image).
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 COPY --from=build /out/calbridge-landing /usr/local/bin/calbridge-landing
 

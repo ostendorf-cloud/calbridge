@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
 
 # Frontend build stage: produces the dist/ bundle cmd/calbridge's
 # go:embed directive needs populated before the Go stage below can even
@@ -67,7 +67,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/calbridge ./cmd/ca
 # a container registry). ":nonroot" is itself the distroless project's
 # own maintained, documented tag, not a floating "latest" - the same
 # choice solobill's own Dockerfile already made.
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 COPY --from=build /out/calbridge /usr/local/bin/calbridge
 
