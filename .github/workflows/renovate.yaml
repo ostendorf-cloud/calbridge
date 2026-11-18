@@ -2,7 +2,7 @@ name: renovate
 
 on:
   schedule:
-    - cron: "42 5 * * *"  # off-peak, deliberately staggered from other repositories' own renovate.yaml schedules
+    - cron: "44 * * * *"  # deliberately staggered from other repositories' own renovate.yaml schedules
   workflow_dispatch:
   issues:
     types: [edited]
