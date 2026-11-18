@@ -54,7 +54,7 @@ services:
   # environment variable, generated separately in .env, for exactly that
   # reason.
   postgres:
-    image: postgres:18@sha256:b9f6b8ff03b62f3cfd9d9ba3fe56226a9991c79d3fb46fd46536263bf02be553
+    image: postgres:18@sha256:2ea8630df176ad090ec92136dee850397c5af8781e4bcf2e4162593691c61bbc
     restart: unless-stopped
     environment:
       POSTGRES_USER: calbridge_super
@@ -150,7 +150,7 @@ services:
   # a users row it does not already own: see that migration's own
   # comment for why the GRANT cannot live inside db/migrations itself.
   grant-app-role:
-    image: postgres:18@sha256:b9f6b8ff03b62f3cfd9d9ba3fe56226a9991c79d3fb46fd46536263bf02be553
+    image: postgres:18@sha256:2ea8630df176ad090ec92136dee850397c5af8781e4bcf2e4162593691c61bbc
     depends_on:
       migrate:
         condition: service_completed_successfully
