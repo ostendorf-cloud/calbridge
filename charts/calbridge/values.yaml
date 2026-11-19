@@ -484,7 +484,7 @@ migrationJob:
     # latest patch in the 2.38 line mise.toml already pins dbmate to"),
     # so Renovate's pinDigests keeps both in step with each other.
     repository: ghcr.io/amacneil/dbmate
-    tag: "2.38.1"
+    tag: "2.38.2"
     digest: "sha256:b0c8a87bfef4f2819fdb0a68ca357a44d12fb90d23eca695fcfc3b7e159cb1c5"
   annotations: {}
   resources:
