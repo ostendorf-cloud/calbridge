@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ostendorf-cloud/calbridge/internal/provider"
@@ -44,6 +45,42 @@ const (
 	syncTestRole     = "calbridge_sync_test_app"
 	syncTestPassword = "calbridge-test-only-not-a-real-secret"
 )
+
+// catalogLockKey is the advisory lock key every statement that changes a
+// role or a privilege takes first. A role name of its own is not enough:
+// GRANT on a table rewrites that table's own pg_class row, and two roles
+// granted on the same table at once make Postgres refuse with "tuple
+// concurrently updated" (SQLSTATE XX000). "go test ./internal/..." runs
+// the integration packages in parallel against one database, so the
+// grants are serialised instead. internal/storage/postgres's integration
+// test carries the same key; the two values must stay equal.
+const catalogLockKey int64 = 0x63616c6272646730
+
+// inCatalogLock runs fn in a transaction that holds catalogLockKey. The
+// lock is transaction level, so Commit or Rollback releases it and no
+// path can leak it.
+func inCatalogLock(ctx context.Context, pool *pgxpool.Pool, fn func(tx pgx.Tx) error) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin catalogue transaction: %w", err)
+	}
+
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, catalogLockKey); err != nil {
+		return fmt.Errorf("take catalogue lock: %w", err)
+	}
+
+	if err := fn(tx); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit catalogue transaction: %w", err)
+	}
+
+	return nil
+}
 
 // integrationEncryptionKey is 32 bytes, matching the AES-256 key length
 // postgres.NewStore requires. Its content is arbitrary and never used
@@ -94,10 +131,6 @@ BEGIN
 END
 $$;`
 
-	if _, err := adminPool.Exec(ctx, createRole); err != nil {
-		t.Fatalf("create %s role: %v", syncTestRole, err)
-	}
-
 	// The same privileges docker/postgres/init-app-role.sh grants the
 	// application: exactly what the repositories this engine calls use,
 	// and no DELETE on users, which nothing deletes.
@@ -108,8 +141,21 @@ GRANT EXECUTE ON FUNCTION users_find_by_email(text) TO ` + syncTestRole + `;
 GRANT SELECT, INSERT, DELETE ON identities, calendars, calendar_grants TO ` + syncTestRole + `;
 GRANT SELECT, INSERT, UPDATE, DELETE ON connections, edges, event_mapping TO ` + syncTestRole + `;`
 
-	if _, err := adminPool.Exec(ctx, grant); err != nil {
-		t.Fatalf("grant %s privileges: %v", syncTestRole, err)
+	// Role creation and the grants share one transaction under the
+	// catalogue lock, so no other test binary updates the same catalogue
+	// rows between the two.
+	if err := inCatalogLock(ctx, adminPool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, createRole); err != nil {
+			return fmt.Errorf("create %s role: %w", syncTestRole, err)
+		}
+
+		if _, err := tx.Exec(ctx, grant); err != nil {
+			return fmt.Errorf("grant %s privileges: %w", syncTestRole, err)
+		}
+
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 
 	restricted, err := url.Parse(adminURL)
