@@ -14,6 +14,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"strings"
@@ -45,6 +46,42 @@ const (
 	testAppRole     = "calbridge_test_app"
 	testAppPassword = "calbridge-test-only-not-a-real-secret"
 )
+
+// catalogLockKey is the advisory lock key every statement that changes a
+// role or a privilege takes first. A unique role name per test does not
+// help: GRANT on a table rewrites that table's own pg_class row, and two
+// roles granted on the same table at once make Postgres refuse with
+// "tuple concurrently updated" (SQLSTATE XX000). "go test ./internal/..."
+// runs the integration packages in parallel against one database, so the
+// grants are serialised instead. internal/sync's integration test carries
+// the same key; the two values must stay equal.
+const catalogLockKey int64 = 0x63616c6272646730
+
+// inCatalogLock runs fn in a transaction that holds catalogLockKey. The
+// lock is transaction level, so Commit or Rollback releases it and no
+// path can leak it.
+func inCatalogLock(ctx context.Context, pool *pgxpool.Pool, fn func(tx pgx.Tx) error) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin catalogue transaction: %w", err)
+	}
+
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, catalogLockKey); err != nil {
+		return fmt.Errorf("take catalogue lock: %w", err)
+	}
+
+	if err := fn(tx); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit catalogue transaction: %w", err)
+	}
+
+	return nil
+}
 
 // testEncryptionKey is 32 bytes, matching the AES-256 key length
 // postgres.NewStore requires; its content is arbitrary and never used
@@ -910,7 +947,11 @@ BEGIN
 END
 $$;`
 
-	if _, err := adminPool.Exec(ctx, createRole); err != nil {
+	if err := inCatalogLock(ctx, adminPool, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, createRole)
+
+		return err
+	}); err != nil {
 		t.Fatalf("create %s role: %v", testOwnerRole, err)
 	}
 
@@ -941,12 +982,22 @@ func makeTemporaryOwner(ctx context.Context, t *testing.T, adminPool *pgxpool.Po
 		t.Fatalf("read current owner of %s: %v", tableName, err)
 	}
 
-	if _, err := adminPool.Exec(ctx, `ALTER TABLE `+tableName+` OWNER TO `+role); err != nil {
+	// An owner change rewrites the table's own catalogue row, the row a
+	// grant on it rewrites too, so it takes the same lock.
+	if err := inCatalogLock(ctx, adminPool, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `ALTER TABLE `+tableName+` OWNER TO `+role)
+
+		return err
+	}); err != nil {
 		t.Fatalf("make %s own %s: %v", role, tableName, err)
 	}
 
 	t.Cleanup(func() {
-		if _, err := adminPool.Exec(context.Background(), `ALTER TABLE `+tableName+` OWNER TO `+originalOwner); err != nil {
+		if err := inCatalogLock(context.Background(), adminPool, func(tx pgx.Tx) error {
+			_, err := tx.Exec(context.Background(), `ALTER TABLE `+tableName+` OWNER TO `+originalOwner)
+
+			return err
+		}); err != nil {
 			t.Errorf("restore %s as owner of %s: %v", originalOwner, tableName, err)
 		}
 	})
@@ -1586,10 +1637,6 @@ BEGIN
 END
 $$;`
 
-	if _, err := adminPool.Exec(ctx, createRole); err != nil {
-		t.Fatalf("create %s role: %v", testAppRole, err)
-	}
-
 	// Mirrors docker-compose.yaml's "grant-app-role" service: every table
 	// gets exactly the privileges its own repository in
 	// internal/storage/postgres actually uses. users gets DELETE because
@@ -1615,8 +1662,21 @@ GRANT SELECT, INSERT, DELETE ON identities, calendars, calendar_grants TO ` + te
 GRANT SELECT, INSERT, UPDATE, DELETE ON connections, edges, event_mapping TO ` + testAppRole + `;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ` + testAppRole + `;`
 
-	if _, err := adminPool.Exec(ctx, grant); err != nil {
-		t.Fatalf("grant %s privileges: %v", testAppRole, err)
+	// Role creation and the grants share one transaction under the
+	// catalogue lock, so no other test binary updates the same catalogue
+	// rows between the two.
+	if err := inCatalogLock(ctx, adminPool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, createRole); err != nil {
+			return fmt.Errorf("create %s role: %w", testAppRole, err)
+		}
+
+		if _, err := tx.Exec(ctx, grant); err != nil {
+			return fmt.Errorf("grant %s privileges: %w", testAppRole, err)
+		}
+
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 
 	restricted, err := url.Parse(adminURL)
