@@ -41,7 +41,7 @@ RUN mkdir -p cmd/calbridge && cd web && pnpm run build
 # golangci-lint 2.15.0 specifically needs that exact patch, a constraint
 # this image is kept aligned with even though golangci-lint itself never
 # runs here.
-FROM golang:1.27.4-bookworm@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea AS build
+FROM golang:1.27.4-bookworm@sha256:ce59b41415e2524ae99926fe1f37ce48ba8c194dcbd2a56a65436cdcefa2bd34 AS build
 
 WORKDIR /src
 
