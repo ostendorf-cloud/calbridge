@@ -7,263 +7,46 @@ The global baseline already applies here and is not repeated below.
 
 ## Layout
 
-`docs/concepts/calbridge.md` is the agreed design; the delivery order its
-"Delivery order" section lists is the sequence the issues that follow
-implement in steps. The paths below marked "will" record the agreed layout
-for the issues still ahead, so later work lands in the place already agreed
-on; every other path already exists.
+`docs/concepts/calbridge.md` is the agreed design. The delivery order its "Delivery order"
+section lists is the sequence the issues that follow implement in steps. Paths marked "will"
+record the agreed layout for issues still ahead. Every other path already exists.
 
-- `cmd/calbridge` wires the service: `internal/config` loads and validates
-  the environment, `main.go` opens the database pool, builds the sign-in
-  providers `internal/config` describes, builds `internal/httpapi`'s
-  handler and runs it through govue's `httpserver` with graceful
-  shutdown. A later issue adds the provider registry and the sync engine
-  to this wiring.
-- `internal/config` loads calbridge's configuration from the environment
-  once, at startup, through govue's `envconf`. The database connection,
-  the encryption key and each sign-in provider's client secret follow
-  `envconf`'s `SecretOrFile`/`RequiredSecretOrFile` `_FILE`-suffix
-  convention; the rest is server, logging, session, rate limit and
-  provider sign-in configuration. There are two rate limit budgets, not
-  one: the routes a request reaches with no session carry one, and
-  `POST /api/v1/grants` carries its own, so an ordinary share cannot
-  spend what a login needs.
-- `internal/httpapi` builds the HTTP handler: liveness, readiness and
-  metrics on the admin listener, and on the public one signup, login,
-  logout, `GET` and `DELETE /api/v1/me`, the sign-in provider list and a
-  pair of routes per configured provider, plus the SPA fallback that
-  serves the embedded Vue build. Every account decision belongs to
-  `internal/auth`; this package decodes a request, calls that package and
-  turns the answer into JSON or a session cookie. `graph.go` carries the
-  sync graph API the canvas is a view of: `GET /api/v1/graph`, the edge
-  routes and the grant routes. Three rules hold there and are written out
-  in that file's own doc comment: every handler reaches the store only
-  through `inUserScope`, so row level security and not a conditional is
-  what bounds a read; a refusal for a row that does not exist and one for
-  a row the caller may not see are the identical answer; and
-  `internal/sync` stays the only package that decides what a detail level
-  means, through `MaskFor`, `CheckGrants` and `CheckLoop`. A later issue
-  adds the webhook endpoint Google and Microsoft Graph push change
-  notifications to.
-- `charts/calbridge/` is the Helm chart for the real deployment, with no
-  Postgres subchart, the shape `charts/solobill` uses. It renders two
-  workloads, not one: the application (`templates/deployment.yaml` and
-  friends) and, under the `landing` values key, the public landing
-  server (`templates/landing-deployment.yaml` and friends). Each exposes
-  its own service through either an `Ingress` or a Gateway API
-  `HTTPRoute`, chosen in values, neither enabled by default on either
-  workload, and each pair is independent of the other's.
-- `scripts/validate-chart.sh` renders `charts/calbridge` for its default
-  values and every documented non-default combination, application and
-  landing server alike, shared by `task lint:helm` and
-  `task validate:kubeconform` so CI and a local run check the exact same
-  combinations.
-- `db/migrations/` holds the dbmate migrations: users, identities,
-  connections, calendars, edges, calendar grants and the event mapping
-  table, with the row level security policies that keep one user's rows
-  apart from another's, enforced by a database role that is
-  `NOSUPERUSER NOBYPASSRLS`. `sqlc.yaml` points sqlc's schema at this
-  directory itself, parsed statically with no database connection, so
-  `task generate:check` runs with no network and no port binding.
-- `internal/provider` defines the one connector interface every provider
-  implements: list calendars, read changes since a token, create and delete
-  a calendar it owns, and create, update and delete an event it owns. A
-  connector registers itself into a registry under a provider id and
-  declares its capabilities (push notifications, native recurrence rules,
-  calendar creation, attendees, floating times), so adding Google Calendar,
-  Microsoft Graph or a CalDAV profile is a new package and one line of
-  wiring, never an edit to a switch statement in the engine. Connectors
-  speak one normalised event type and never leak a provider's own model;
-  everything provider-shaped stays inside its package. A connector also
-  declares whether it writes one overridden occurrence and whether it
-  rewrites content on write, and answers what a write turns an event into
-  where it does. It owns the event id space as well: a provider's own
-  identifier becomes an `Event.ID` through `EventIDOf`, which escapes the
-  separator a derived occurrence id is joined with, and `NativeIDOf` is
-  the one way back, so a plain event id can never read as an occurrence
-  of another event whatever a server names a resource. A caller that has
-  the event reads `Recurrence.MasterID`; one that has only an id cuts it
-  with `CutInstanceID`.
-- `internal/provider/caldav` is the generic CalDAV connector, driven by
-  one profile per server with iCloud as the first. It is the only
-  connector so far.
-- `internal/providertest` holds the in-memory connector every consumer of
-  `internal/provider` tests against. It is not a test file: both
-  `internal/provider`'s own tests and `internal/sync`'s import it, because
-  a fake written once per consumer is one contract read twice, and the
-  readings drift.
-- `internal/sync` turns a source change into target operations by applying
-  an edge's field mask, and is the only package meant to know what a detail
-  level means. It owns the mapping table (edge id, source event id, target
-  event id, start, end, content hash), recurrence expansion for the case
-  where source and target disagree on a rule, and the marker that stops
-  calbridge's own writes from being copied onward as source changes. The
-  full reconcile reads both calendars from the zero sync token, so it
-  depends on no stored position and no delivered notification, and the
-  teardown of an edge, including one whose grant was revoked, removes every
-  event it wrote, the edge row included. A mirrored event edited by hand
-  in the target is overwritten on the next reconcile, and a revoked grant
-  takes the edge with it; see `docs/adr/`. The one edit not overwritten is
-  a single overridden occurrence in a target keeping its overrides inside
-  the master's own object: no id such a provider accepts names it, so the
-  pass leaves it to the master's object instead of asking for a write the
-  declared capabilities already ruled out. An object holding overrides and
-  no master is removed by the master's id, on a reconcile as on a
-  teardown.
-- `docs/adr/` holds the decisions worth remembering, in the MADR shape, one
-  per numbered file.
-- `internal/storage` defines the domain types and the repository
-  interfaces the layers above call, with nothing here importing a provider
-  SDK or generated sqlc code directly.
-- `internal/storage/postgres` is the only implementation, wiring
-  sqlc-generated queries (`queries/`, committed generated code in
-  `sqlcgen/`) into the repository interfaces, the split solobill's
-  `internal/storage` and `internal/storage/postgres` already use. Every
-  user-owned table is reached only through `Store.WithUser`, which scopes
-  a transaction to one user via a transaction-local Postgres setting; row
-  level security, not this package, is what actually enforces that scope.
-  `crypto.go` encrypts and decrypts `connections.credentials` and
-  `event_mapping.encrypted_details` at the database boundary, so a caller
-  above this package never holds or passes ciphertext. The lookups that
-  cannot be reached under the asking user's own scope go through a
-  `SECURITY DEFINER` function instead of through a widened policy: a
-  local account by email, a sign-in identity by `(provider, subject)`,
-  and the addresses on the other side of a grant
-  (`grant_counterparties`). Each is revoked from `PUBLIC` in
-  `db/migrations`, so the explicit grant to the application role is what
-  decides who may call it. Each one also nulls in its own body whatever
-  its callers have no business with: `grant_counterparties` returns
-  `SETOF users`, because that is the only shape sqlc can resolve, and
-  returns no password hash and no TOTP secret in it. `sharing.go` is the
-  one file holding everything that reaches across from one user to
-  another, so that whole surface reads at once: the calendars a grant
-  shares with this user, the people a grant names, and the address-to-id
-  lookup that creates one. A calendar read across a grant comes back as
-  `storage.SharedCalendar`, which deliberately does not embed
-  `storage.Calendar`: the policy admits the owner's `external_id`, the
-  provider's own identifier, and nothing above the database is to have a
-  field to put it in.
-- `internal/storage/storagetest` is an in-memory implementation of the
-  same repository interfaces, for a test of a package above the storage
-  layer. It imitates the scoping row level security enforces, so a
-  repository method called outside a `WithUser` transaction fails there
-  too.
-- `internal/auth` holds login: local accounts with a password hashed
-  with Argon2id and a TOTP second factor, plus sign in with Google,
-  Microsoft and Apple through govue's `oidc` package, asking for identity
-  scopes only. calbridge owns identity and depends on no external
-  identity provider. Both paths produce one `Identity`, so nothing above
-  branches on login method. A provider identity used to sign in is never
-  matched against a provider account another user connected as a
-  calendar; that collision creates a separate account, and the rule is
-  structural: the `Store` interface this package defines exposes no
-  connection repository, so no code here can reach one. How many
-  Argon2id derivations may run at once is capped here too, against the
-  chart's own memory limit; `internal/depsync` fails if the two stop
-  agreeing.
-- `cmd/calbridge-mcp` will be the MCP server, its own binary and its own
-  deployment, letting an agent read the sync topology and create or change
-  edges and grants. It may not create, change or delete a provider
-  connection, and it calls the same authorisation rules as the web API
-  rather than carrying its own copy.
-- `web/` holds the Vue SPA on govue: a login shell and an authenticated
-  shell that prove the session and CSRF contract end to end, with
-  German and English i18n and a theme generated from `web/src/theme/seed.json`
-  through govue's own generator. `LoginView` carries sign-in with both
-  factors, sign-up with its TOTP enrolment, and a button per configured
-  sign-in provider, with Apple marked as granting identity only. The Vue
-  Flow canvas draws calendars as nodes grouped by account, with the
-  calendars shared with this account as nodes of their own; an edge is
-  drawn by dragging one node onto another and the detail level is edited
-  on the edge. Every action on it is reachable without a pointer drag,
-  which is not a refinement: an edge that can only be created by dragging
-  cannot be created from a keyboard, and drawing edges is the product.
-  The grant screen is the ledger of what was shared out and in, and
-  where a share is revoked. `LoginView` and the authenticated shell both
-  carry a "back to the public site" link, read from `config.publicSiteUrl`
-  the same way described below, rendering no link where that is empty.
-- `cmd/calbridge-landing` is the public landing server on `calbridge.de`,
-  issue #44: `internal/landingconfig` loads its own, much smaller
-  configuration (no database, no session, no sign-in provider), and
-  `internal/landingapi` builds its handler, served with govue's
-  `httpserver` through the same two-listener shape (public, and an
-  admin listener for liveness, readiness and metrics) `cmd/calbridge`
-  uses. It is a static build with no session, no CSRF protector and no
-  database connection at all, so a correction to the privacy policy's
-  text never redeploys the application. `web-landing/` is its own Vue
-  SPA on govue, a separate package from `web/` with its own
-  `pnpm-lock.yaml`, routed to the home page (the problem and the three
-  detail levels), pricing (privately operated, no prices yet), the
-  imprint and the privacy policy. It carries German and English i18n
-  like `web/`, and the same generated theme, kept as its own copy under
-  `web-landing/src/theme/` rather than an import across the two
-  packages. Every outbound link to the application reads
-  `internal/landingconfig.Config.AppURL`, substituted into the served
-  `index.html` by `internal/landingapi`'s `newStaticHandler` in place of
-  a placeholder, the same mechanism `internal/httpapi`'s `newSPAHandler`
-  uses for `config.publicSiteUrl` on the application side; neither
-  reads a host fixed at image build time. Both substitute the value
-  escaped for the attribute it lands in, and both refuse a build whose
-  `index.html` carries no placeholder, since a dropped meta tag would
-  otherwise remove the link from every deployment silently.
-  `PUBLIC_SITE_URL` and `APP_URL` are checked to the same strictness on
-  both sides, credentials in the URL included. `Dockerfile.landing`
-  builds this binary's own image, separate from the application's
-  `Dockerfile`, so the two are released independently; its `COPY` list
-  names only the two landing packages, and that is a guard as much as a
-  copy.
-- Two properties the landing split exists for are checked rather than
-  described: `internal/depsync/landingimports_builtfrontend_test.go`
-  fails when `cmd/calbridge-landing`'s transitive imports name a
-  calbridge package outside `internal/landingapi` and
-  `internal/landingconfig`, and
-  `internal/depsync/bundleassets_builtfrontend_test.go` fails when
-  either build's output fetches anything off its own origin or names a
-  host outside its allow list, which is the privacy policy's "no
-  analytics, no third parties" claim. Both need the two frontends built,
-  so both sit behind the `builtfrontend` build tag and run from
-  `task test:builtfrontend`; see "Verify before committing". The filter
-  and the scan each tested on their own, which need nothing built, stay
-  in `landingimports_test.go` and `bundleassets_test.go` and run in the
-  ordinary suite. On the Vue side `web-landing/eslint.config.ts` refuses
-  govue's `createClient` and any import reaching into `web/`.
-
-## Deliberate gaps
-
-- A calendar calbridge is asked to create as an edge's target is written
-  with a provisional `external_id` (`calbridge-pending:` plus a uuid),
-  because no connector is wired into the service yet and
-  `calendars.external_id` is `NOT NULL`. A connector's own calendar
-  creation replaces it with the provider's id. See
-  `internal/httpapi/graph.go`'s `provisionalExternalIDPrefix`.
-- Revoking a grant removes the grant row. Tearing down the edges it
-  covered, and taking back the events they wrote, is
-  `internal/sync`'s `EnforceGrants`, which runs when the engine is wired;
-  the edges belong to the grantee and are out of the owner's scope, so no
-  API handler could do it even in principle. See
-  `docs/adr/0002-a-revoked-grant-deletes-the-edge.md`.
-- No connector is wired into the running service and no route creates a
-  provider connection, so no calendar credentials are stored and no
-  event is written into a provider calendar yet. Nothing outside
-  `internal/sync` calls `EnforceGrants`, `DeleteEdge` or `Teardown`
-  either, so deleting an edge or revoking a grant removes the row and
-  nothing more. The landing server's privacy policy says all of this in
-  its own "What is not in operation yet" section rather than describing
-  the design as if it ran; keep the two together when the engine is
-  wired.
+- `cmd/calbridge` wires the service. `internal/config` loads and validates the environment.
+  `main.go` opens the database pool, builds the sign-in providers `internal/config` describes,
+  builds `internal/httpapi`'s handler and runs it through govue's `httpserver` with graceful
+  shutdown. A later issue adds the provider registry and the sync engine to this wiring.
+- `cmd/calbridge-landing` is the public landing server. See `cmd/calbridge-landing/AGENTS.md`.
+- `cmd/calbridge-mcp` will be the MCP server. See `docs/calbridge-mcp.md`.
+- `internal/config` loads the configuration from the environment once, at startup, through
+  govue's `envconf`.
+- `internal/httpapi` builds the HTTP handler. See `internal/httpapi/AGENTS.md`.
+- `internal/provider`, `internal/provider/caldav` and `internal/providertest` hold the
+  connectors. See `internal/provider/AGENTS.md`.
+- `internal/sync` turns a source change into target operations. See `internal/sync/AGENTS.md`.
+- `internal/storage` and `internal/storage/postgres` hold the repositories. See
+  `internal/storage/AGENTS.md`.
+- `internal/auth` holds login. See `internal/auth/AGENTS.md`.
+- `internal/depsync` holds the cross-package guard checks. See `internal/depsync/AGENTS.md`.
+- `db/migrations/` holds the dbmate migrations. See `db/AGENTS.md`.
+- `charts/calbridge/` is the Helm chart and `scripts/validate-chart.sh` renders it. See
+  `charts/calbridge/AGENTS.md`.
+- `web/` is the Vue SPA. See `web/AGENTS.md`.
+- `web-landing/` is the landing server's Vue SPA. See `web-landing/AGENTS.md`.
+- `docs/adr/` holds the decisions worth remembering, in the MADR shape, one per numbered file.
+- `docs/deliberate-gaps.md` lists what the code does not do yet, on purpose.
+- `docs/legal-review.md` records the human review the landing pages still need.
 
 ## Deviations
 
-- The `Dockerfile`'s web stage, and `Dockerfile.landing`'s own equivalent stage,
-  install corepack with `npm install -g`, the one place in this repository
-  where a tool does not come from `mise`. Node stopped distributing corepack
-  with v25, so the pinned node image carries none, and there is no `mise`
-  inside that stage to resolve one. The pnpm version it then activates is
-  still the exact version `mise.toml` resolves to, so the image and a local
-  run use the same pnpm.
-- yamllint's line-length limit here is 140, not the default 120. A pinned
-  action reference then fits on one line with its version comment. This
-  matches most of the organisation's own repositories.
+- The `Dockerfile`'s web stage, and `Dockerfile.landing`'s own equivalent stage, install
+  corepack with `npm install -g`, the one place in this repository where a tool does not come
+  from `mise`. Node stopped distributing corepack with v25, so the pinned node image carries
+  none, and there is no `mise` inside that stage to resolve one. The pnpm version it then
+  activates is still the exact version `mise.toml` resolves to, so the image and a local run use
+  the same pnpm.
+- yamllint's line-length limit here is 140, not the default 120. A pinned action reference then
+  fits on one line with its version comment. This matches most of the organisation's own
+  repositories.
 
 ## Verify before committing
 
@@ -271,49 +54,18 @@ on; every other path already exists.
 task check
 ```
 
-`task --list` shows the individual targets. `task check` runs every check
-this repository has: Go format, vet and lint, a check that the committed
-sqlc output still matches `db/migrations`, the Go test suite, the `web/`
-package's ESLint, Prettier, TypeScript and Vitest checks, the `web/` SPA
-build, the same four checks and build for `web-landing/`, a check that
-`go.mod` and `web/package.json` pin the same govue tag, markdown lint,
-YAML lint, a GitHub Actions workflow lint, a secret scan, the Go build,
-both container image builds (`Dockerfile` and `Dockerfile.landing`),
-the two checks over the built frontends (`task test:builtfrontend`),
-Helm chart lint and schema validation, and the Helm chart's own
-`helm-unittest` suite.
+`task --list` shows the individual targets.
 
-`task build` and `task test:go` depend on `task web:build` and
-`task landing-web:build`: `cmd/calbridge` embeds `web/`'s build output
-and `cmd/calbridge-landing` embeds `web-landing/`'s, and `go:embed` fails
-on an empty `dist/` for either. `task landing:build` and
-`task landing:build:image` are their own targets, not folded into
-`build`/`build:image`: a correction to the landing server's own copy
-builds and verifies without touching the application's binary or image.
-
-`task test:builtfrontend` is the Go suite's other half, behind the
-`builtfrontend` build tag: the two checks in
-`internal/depsync/*_builtfrontend_test.go` read `cmd/calbridge/dist` and
-`cmd/calbridge-landing/dist`, and neither directory is committed. The
-target depends on `web:build` and `landing-web:build`, so the
-precondition holds wherever it runs, and the `built-frontend` CI job
-runs that target rather than a bare `go test`. Running
-`go test -tags=builtfrontend ./internal/depsync/...` by hand with either
-`dist/` absent fails and names the target to run instead. The tag is
-there so that a job running `go test ./internal/depsync/...` straight
-after a checkout, `check:govue-version` and `integration` both do, is
-not asked for a build it never made; neither test skips itself when the
-directory is missing, because a guard that passes quietly checks
-nothing.
-
-`task test:integration` is deliberately not part of `check`: it needs a
-reachable Postgres, and `check` runs with no network and no port binding.
-The `integration` CI job runs it against a real `postgres` service
-container instead. A later issue adds its own `lint:*`, `test:*` or
-`validate` target and extends `check` with it, rather than folding its
-check into an existing target.
-
-The landing server's imprint and privacy policy pages are a draft written
-from the code, not legal advice; issue #44's acceptance criteria require a
-person to review both before the site is published, which this task list
-does not automate.
+- `task build` and `task test:go` depend on `task web:build` and `task landing-web:build`.
+  `cmd/calbridge` embeds `web/`'s build output and `cmd/calbridge-landing` embeds
+  `web-landing/`'s. `go:embed` fails on an empty `dist/` for either.
+- `task landing:build` and `task landing:build:image` are their own targets, not folded into
+  `build` and `build:image`. A correction to the landing server's own copy builds and verifies
+  without touching the application's binary or image.
+- `task test:builtfrontend` is the Go suite's other half, behind the `builtfrontend` build tag.
+  See `internal/depsync/AGENTS.md`.
+- `task test:integration` is deliberately not part of `check`. It needs a reachable Postgres,
+  and `check` runs with no network and no port binding. The `integration` CI job runs it
+  against a real `postgres` service container.
+- A later issue adds its own `lint:*`, `test:*` or `validate` target and extends `check` with
+  it, rather than folding its check into an existing target.
