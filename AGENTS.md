@@ -18,7 +18,7 @@ record the agreed layout for issues still ahead. Every other path already exists
 - `cmd/calbridge-landing` is the public landing server. See `cmd/calbridge-landing/AGENTS.md`.
 - `cmd/calbridge-mcp` will be the MCP server. See `docs/calbridge-mcp.md`.
 - `internal/config` loads the configuration from the environment once, at startup, through
-  govue's `envconf`.
+  govue's `envconf`. See `internal/config/AGENTS.md`.
 - `internal/httpapi` builds the HTTP handler. See `internal/httpapi/AGENTS.md`.
 - `internal/provider`, `internal/provider/caldav` and `internal/providertest` hold the
   connectors. See `internal/provider/AGENTS.md`.
@@ -65,7 +65,8 @@ task check
 - `task test:builtfrontend` is the Go suite's other half, behind the `builtfrontend` build tag.
   See `internal/depsync/AGENTS.md`.
 - `task test:integration` is deliberately not part of `check`. It needs a reachable Postgres,
-  and `check` runs with no network and no port binding. The `integration` CI job runs it
-  against a real `postgres` service container.
+  and `check` binds no port. `check` needs no network either, except that the shared
+  `lint:agents-md` include loads from github.com on a fresh cache. The `integration` CI job
+  runs it against a real `postgres` service container.
 - A later issue adds its own `lint:*`, `test:*` or `validate` target and extends `check` with
   it, rather than folding its check into an existing target.
