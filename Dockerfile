@@ -10,7 +10,7 @@
 # web/vite.config.ts's own outDir is "../cmd/calbridge/dist", relative to
 # web/, so this stage keeps the same sibling layout the repository itself
 # has (cmd/ next to web/) instead of building web/ in isolation.
-FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS web
+FROM node:26.13.1-bookworm-slim@sha256:0042e17d232a87a2cd485be1da7900fca4d10a4ad11b29e9285da1d2e54798c9 AS web
 
 WORKDIR /src
 
