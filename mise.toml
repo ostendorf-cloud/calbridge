@@ -55,7 +55,7 @@ kubeconform = "0.8.0"
 # from solobill, verified there end to end against a scratch HELM_DATA_HOME: "helm unittest
 # charts/solobill" passes with this same entry.
 [tools."github:helm-unittest/helm-unittest"]
-version = "1.2.1"
+version = "1.3.0"
 depends = ["helm"]
 postinstall = "rm -rf \"$(helm env HELM_PLUGINS)/helm-unittest\" && mkdir -p \"$(helm env HELM_PLUGINS)\" && cp -r \"$MISE_TOOL_INSTALL_PATH\" \"$(helm env HELM_PLUGINS)/helm-unittest\""
 
