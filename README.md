@@ -66,9 +66,10 @@ live Postgres and is deliberately not part of `check`, which binds no port;
 the CI `integration` job runs it against a real Postgres service container.
 `task --list` shows the individual targets.
 
-`check` needs a container runtime for the image builds and the network for
-the Helm schema validation. Where either is missing, run the targets one by
-one and leave CI to run the rest. `AGENTS.md` lists each case and what to do.
+`check` needs a container runtime for the image builds. It needs the network
+for the Helm schema validation and for the shared `lint:agents-md` include.
+Where either is missing, run the targets one by one and leave CI to run the
+rest. `AGENTS.md` lists each case and what to do.
 
 Releases will be driven by
 [release-me](https://github.com/ostendorf-cloud/release-me) once a first

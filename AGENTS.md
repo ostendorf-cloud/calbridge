@@ -67,9 +67,9 @@ task check
 - `task test:integration` is deliberately not part of `check`. It needs a reachable Postgres,
   and `check` binds no port. The `integration` CI job runs it against a real `postgres`
   service container.
-- `check` needs the network in two places: the shared `lint:agents-md` include loads from
-  github.com on a fresh cache, and `validate:kubeconform` fetches schemas from
-  raw.githubusercontent.com.
+- `check` needs the network beyond a warm cache: the shared `lint:agents-md` include loads from
+  github.com, `validate:kubeconform` fetches schemas from raw.githubusercontent.com, and a
+  cold cache also downloads pnpm packages, Go modules and base images.
 - Two build tags exist: `builtfrontend` and `integration`. `.golangci.yaml` lists both under
   `run.build-tags`, so `task lint:golangci` lints every tagged file. Without the tag a linter
   never loads the file and reports `0 issues`.
@@ -98,14 +98,17 @@ report them as not run locally, never as passed, and never report a full `task c
   XDG_RUNTIME_DIR="$(mktemp -d "$TMPDIR/xdg.XXXXXX")" pnpm install --frozen-lockfile
   ```
 
-  - A parallel session sets its own directory. Two installs from two worktrees on one shared
-    directory both passed in a test, so this is a precaution, not a measured need.
-  - `go build`, `go vet` and `golangci-lint run` need both frontends built first.
+  - A parallel session sets its own directory. Six overlapping installs on one shared
+    directory all passed in a test, so this is a precaution, not a measured need.
+  - `go build`, `go vet`, `go test` and `golangci-lint run` need both frontends built first.
 - `task build:image` and `task landing:build:image` need a container runtime. No `docker`
-  works in the sandbox, and `podman` cannot connect. `check` runs `build:image` before
-  the targets that follow it in `Taskfile.yaml`, so a local `check` stops there. Run these on
-  their own: `landing:build`, `test:go`, `test:builtfrontend`, `check:govue-version`,
-  `lint:helm` and `test:helm`.
+  works in the sandbox, and `podman` cannot connect.
+  - In the sandbox, `task` fails before any target runs. Without `XDG_RUNTIME_DIR`, the `web:*`
+    targets and the targets that depend on `web:build` fail before `build:image` is reached.
+  - `check` runs `build:image` before the targets that follow it in `Taskfile.yaml`. A local
+    `check` therefore stops there. That is read from the target order, not run.
+  - Run these on their own: `landing:build`, `test:go`, `test:builtfrontend`,
+    `check:govue-version`, `lint:helm` and `test:helm`.
 - `task validate:kubeconform` fails where a filtering proxy sits in the way. kubeconform cannot
   download the Kubernetes schemas and reports
   `tls: failed to verify certificate: x509: OSStatus -26276` for every resource. CI passes it.
