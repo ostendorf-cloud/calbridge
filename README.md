@@ -62,9 +62,13 @@ and `Dockerfile.landing`), Helm chart lint and schema validation, and the
 Helm chart's own `helm-unittest` suite.
 
 `task test:integration` runs the row level security isolation test against a
-live Postgres and is deliberately not part of `check`, which runs with no
-network and no port binding; the CI `integration` job runs it against a real
-Postgres service container. `task --list` shows the individual targets.
+live Postgres and is deliberately not part of `check`, which binds no port;
+the CI `integration` job runs it against a real Postgres service container.
+`task --list` shows the individual targets.
+
+`check` needs a container runtime for the image builds and the network for
+the Helm schema validation. Where either is missing, run the targets one by
+one and leave CI to run the rest. `AGENTS.md` lists each case and what to do.
 
 Releases will be driven by
 [release-me](https://github.com/ostendorf-cloud/release-me) once a first

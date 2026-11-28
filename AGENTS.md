@@ -65,9 +65,11 @@ task check
 - `task test:builtfrontend` is the Go suite's other half, behind the `builtfrontend` build tag.
   See `internal/depsync/AGENTS.md`.
 - `task test:integration` is deliberately not part of `check`. It needs a reachable Postgres,
-  and `check` binds no port. `check` needs no network either, except that the shared
-  `lint:agents-md` include loads from github.com on a fresh cache. The `integration` CI job
-  runs it against a real `postgres` service container.
+  and `check` binds no port. The `integration` CI job runs it against a real `postgres`
+  service container.
+- `check` needs the network in two places: the shared `lint:agents-md` include loads from
+  github.com on a fresh cache, and `validate:kubeconform` fetches schemas from
+  raw.githubusercontent.com.
 - Two build tags exist: `builtfrontend` and `integration`. `.golangci.yaml` lists both under
   `run.build-tags`, so `task lint:golangci` lints every tagged file. Without the tag a linter
   never loads the file and reports `0 issues`.
@@ -77,3 +79,37 @@ task check
     what covers the tagged files.
 - A later issue adds its own `lint:*`, `test:*` or `validate` target and extends `check` with
   it, rather than folding its check into an existing target.
+
+## Checks that cannot run in the sandbox
+
+A red result from one of these says nothing about the change. CI runs every one of them, so
+report them as not run locally, never as passed, and never report a full `task check` run.
+
+- `task` itself fails in the Claude sandbox:
+  `mkdir ~/Library/Caches/task/task-git-repos: operation not permitted`. The remote include
+  cache is not writable. Run the commands under the targets instead: `go build ./...`,
+  `go vet ./...`, `go test -race -count=1 ./...`, `golangci-lint run ./...`,
+  `golangci-lint fmt --diff`, and `pnpm run <script>` inside `web/` and `web-landing/`.
+- The `web:*` and `landing-web:*` targets fail without a writable `XDG_RUNTIME_DIR`. pnpm cannot
+  take its store lock and stops with `ERR_PNPM_STORE_DIR_OPEN_OPERATION_LOCK`. Set it for the
+  command. The sandbox rejects a bare `mktemp -d`, so root the directory in `$TMPDIR`:
+
+  ```sh
+  XDG_RUNTIME_DIR="$(mktemp -d "$TMPDIR/xdg.XXXXXX")" pnpm install --frozen-lockfile
+  ```
+
+  - A parallel session sets its own directory. Two installs from two worktrees on one shared
+    directory both passed in a test, so this is a precaution, not a measured need.
+  - `go build`, `go vet` and `golangci-lint run` need both frontends built first.
+- `task build:image` and `task landing:build:image` need a container runtime. No `docker`
+  works in the sandbox, and `podman` cannot connect. `check` runs `build:image` before
+  the targets that follow it in `Taskfile.yaml`, so a local `check` stops there. Run these on
+  their own: `landing:build`, `test:go`, `test:builtfrontend`, `check:govue-version`,
+  `lint:helm` and `test:helm`.
+- `task validate:kubeconform` fails where a filtering proxy sits in the way. kubeconform cannot
+  download the Kubernetes schemas and reports
+  `tls: failed to verify certificate: x509: OSStatus -26276` for every resource. CI passes it.
+  The failure is neither a reason to hold a change nor a pass.
+- `task test:integration` needs a reachable Postgres in `DATABASE_URL`. Without it, and with
+  `CI` unset, every Postgres test skips and `go test` still prints `ok`. Anything resting on it
+  is unverified locally. With `CI` set, the same tests fail instead of skipping.
