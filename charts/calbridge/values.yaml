@@ -210,6 +210,14 @@ config:
   # docker-compose.yaml does): the frontend then renders no such link.
   publicSiteUrl: ""
 
+  # REGISTRATION_CLOSED: true refuses every new account, by password
+  # signup and by first provider sign-in alike, with a 403. Accounts that
+  # already exist keep signing in. False by default, which leaves an
+  # exposed instance open to anyone who can reach it: close it once the
+  # accounts that should exist do. See README.md's "Closing registration"
+  # section.
+  registrationClosed: false
+
   # Google, Microsoft and Apple sign-in, each independent and off by
   # default: a provider is offered only once its clientId below is set, at
   # which point its client secret becomes required too (see

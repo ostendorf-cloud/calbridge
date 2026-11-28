@@ -83,6 +83,8 @@ spec:
               value: {{ .Values.config.authBaseUrl | quote }}
             - name: PUBLIC_SITE_URL
               value: {{ .Values.config.publicSiteUrl | quote }}
+            - name: REGISTRATION_CLOSED
+              value: {{ .Values.config.registrationClosed | default false | quote }}
             # A provider's CLIENT_ID, ISSUER and CLIENT_SECRET render together,
             # only once its clientId is set: an unset clientId already means
             # "not offered" (see values.yaml), and omitting the block then

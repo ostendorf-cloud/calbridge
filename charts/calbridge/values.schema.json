@@ -190,6 +190,10 @@
           "type": "string",
           "description": "PUBLIC_SITE_URL, the public landing page's own base URL, for example \"https://calbridge.example.com\". Rendered into the login screen and the signed-in shell as the link back to the public site. Empty by default, which renders no such link."
         },
+        "registrationClosed": {
+          "type": "boolean",
+          "description": "REGISTRATION_CLOSED. True refuses every new account, by password signup and by first provider sign-in, and leaves existing accounts able to sign in. False by default, which leaves an exposed instance open to anyone who can reach it."
+        },
         "auth": {
           "type": "object",
           "properties": {

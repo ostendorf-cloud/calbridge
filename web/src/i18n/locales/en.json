@@ -14,6 +14,7 @@
       "submit": "Log in",
       "submitting": "Logging in",
       "switchToSignup": "Need an account? Sign up",
+      "registrationClosed": "Registration is closed on this instance.",
       "validation": {
         "email": "Please enter an email address.",
         "password": "Please enter a password.",

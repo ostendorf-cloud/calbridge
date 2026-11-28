@@ -60,6 +60,11 @@ type meResponse struct {
 // providersResponse is what the login screen builds its buttons from.
 type providersResponse struct {
 	Providers []providerResponse `json:"providers"`
+
+	// RegistrationOpen is false on an instance that closed registration.
+	// The login screen reads it to stop offering signup, and it is a
+	// courtesy only: the refusal that holds is the one in internal/auth.
+	RegistrationOpen bool `json:"registration_open"`
 }
 
 // providerResponse is one sign-in button. IdentityOnly is what the UI
@@ -101,6 +106,8 @@ func (a *app) handleSignUp(w http.ResponseWriter, r *http.Request) error {
 // somebody else's; see internal/auth's own reasoning on ErrEmailTaken.
 func signUpError(err error) error {
 	switch {
+	case errors.Is(err, auth.ErrRegistrationClosed):
+		return registrationClosedError()
 	case errors.Is(err, auth.ErrHashingBusy):
 		return hashingBusyError()
 	case errors.Is(err, auth.ErrEmailInvalid):
@@ -133,6 +140,15 @@ func loginError(err error) error {
 	default:
 		return fmt.Errorf("httpapi: log in: %w", err)
 	}
+}
+
+// registrationClosedError is what both account creating paths answer on an
+// instance that closed registration: 403 with the permission_denied code.
+// It is the deployment's policy refusing, not a problem with the request,
+// so 400 would invite a retry and 409 would suggest the address was the
+// cause.
+func registrationClosedError() error {
+	return api.PermissionDenied("registration is closed on this instance")
 }
 
 // hashingBusyError is what a request shed by internal/auth's limit on
@@ -260,7 +276,10 @@ func (a *app) handleProviders(w http.ResponseWriter, _ *http.Request) error {
 		})
 	}
 
-	return api.Write(w, http.StatusOK, providersResponse{Providers: providers})
+	return api.Write(w, http.StatusOK, providersResponse{
+		Providers:        providers,
+		RegistrationOpen: !a.registrationClosed,
+	})
 }
 
 // providerSignInError is what a refused provider sign-in is answered
@@ -268,8 +287,14 @@ func (a *app) handleProviders(w http.ResponseWriter, _ *http.Request) error {
 // the time this runs and hands over one of its own two opaque errors, so
 // nothing here reconstructs a reason: oidc.ErrProvider means the
 // identity provider could not be reached and starting over will not
-// help, and everything else means this one attempt is over.
+// help, and everything else means this one attempt is over. The one
+// reason that does arrive as itself is auth.ErrRegistrationClosed, which
+// internal/auth passes through on purpose.
 func providerSignInError(err error) error {
+	if errors.Is(err, auth.ErrRegistrationClosed) {
+		return registrationClosedError()
+	}
+
 	if errors.Is(err, oidc.ErrProvider) {
 		return api.Unavailable("the sign-in service is unavailable, please try again later")
 	}

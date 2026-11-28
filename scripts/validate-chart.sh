@@ -64,6 +64,7 @@ names=(
   "landing startup probe enabled"
   "landing service account disabled"
   "application ingress and landing httproute together"
+  "registration closed"
 )
 
 # Each entry is one combination's --set arguments, matching the corresponding
@@ -80,6 +81,7 @@ sets=(
   "${baseline},landing.startupProbe.enabled=true"
   "${baseline},landing.serviceAccount.create=false"
   "${baseline},ingress.enabled=true,ingress.className=nginx,ingress.hosts[0].host=app.calbridge.example.org,ingress.hosts[0].paths[0].path=/,ingress.hosts[0].paths[0].pathType=Prefix,landing.httproute.enabled=true,landing.httproute.parentRefs[0].name=eg"
+  "${baseline},config.registrationClosed=true"
 )
 
 for i in "${!names[@]}"; do

@@ -228,7 +228,20 @@ func NewProvider(id storage.IdentityProvider, cfg ProviderConfig) (*Provider, er
 // identities row binding the subject to it. Both are scoped to the new
 // user's id, so the one write that happens before any user exists is
 // still covered by that user's own policy; see db/migrations.
-func SignIn(ctx context.Context, store Store, provider storage.IdentityProvider, verified oidc.Identity) (Identity, error) {
+//
+// With WithRegistrationClosed, the "no identity yet" branch returns
+// ErrRegistrationClosed before anything is written. A subject that
+// already has an identity signs in as before, disabled accounts still
+// refused.
+func SignIn(
+	ctx context.Context,
+	store Store,
+	provider storage.IdentityProvider,
+	verified oidc.Identity,
+	opts ...Option,
+) (Identity, error) {
+	o := newOptions(opts)
+
 	subject := strings.TrimSpace(verified.Subject)
 	if subject == "" {
 		// govue verifies the ID token before this runs and an ID token
@@ -243,6 +256,10 @@ func SignIn(ctx context.Context, store Store, provider storage.IdentityProvider,
 	case err == nil:
 		return signInExisting(ctx, store, identity.UserID)
 	case errors.Is(err, storage.ErrNotFound):
+		if o.registrationClosed {
+			return Identity{}, ErrRegistrationClosed
+		}
+
 		return signUpWithProvider(ctx, store, provider, subject, signInEmail(provider, subject, verified))
 	default:
 		return Identity{}, fmt.Errorf("auth: resolve %s sign-in: %w", provider, err)
@@ -493,9 +510,27 @@ type ProviderHandlerConfig struct {
 	Success string
 
 	// OnError replaces what a refused sign-in is answered with. Zero is
-	// govue's own plain-text answer.
+	// govue's own plain-text answer. A sign-in refused because registration
+	// is closed reaches it as ErrRegistrationClosed, not as govue's opaque
+	// error.
 	OnError func(w http.ResponseWriter, r *http.Request, err error)
+
+	// Options are passed to SignIn. See WithRegistrationClosed.
+	Options []Option
 }
+
+// ProviderHandlers is the pair of http.Handler values one provider is
+// mounted as.
+type ProviderHandlers struct {
+	handlers *oidc.Handlers
+}
+
+// Login starts a provider sign-in with a redirect to the provider.
+func (p *ProviderHandlers) Login() http.Handler { return p.handlers.Login() }
+
+// Callback finishes a provider sign-in and starts the session. A refusal
+// SignIn recorded reaches OnError as itself; see trackRefusal.
+func (p *ProviderHandlers) Callback() http.Handler { return trackRefusal(p.handlers.Callback()) }
 
 // NewProviderHandlers wires govue's oidc.NewHandlers so that a verified
 // callback resolves to an Identity through SignIn and starts a session
@@ -507,13 +542,32 @@ type ProviderHandlerConfig struct {
 // itself. A refusal from SignIn reaches the browser as govue's opaque
 // oidc.ErrProvider and never as itself, which is what that package
 // documents StartSession's error to mean; the cause is in the log.
-func NewProviderHandlers(provider *Provider, cfg ProviderHandlerConfig) (*oidc.Handlers, error) {
+//
+// The one exception is ErrRegistrationClosed. It is a refusal of policy
+// the person can read and act on, not a failure to retry, so it is
+// recorded on the request and handed to OnError as itself.
+func NewProviderHandlers(provider *Provider, cfg ProviderHandlerConfig) (*ProviderHandlers, error) {
+	onError := cfg.OnError
+
+	if onError != nil {
+		inner := onError
+		onError = func(w http.ResponseWriter, r *http.Request, err error) {
+			if refusal := recordedRefusal(r.Context()); errors.Is(refusal, ErrRegistrationClosed) {
+				err = refusal
+			}
+
+			inner(w, r, err)
+		}
+	}
+
 	handlers, err := oidc.NewHandlers(oidc.HandlerConfig{
 		Provider: provider.provider,
 		Logins:   cfg.Logins,
 		StartSession: func(ctx context.Context, w http.ResponseWriter, _ *http.Request, verified oidc.Identity) error {
-			identity, err := SignIn(ctx, cfg.Store, provider.id, verified)
+			identity, err := SignIn(ctx, cfg.Store, provider.id, verified, cfg.Options...)
 			if err != nil {
+				recordRefusal(ctx, err)
+
 				return err
 			}
 
@@ -525,11 +579,11 @@ func NewProviderHandlers(provider *Provider, cfg ProviderHandlerConfig) (*oidc.H
 		},
 		Success: cfg.Success,
 		NoNext:  true,
-		OnError: cfg.OnError,
+		OnError: onError,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("auth: wire %s sign-in handlers: %w", provider.id, err)
 	}
 
-	return handlers, nil
+	return &ProviderHandlers{handlers: handlers}, nil
 }

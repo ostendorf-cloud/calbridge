@@ -1,0 +1,40 @@
+suite: registration switch environment
+templates:
+  - templates/deployment.yaml
+set:
+  existingSecret:
+    name: calbridge-secrets
+  landing:
+    config:
+      appUrl: "https://app.calbridge.example.org"
+  config:
+    databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
+    databaseUser: calbridge_app
+  migrationJob:
+    databaseUser: calbridge_migrator
+tests:
+  - it: leaves registration open by default
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REGISTRATION_CLOSED
+            value: "false"
+
+  - it: closes registration when config.registrationClosed is true
+    set:
+      config:
+        registrationClosed: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REGISTRATION_CLOSED
+            value: "true"
+
+  - it: refuses a registrationClosed that is not a boolean
+    set:
+      config:
+        registrationClosed: "closed"
+    asserts:
+      - failedTemplate: {}

@@ -15,6 +15,15 @@
 - The rule is structural. The `Store` interface this package defines exposes no connection
   repository, so no code here can reach one.
 
+## Closing registration
+
+- Registration is open by default. `WithRegistrationClosed` closes it.
+- One option closes both ways in. `SignUp` refuses, and a provider sign-in refuses when it would
+  create an account.
+- Both return `ErrRegistrationClosed` before any write. An existing account still signs in.
+- govue's `oidc` handlers hide the cause of a `StartSession` error. The refusal reaches `OnError`
+  through a per-request holder, so the browser gets a 403 and not a generic provider error.
+
 ## Argon2id concurrency
 
 - How many Argon2id derivations may run at once is capped here, against the chart's own memory

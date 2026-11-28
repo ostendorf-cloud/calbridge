@@ -87,6 +87,7 @@ func run() error {
 		DistFS:              distFS,
 		PublicSiteURL:       cfg.PublicSiteURL,
 		AllowPlainHTTP:      cfg.SessionAllowPlainHTTP,
+		RegistrationClosed:  cfg.RegistrationClosed,
 		RateLimitBurst:      cfg.RateLimitBurst,
 		RateLimitPer:        cfg.RateLimitPer,
 		GrantRateLimitBurst: cfg.GrantRateLimitBurst,

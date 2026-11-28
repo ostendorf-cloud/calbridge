@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/vue'
+import { render, screen, waitFor } from '@testing-library/vue'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createI18n } from 'vue-i18n'
@@ -132,6 +132,31 @@ describe('LoginView', () => {
 
     await screen.findByRole('button', { name: 'Continue with Google' })
     expect(screen.queryByText(/does not give us a confirmed email address/)).toBeNull()
+  })
+
+  it('offers the sign-up switch when the backend reports registration open', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({ providers: [], registration_open: true })
+    renderLoginView()
+
+    await waitFor(() => expect(apiClient.get).toHaveBeenCalledWith('/auth/providers'))
+    expect(screen.getByRole('button', { name: 'Need an account? Sign up' })).toBeVisible()
+    expect(screen.queryByText('Registration is closed on this instance.')).toBeNull()
+  })
+
+  it('offers the sign-up switch when an older backend sends no registration field', async () => {
+    renderLoginView()
+
+    await waitFor(() => expect(apiClient.get).toHaveBeenCalledWith('/auth/providers'))
+    expect(screen.getByRole('button', { name: 'Need an account? Sign up' })).toBeVisible()
+  })
+
+  it('replaces the sign-up switch with a notice when registration is closed', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({ providers: [], registration_open: false })
+    renderLoginView()
+
+    expect(await screen.findByText('Registration is closed on this instance.')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Need an account? Sign up' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Log in' })).toBeVisible()
   })
 
   it('links back to the configured public site host, not a hardcoded one', () => {

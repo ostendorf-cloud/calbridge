@@ -535,6 +535,7 @@ type providersResponse struct {
 		IdentityOnly     bool   `json:"identity_only"`
 		PlaceholderEmail bool   `json:"placeholder_email"`
 	} `json:"providers"`
+	RegistrationOpen bool `json:"registration_open"`
 }
 
 func TestMeWithoutASessionIsUnauthenticated(t *testing.T) {
