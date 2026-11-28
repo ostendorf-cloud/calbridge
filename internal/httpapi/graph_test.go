@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/cookiejar"
 	"testing"
 	"time"
 
@@ -101,12 +100,7 @@ func signIn(t *testing.T, store *storagetest.Store, baseURL, email string) *test
 		t.Fatalf("generate the totp code for %s: %v", email, err)
 	}
 
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatalf("cookiejar.New() error = %v", err)
-	}
-
-	client := &http.Client{Jar: jar}
+	client := newCookieClient(t)
 
 	body := fmt.Sprintf(`{"email":%q,"password":%q,"totp_code":%q}`, email, testPassword, code)
 
@@ -1099,12 +1093,7 @@ func TestTheGrantRouteAndTheLoginRouteSpendSeparateBudgets(t *testing.T) {
 func cookielessClient(t *testing.T) *http.Client {
 	t.Helper()
 
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatalf("cookiejar.New() error = %v", err)
-	}
-
-	return &http.Client{Jar: jar}
+	return newCookieClient(t)
 }
 
 // grantCalendar shares calendarID with grantee over the real route and
