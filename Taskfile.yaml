@@ -67,8 +67,7 @@ tasks:
       - sqlc generate
 
   # sqlc reads its schema from db/migrations itself (see sqlc.yaml), parsed
-  # statically, so this needs no database and no network, exactly like
-  # every other task in the check aggregate.
+  # statically, so this needs no database and no network.
   generate:check:
     desc: Fail if the committed sqlc output does not match a fresh generate
     deps: [generate:sqlc]
@@ -82,7 +81,7 @@ tasks:
         fi
 
   # Needs a reachable Postgres via DATABASE_URL, so it is never part of
-  # check: check runs with no network and no port binding. The checks.yaml
+  # check: check binds no port. The checks.yaml
   # "integration" job runs this against a real postgres:18 service
   # container, after applying the migrations with dbmate.
   test:integration:
