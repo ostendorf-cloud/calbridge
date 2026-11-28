@@ -104,14 +104,11 @@ func newSyncFixture(ctx context.Context, t *testing.T, store *postgres.Store) sy
 
 // mapping records one copy of a source event, the way internal/sync
 // records it.
-func (f syncFixture) mapping(ctx context.Context, t *testing.T, sourceEventID, targetEventID, summary string) storage.EventMapping {
+func (f syncFixture) mapping(ctx context.Context, t *testing.T, sourceEventID, targetEventID, summary string) {
 	t.Helper()
 
-	var created storage.EventMapping
-
 	if err := f.store.WithUser(ctx, f.user.ID, func(ctx context.Context) error {
-		var err error
-		created, err = f.store.EventMappings().Create(ctx, storage.EventMapping{
+		_, err := f.store.EventMappings().Create(ctx, storage.EventMapping{
 			UserID:        f.user.ID,
 			EdgeID:        f.edge.ID,
 			SourceEventID: sourceEventID,
@@ -126,8 +123,6 @@ func (f syncFixture) mapping(ctx context.Context, t *testing.T, sourceEventID, t
 	}); err != nil {
 		t.Fatalf("create mapping for %q: %v", sourceEventID, err)
 	}
-
-	return created
 }
 
 func TestEventMappingListByEdgeAndDeleteByEdge(t *testing.T) {
