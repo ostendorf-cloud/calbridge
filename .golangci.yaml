@@ -1,5 +1,13 @@
 version: "2"
 
+# A file behind a build tag is invisible to a run without that tag. Every tag the repository
+# uses is listed here, so one `golangci-lint run ./...` loads every test file. AGENTS.md
+# names the tags and what each one needs.
+run:
+  build-tags:
+    - builtfrontend
+    - integration
+
 formatters:
   enable:
     - gofumpt

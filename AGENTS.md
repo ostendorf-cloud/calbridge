@@ -68,5 +68,12 @@ task check
   and `check` binds no port. `check` needs no network either, except that the shared
   `lint:agents-md` include loads from github.com on a fresh cache. The `integration` CI job
   runs it against a real `postgres` service container.
+- Two build tags exist: `builtfrontend` and `integration`. `.golangci.yaml` lists both under
+  `run.build-tags`, so `task lint:golangci` lints every tagged file. Without the tag a linter
+  never loads the file and reports `0 issues`.
+  - A new tag goes into that list in the same commit that adds the first file behind it.
+  - `golangci-lint fmt` reads every file, so the format check needs no list.
+  - `task lint:vet` runs a plain `go vet ./...`. The `govet` linter inside `lint:golangci` is
+    what covers the tagged files.
 - A later issue adds its own `lint:*`, `test:*` or `validate` target and extends `check` with
   it, rather than folding its check into an existing target.
