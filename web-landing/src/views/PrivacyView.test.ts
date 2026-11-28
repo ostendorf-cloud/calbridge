@@ -1,3 +1,6 @@
+// Copyright 2026 Simon Ostendorf
+// SPDX-License-Identifier: Elastic-2.0
+
 import { render, screen } from '@testing-library/vue'
 import { afterEach, describe, expect, it } from 'vitest'
 
