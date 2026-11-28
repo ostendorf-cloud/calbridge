@@ -231,6 +231,13 @@ services:
       # Points at the calbridge service above, reachable from a browser
       # on the host through the port it already publishes.
       APP_URL: "http://localhost:8080"
+      # Local development values only. A real deployment supplies its own
+      # operator, and the server refuses to start without one.
+      OPERATOR_NAME: "Local Development"
+      OPERATOR_STREET: "Example Street 1"
+      OPERATOR_POSTAL_CODE: "00000"
+      OPERATOR_CITY: "Localhost"
+      OPERATOR_EMAIL: "dev@localhost.invalid"
     ports:
       - "127.0.0.1:8090:8080"
 

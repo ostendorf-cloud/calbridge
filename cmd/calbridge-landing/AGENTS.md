@@ -24,6 +24,33 @@
 - `PUBLIC_SITE_URL` and `APP_URL` are checked to the same strictness on both sides, credentials
   in the URL included.
 
+## Operator
+
+- The imprint and the privacy policy name a real operator. The repository holds none of it.
+- `internal/landingconfig` reads `OPERATOR_NAME`, `OPERATOR_STREET`, `OPERATOR_POSTAL_CODE`,
+  `OPERATOR_CITY` and `OPERATOR_EMAIL`. They are required.
+- It reads `OPERATOR_COUNTRY`, `OPERATOR_PHONE`, `OPERATOR_REPRESENTATIVE`, `OPERATOR_REGISTER`,
+  `OPERATOR_VAT_ID`, `OPERATOR_CONTENT_RESPONSIBLE` and `OPERATOR_DATA_PROTECTION`. They are
+  optional, and an empty one leaves its line out of the pages.
+- Startup refuses a missing, bracketed, `todo`-like, over-long or control-character value.
+- `newStaticHandler` substitutes the operator as JSON, escaped for the attribute, into the
+  `calbridge-operator` meta tag of `index.html`. `web-landing/src/operator.ts` reads it back.
+- It refuses a build whose `index.html` lacks either placeholder.
+
+## Routes
+
+- `language.HandleLegal` from govue answers the short paths `/imprint`, `/privacy`, `/terms` and
+  the German aliases with a 302 to `/de/...` or `/en/...`. The order is cookie, then
+  `Accept-Language`, then English.
+- `Terms` is on, so `/terms` and `/agb` are both served. The owner decided on 2026-11-28 that
+  every site that becomes a product has terms. The text is the terms of use of the service.
+- The pages are `/`, `/pricing` and `/{de,en}/{imprint,privacy,terms}`. They answer 200 with
+  the shell.
+- Any other path answers 404 with the same shell, so the client router shows the not found
+  view. A missing `/assets/*` file answers a plain 404.
+- `spaPages` in `internal/landingapi/static.go` is the list. `web-landing/src/router/index.test.ts`
+  pins the matching list on the client.
+
 ## Image
 
 - `Dockerfile.landing` builds this binary's own image, separate from the application's

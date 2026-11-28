@@ -61,6 +61,51 @@ spec:
             # render before this template ever runs when it is empty.
             - name: APP_URL
               value: {{ .Values.landing.config.appUrl | quote }}
+            # OPERATOR_*: the operator behind the imprint, the privacy
+            # statement and the terms; see internal/landingconfig's
+            # Operator. The five required fields are always rendered,
+            # values.schema.json fails the render before this template
+            # runs when one is empty. An empty optional field renders no
+            # variable, so its line stays out of the pages.
+            {{- $operator := .Values.landing.config.operator }}
+            - name: OPERATOR_NAME
+              value: {{ $operator.name | quote }}
+            - name: OPERATOR_STREET
+              value: {{ $operator.street | quote }}
+            - name: OPERATOR_POSTAL_CODE
+              value: {{ $operator.postalCode | quote }}
+            - name: OPERATOR_CITY
+              value: {{ $operator.city | quote }}
+            - name: OPERATOR_EMAIL
+              value: {{ $operator.email | quote }}
+            {{- with $operator.country }}
+            - name: OPERATOR_COUNTRY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $operator.phone }}
+            - name: OPERATOR_PHONE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $operator.representative }}
+            - name: OPERATOR_REPRESENTATIVE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $operator.register }}
+            - name: OPERATOR_REGISTER
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $operator.vatId }}
+            - name: OPERATOR_VAT_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $operator.contentResponsible }}
+            - name: OPERATOR_CONTENT_RESPONSIBLE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $operator.dataProtection }}
+            - name: OPERATOR_DATA_PROTECTION
+              value: {{ . | quote }}
+            {{- end }}
           {{- if .Values.landing.startupProbe.enabled }}
           startupProbe:
             httpGet:

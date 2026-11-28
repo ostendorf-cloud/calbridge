@@ -9,6 +9,11 @@
          src/appUrl.ts reads it back out at runtime; see that file's own
          comment. -->
     <meta name="calbridge-app-url" content="__CALBRIDGE_APP_URL__" />
+    <!-- Same mechanism for the operator the imprint and the privacy policy
+         name: newStaticHandler substitutes the deployment's operator as
+         JSON, and src/operator.ts reads it back out. The repository holds
+         no operator data of its own. -->
+    <meta name="calbridge-operator" content="__CALBRIDGE_OPERATOR__" />
     <title>calbridge</title>
   </head>
   <body>

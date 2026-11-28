@@ -352,6 +352,33 @@ same built image serves any deployment's own application host; it has no
 usable default and the render fails without it, the same shape
 `config.databaseUrl` and `existingSecret.name` already take above.
 
+`landing.config.operator` is the real-world operator the imprint, the privacy
+statement and the terms name. The chart renders it as the `OPERATOR_*`
+environment variables `internal/landingconfig` reads. The values are not
+secret, so they sit in the pod spec and not in a Secret. The repository holds
+no operator data and the chart has no default for it.
+
+- `name`, `street`, `postalCode`, `city` and `email` are required. The landing
+  server refuses to start without them, and the render fails first.
+- `country`, `phone`, `representative`, `register`, `vatId`,
+  `contentResponsible` and `dataProtection` are optional. An empty value renders
+  no variable, and its line stays out of the pages.
+- Every field is a string of at most 300 characters. Set `postalCode` with
+  `--set-string` or quote it in a values file. `--set` reads `01067` as the
+  number 1067, and the schema rejects a number.
+- The landing server also rejects a placeholder such as `[Postal address]` or
+  `TODO`, a control character and an email address without an `@` and a dot in
+  the domain part.
+
+```sh
+helm install calbridge charts/calbridge \
+  --set landing.config.operator.name="Example Operator" \
+  --set landing.config.operator.street="Example Street 1" \
+  --set-string landing.config.operator.postalCode=01067 \
+  --set landing.config.operator.city="Example City" \
+  --set landing.config.operator.email=legal@calbridge.example.com
+```
+
 `landing.config.listenAddr` must encode the same port as `landing.service.port`,
 and `landing.config.adminListenAddr` the same port as `landing.service.adminPort`,
 for the same reason the application's own "Metrics and probes live on their own
@@ -431,6 +458,8 @@ for the full list `cmd/calbridge` reads today.
 | `config.publicSiteUrl` | `PUBLIC_SITE_URL`, the public landing page's own base URL. Rendered into the login screen and the signed-in shell as the link back to the public site. Empty renders no such link. See "The public landing server" above. | `""` |
 | `config.registrationClosed` | `REGISTRATION_CLOSED`. `true` refuses every new account, by password signup and by first provider sign-in. Existing accounts keep signing in. See "Closing registration" above. | `false` |
 | `landing.config.appUrl` | `APP_URL`, the application's own public base URL the landing server links every call to action at. Required; no usable default. See "The public landing server" above. | `""` |
+| `landing.config.operator.name` / `.street` / `.postalCode` / `.city` / `.email` | `OPERATOR_NAME`, `OPERATOR_STREET`, `OPERATOR_POSTAL_CODE`, `OPERATOR_CITY` and `OPERATOR_EMAIL`, the operator the imprint, privacy statement and terms name. Required; no usable default. See "The public landing server" above. | `""` |
+| `landing.config.operator.country` / `.phone` / `.representative` / `.register` / `.vatId` / `.contentResponsible` / `.dataProtection` | `OPERATOR_COUNTRY`, `OPERATOR_PHONE`, `OPERATOR_REPRESENTATIVE`, `OPERATOR_REGISTER`, `OPERATOR_VAT_ID`, `OPERATOR_CONTENT_RESPONSIBLE` and `OPERATOR_DATA_PROTECTION`. Optional. Empty renders no variable and leaves the line out of the pages. | `""` |
 | `config.auth.google.clientId` / `config.auth.microsoft.clientId` / `config.auth.apple.clientId` | `AUTH_GOOGLE_CLIENT_ID` / `AUTH_MICROSOFT_CLIENT_ID` / `AUTH_APPLE_CLIENT_ID`. Empty means that provider's sign-in is not offered. See "Provider sign-in" above. | `""` |
 | `config.auth.google.issuer` / `config.auth.microsoft.issuer` / `config.auth.apple.issuer` | `AUTH_GOOGLE_ISSUER` / `AUTH_MICROSOFT_ISSUER` / `AUTH_APPLE_ISSUER`. Empty falls back to `internal/auth`'s own documented default issuer. See "Provider sign-in" above. | `""` |
 | `existingSecret.googleClientSecretKey` / `existingSecret.microsoftClientSecretKey` / `existingSecret.appleClientSecretKey` | Keys for each provider's client secret in that Secret. See "Provider sign-in" above. | `AUTH_GOOGLE_CLIENT_SECRET` / `AUTH_MICROSOFT_CLIENT_SECRET` / `AUTH_APPLE_CLIENT_SECRET` |

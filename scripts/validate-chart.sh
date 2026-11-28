@@ -50,8 +50,10 @@ chart="charts/calbridge"
 # required by values.schema.json, so every combination below needs them
 # set, the default values combination included. landing.config.appUrl is
 # the landing server's own equivalent: no usable default either, and
-# required the same way.
-baseline="existingSecret.name=calbridge-secrets,config.databaseUrl=postgres://postgres.example.svc:5432/calbridge?sslmode=require,config.databaseUser=calbridge_app,migrationJob.databaseUser=calbridge_migrator,landing.config.appUrl=https://app.calbridge.example.com"
+# required the same way, and so are the five landing.config.operator fields. The postal code
+# carries a letter on purpose: helm --set reads a bare digit string as a number, which the
+# schema rejects, and a leading zero would be lost.
+baseline="existingSecret.name=calbridge-secrets,config.databaseUrl=postgres://postgres.example.svc:5432/calbridge?sslmode=require,config.databaseUser=calbridge_app,migrationJob.databaseUser=calbridge_migrator,landing.config.appUrl=https://app.calbridge.example.com,landing.config.operator.name=Example Operator,landing.config.operator.street=Example Street 1,landing.config.operator.postalCode=D-10115,landing.config.operator.city=Example City,landing.config.operator.email=legal@calbridge.example.org"
 
 names=(
   "default values"
@@ -128,6 +130,13 @@ if [ "$mode" = "lint" ]; then
     "landing.config.adminListenAddr disagreeing with landing.service.adminPort"
     "landing.podLabels setting the reserved app.kubernetes.io/name selector key"
     "landing.podLabels setting the reserved app.kubernetes.io/instance selector key"
+    "landing.config.operator.email empty"
+    "landing.config.operator.name empty"
+    "landing.config.operator.name whitespace only"
+    "landing.config.operator.street whitespace only"
+    "landing.config.operator.postalCode whitespace only"
+    "landing.config.operator.city whitespace only"
+    "landing.config.operator.email whitespace only"
   )
 
   fail_sets=(
@@ -144,6 +153,13 @@ if [ "$mode" = "lint" ]; then
     "${baseline},landing.config.adminListenAddr=:9001"
     "${baseline},landing.podLabels.app\.kubernetes\.io/name=evil"
     "${baseline},landing.podLabels.app\.kubernetes\.io/instance=evil"
+    "${baseline},landing.config.operator.email="
+    "${baseline},landing.config.operator.name="
+    "${baseline},landing.config.operator.name=   "
+    "${baseline},landing.config.operator.street=   "
+    "${baseline},landing.config.operator.postalCode=   "
+    "${baseline},landing.config.operator.city=   "
+    "${baseline},landing.config.operator.email=   "
   )
 
   fail_messages=(
@@ -160,6 +176,13 @@ if [ "$mode" = "lint" ]; then
     "landing.config.adminListenAddr (:9001) and landing.service.adminPort (8081) disagree on the port: both must name the same container port."
     "landing.podLabels must not set app.kubernetes.io/name: it collides with the landing server's own immutable selector label."
     "landing.podLabels must not set app.kubernetes.io/instance: it collides with the landing server's own immutable selector label."
+    "at '/landing/config/operator/email': minLength: got 0, want 1"
+    "at '/landing/config/operator/name': minLength: got 0, want 1"
+    "at '/landing/config/operator/name': '   ' does not match pattern"
+    "at '/landing/config/operator/street': '   ' does not match pattern"
+    "at '/landing/config/operator/postalCode': '   ' does not match pattern"
+    "at '/landing/config/operator/city': '   ' does not match pattern"
+    "at '/landing/config/operator/email': '   ' does not match pattern"
   )
 
   for i in "${!fail_names[@]}"; do

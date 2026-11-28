@@ -11,6 +11,12 @@ set:
   landing:
     config:
       appUrl: "https://app.calbridge.example.org"
+      operator:
+        name: "Example Operator"
+        street: "Example Street 1"
+        postalCode: "12345"
+        city: "Example City"
+        email: "legal@calbridge.example.org"
   config:
     databaseUrl: "postgres://postgres.example.svc:5432/calbridge?sslmode=require"
     databaseUser: calbridge_app
@@ -102,6 +108,194 @@ tests:
           content:
             name: APP_URL
             value: "https://app.staging.example.org"
+
+  - it: sets the five required operator variables
+    template: templates/landing-deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPERATOR_NAME
+            value: "Example Operator"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPERATOR_STREET
+            value: "Example Street 1"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPERATOR_POSTAL_CODE
+            value: "12345"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPERATOR_CITY
+            value: "Example City"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPERATOR_EMAIL
+            value: "legal@calbridge.example.org"
+
+  - it: renders no optional operator variable while its value is empty
+    template: templates/landing-deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPERATOR_COUNTRY
+            value: ""
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPERATOR_PHONE
+            value: ""
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPERATOR_VAT_ID
+            value: ""
+      - lengthEqual:
+          path: spec.template.spec.containers[0].env
+          count: 10
+
+  - it: renders each optional operator variable once its value is set
+    template: templates/landing-deployment.yaml
+    set:
+      landing:
+        config:
+          operator:
+            country: "Germany"
+            phone: "+49 30 0000000"
+            representative: "Example Representative"
+            register: "Example Register 1"
+            vatId: "DE000000000"
+            contentResponsible: "Example Editor"
+            dataProtection: "privacy@calbridge.example.org"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPERATOR_COUNTRY
+            value: "Germany"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPERATOR_PHONE
+            value: "+49 30 0000000"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPERATOR_REPRESENTATIVE
+            value: "Example Representative"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPERATOR_REGISTER
+            value: "Example Register 1"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPERATOR_VAT_ID
+            value: "DE000000000"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPERATOR_CONTENT_RESPONSIBLE
+            value: "Example Editor"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPERATOR_DATA_PROTECTION
+            value: "privacy@calbridge.example.org"
+
+  - it: refuses to render when a required operator field is empty
+    template: templates/landing-deployment.yaml
+    set:
+      landing:
+        config:
+          operator:
+            email: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: "operator/email"
+
+  - it: refuses to render when the operator name holds only spaces
+    template: templates/landing-deployment.yaml
+    set:
+      landing:
+        config:
+          operator:
+            name: "   "
+    asserts:
+      - failedTemplate:
+          errorPattern: "operator/name.*does not match pattern"
+
+  - it: refuses to render when the operator street holds only spaces
+    template: templates/landing-deployment.yaml
+    set:
+      landing:
+        config:
+          operator:
+            street: "   "
+    asserts:
+      - failedTemplate:
+          errorPattern: "operator/street.*does not match pattern"
+
+  - it: refuses to render when the operator postal code holds only spaces
+    template: templates/landing-deployment.yaml
+    set:
+      landing:
+        config:
+          operator:
+            postalCode: "   "
+    asserts:
+      - failedTemplate:
+          errorPattern: "operator/postalCode.*does not match pattern"
+
+  - it: refuses to render when the operator city holds only spaces
+    template: templates/landing-deployment.yaml
+    set:
+      landing:
+        config:
+          operator:
+            city: "   "
+    asserts:
+      - failedTemplate:
+          errorPattern: "operator/city.*does not match pattern"
+
+  - it: refuses to render when the operator email holds only spaces
+    template: templates/landing-deployment.yaml
+    set:
+      landing:
+        config:
+          operator:
+            email: "   "
+    asserts:
+      - failedTemplate:
+          errorPattern: "operator/email.*does not match pattern"
+
+  - it: refuses to render when the operator is not set at all
+    template: templates/landing-deployment.yaml
+    set:
+      landing:
+        config:
+          operator: null
+    asserts:
+      - failedTemplate:
+          errorPattern: "missing property 'operator'"
+
+  - it: refuses a postal code that a values file wrote as a number
+    template: templates/landing-deployment.yaml
+    set:
+      landing:
+        config:
+          operator:
+            postalCode: 10115
+    asserts:
+      - failedTemplate:
+          errorPattern: "operator/postalCode"
 
   - it: runs as non root with a read only root filesystem and no capabilities
     template: templates/landing-deployment.yaml

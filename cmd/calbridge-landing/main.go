@@ -67,6 +67,7 @@ func run() error {
 		MetricsRegistry: metricsRegistry,
 		DistFS:          siteFS,
 		AppURL:          cfg.AppURL,
+		Operator:        cfg.Operator,
 	})
 	if err != nil {
 		return fmt.Errorf("calbridge-landing: build http handler: %w", err)

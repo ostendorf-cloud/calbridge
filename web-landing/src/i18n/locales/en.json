@@ -7,13 +7,19 @@
     "ariaLabel": "Main navigation",
     "home": "Home",
     "pricing": "Pricing",
-    "imprint": "Imprint",
-    "privacy": "Privacy policy",
     "openApp": "Open the application"
   },
   "footer": {
     "ariaLabel": "Footer",
     "note": "calbridge is privately operated."
+  },
+  "operator": {
+    "unavailable": "The operator details are not available on this page. Please come back later."
+  },
+  "notFound": {
+    "title": "Page not found",
+    "body": "This address leads to no page of calbridge.",
+    "home": "Back to the start page"
   },
   "home": {
     "hero": {
@@ -55,38 +61,56 @@
   "imprint": {
     "title": "Imprint",
     "lead": "Information about the operator of this deployment.",
-    "operator": {
-      "heading": "Operator",
-      "placeholder": "[Operator name — filled in by the owner of this deployment]"
+    "field": {
+      "operator": "Operator",
+      "address": "Address",
+      "contact": "Contact",
+      "email": "Email",
+      "phone": "Telephone",
+      "representative": "Represented by",
+      "register": "Register entry",
+      "vat": "VAT identification number",
+      "responsibleContent": "Responsible for content"
+    }
+  },
+  "terms": {
+    "title": "Terms of use",
+    "lead": "The rules for using this deployment of calbridge.",
+    "intro": {
+      "heading": "About this text",
+      "body": "These terms describe how this deployment of calbridge may be used. Whoever operates it is named in the imprint. A person who reads this text should also read the privacy policy."
     },
-    "address": {
-      "heading": "Address",
-      "placeholder": "[Postal address — filled in by the owner of this deployment]"
+    "scope": {
+      "heading": "What calbridge does",
+      "body": "calbridge copies calendar events from one calendar to another, at a level of detail chosen for each connection. The service is privately operated and has no price today. Nothing here creates a claim to a particular feature, a particular provider or an uninterrupted service."
+    },
+    "account": {
+      "heading": "Your account",
+      "body": "The operator decides who may create an account. You keep your sign-in details to yourself and tell the operator when you think someone else has them. You are responsible for what happens under your account."
+    },
+    "use": {
+      "heading": "How you may use it",
+      "body": "Use calbridge only for calendars you are entitled to read and write. Do not use it to reach another person's data without their consent, to overload the service, or to break a rule of a calendar provider. The operator may block an account that does."
+    },
+    "availability": {
+      "heading": "Availability and changes to the service",
+      "body": "The operator runs calbridge on a best effort basis. The service can be interrupted, changed or ended at any time, for example for maintenance. A calendar provider can change or withdraw its own interface, and calbridge can then stop working for that provider."
+    },
+    "liability": {
+      "heading": "Liability",
+      "body": "The operator is liable without limit for intent, gross negligence, injury to life, body or health, and wherever a statute makes liability mandatory. For a slight breach of an essential duty, liability is limited to the damage that was foreseeable when the service was used. Beyond that, liability is excluded. Check the copies in your calendars before you rely on them."
+    },
+    "termination": {
+      "heading": "Ending your use",
+      "body": "You may delete your account in the application at any time. The privacy policy states what that removes. The operator may end an account for good cause, in particular after a breach of these terms."
+    },
+    "changes": {
+      "heading": "Changes to these terms",
+      "body": "The operator may change these terms for a good reason, for example when the service gains a feature. The version on this page is the one in force. Continued use after a change counts as acceptance of it."
     },
     "contact": {
       "heading": "Contact",
-      "emailPlaceholder": "[Contact email address — filled in by the owner of this deployment]",
-      "phonePlaceholder": "[Telephone number — filled in by the owner of this deployment]"
-    },
-    "representative": {
-      "heading": "Represented by",
-      "placeholder": "[Name of the representative — filled in by the owner of this deployment]"
-    },
-    "register": {
-      "heading": "Register entry",
-      "placeholder": "[Register court and registration number, if any — filled in by the owner of this deployment]"
-    },
-    "vat": {
-      "heading": "VAT identification number",
-      "placeholder": "[VAT identification number, if any — filled in by the owner of this deployment]"
-    },
-    "responsibleContent": {
-      "heading": "Responsible for content",
-      "placeholder": "[Name and address of the person responsible for the content — filled in by the owner of this deployment]"
-    },
-    "disputeResolution": {
-      "heading": "Dispute resolution",
-      "placeholder": "[Whether the operator takes part in a consumer arbitration board procedure, and which one — filled in by the owner of this deployment]"
+      "body": "The imprint names the operator and the address for questions about these terms."
     }
   },
   "privacy": {
@@ -102,9 +126,8 @@
     },
     "operator": {
       "heading": "Controller",
-      "body": "[Name and address of the controller — filled in by the owner of this deployment. See the imprint.]",
-      "contactPlaceholder": "[Contact for privacy questions, for example an email address — filled in by the owner of this deployment]",
-      "dpoPlaceholder": "[Data protection officer, where one is appointed — filled in by the owner of this deployment]"
+      "body": "The controller for this deployment is the operator named in the imprint:",
+      "dataProtection": "Contact for privacy questions:"
     },
     "account": {
       "heading": "A local account with a password",
@@ -119,6 +142,11 @@
       "heading": "Connected calendar accounts",
       "body": "Connecting a calendar account is a second, separate step after signing in. CalDAV is the only connector calbridge has, with iCloud as its first server profile, so a CalDAV account is what could be connected today: for iCloud an Apple ID with an app-specific password, because Apple offers no OAuth flow for calendars. The running service has no endpoint for creating such a connection yet, so no calendar credentials are stored here at the moment.",
       "encryptionBody": "Where one is stored, it is stored encrypted: the storage layer encrypts it with AES-256-GCM before it reaches the database and decrypts it again on the way back out, so the database itself never holds the plain form. The key lives with the owner of this deployment and is supplied through the ENCRYPTION_KEY environment variable. That is encryption at rest, not end-to-end encryption: a connector needs the password to reach the server, so the decrypted credential sits in the application's memory while it is in use. It is never written anywhere unencrypted, and it does not appear in log lines or error messages: the code holding it replaces it with a placeholder there."
+    },
+    "calendarAccess": {
+      "heading": "Calendar access at Google and Microsoft",
+      "body": "Signing in with Google or Microsoft asks for identity only. Calendar access is a separate consent you give later, when you connect a calendar of that provider. calbridge requests no calendar permission from Google or Microsoft today, because no such connection can be made yet. When it can, calbridge asks only for the permissions needed to read the events of the calendars you choose and to write the copies of those events into the calendars you choose as targets. It uses them for nothing else.",
+      "tokensBody": "Such a connection will keep the refresh token the provider issues, because the sync needs it to act while you are away. calbridge stores a refresh token only encrypted, with the same AES-256-GCM encryption as every connected calendar credential, and never writes it to a log line or an error message. No refresh token is stored today."
     },
     "syncData": {
       "heading": "What a connection between two calendars stores",
@@ -140,13 +168,35 @@
       "body": "Deleting your own account removes, in one transaction: every row in the mapping table, every connection, every share you gave and every one you received, every calendar, every connected calendar account together with its encrypted credentials, every sign-in identity, and finally the account itself. Every signed-in session for that account ends at the same time.",
       "limitBody": "One limit remains: an event a connection already wrote into a calendar at the provider is not removed there when the account is deleted, because that would need reaching that provider, which deleting an account does not do. Deleting a single connection is meant to take its copies with it, and the part that does so exists and is tested; the running service does not call that one either yet. So today neither path removes anything from a calendar at the provider. Nothing has been written into one so far, because no calendar account can be connected yet."
     },
+    "retention": {
+      "heading": "How long data is kept",
+      "body": "calbridge keeps the data described above for as long as your account exists, and removes it when you delete the account, as the section on deleting your account describes. It sets no shorter period of its own. A signed-in session ends when you log out or delete the account."
+    },
+    "revocation": {
+      "heading": "Revoking access",
+      "body": "No calendar account can be connected yet, so calbridge stores no calendar credentials that you could revoke today. Once one can be connected, deleting your account removes its stored credentials, a refresh token included, from calbridge. Deleting a single connection between two calendars removes that connection only. It leaves the stored credentials of the calendar account in place.",
+      "providerBody": "You can also withdraw the consent at the provider: in the security settings of your Google, Microsoft or Apple account, remove calbridge from the apps with access to your account. Once the provider has revoked it, calbridge can no longer read or write that calendar."
+    },
+    "googleLimitedUse": {
+      "heading": "Data from Google APIs",
+      "body": "calbridge's use and transfer to any other app of information received from Google APIs will adhere to the Google API Services User Data Policy, including the Limited Use requirements. calbridge uses such information only to provide the calendar mirroring you set up. It does not sell it, it does not use it for advertising, and no person reads it, except where the law requires or you ask for it."
+    },
     "noAnalytics": {
       "heading": "No analytics, no third parties",
       "body": "Neither this site nor the application loads an analytics or tracking service, a third-party embed, or a font fetched from another server at runtime. There is nothing of that kind to disclose, because none of it is included."
     },
+    "hosting": {
+      "heading": "Hosting and server logs",
+      "body": "This site runs on hosting infrastructure that the operator chooses. The landing server writes one log line per request with the method, the route, the status, the size and the duration. That line holds no client address and no user agent. A proxy or ingress in front of the server can keep its own access log, which can hold the IP address of your request."
+    },
     "session": {
       "heading": "Session cookie",
       "body": "Once signed in, the application sets a session cookie whose only purpose is to recognise that signed-in session. It is never used for any other account or any other site, and it ends at the latest when you log out or delete your account."
+    },
+    "preferences": {
+      "heading": "Language and theme on this site",
+      "body": "When you choose a language with the language switch, this site stores that choice in a cookie named govue-language for one year. The server reads it to send a short address such as /privacy to the page in your language. The cookie holds only the language code and is not used to recognise you.",
+      "themeBody": "Your choice of light or dark mode is kept in your browser's local storage under govue-theme. It never leaves your browser."
     }
   }
 }
