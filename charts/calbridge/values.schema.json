@@ -417,7 +417,7 @@
         "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1 },
         "config": {
           "type": "object",
-          "required": ["listenAddr", "adminListenAddr", "drainDelay", "appUrl"],
+          "required": ["listenAddr", "adminListenAddr", "drainDelay", "appUrl", "operator"],
           "properties": {
             "listenAddr": { "type": "string", "minLength": 1 },
             "adminListenAddr": { "type": "string", "minLength": 1 },
@@ -430,6 +430,25 @@
               "type": "string",
               "minLength": 1,
               "description": "APP_URL, the application's own public base URL, for example \"https://app.calbridge.example.com\". internal/landingconfig.Load refuses to start without it; every page's call to action is built from this value rather than a host fixed at image build time."
+            },
+            "operator": {
+              "type": "object",
+              "required": ["name", "street", "postalCode", "city", "email"],
+              "description": "The real-world operator the imprint, the privacy statement and the terms name, mapped to the OPERATOR_* environment variables. internal/landingconfig.Load refuses to start without the five required fields. An empty optional field renders no variable.",
+              "properties": {
+                "name": { "type": "string", "minLength": 1, "maxLength": 300, "pattern": "\\S" },
+                "street": { "type": "string", "minLength": 1, "maxLength": 300, "pattern": "\\S" },
+                "postalCode": { "type": "string", "minLength": 1, "maxLength": 300, "pattern": "\\S" },
+                "city": { "type": "string", "minLength": 1, "maxLength": 300, "pattern": "\\S" },
+                "email": { "type": "string", "minLength": 1, "maxLength": 300, "pattern": "\\S" },
+                "country": { "type": "string", "maxLength": 300 },
+                "phone": { "type": "string", "maxLength": 300 },
+                "representative": { "type": "string", "maxLength": 300 },
+                "register": { "type": "string", "maxLength": 300 },
+                "vatId": { "type": "string", "maxLength": 300 },
+                "contentResponsible": { "type": "string", "maxLength": 300 },
+                "dataProtection": { "type": "string", "maxLength": 300 }
+              }
             }
           }
         }

@@ -8,6 +8,12 @@ set:
   landing:
     config:
       appUrl: "https://app.calbridge.example.org"
+      operator:
+        name: "Example Operator"
+        street: "Example Street 1"
+        postalCode: "12345"
+        city: "Example City"
+        email: "legal@calbridge.example.org"
     ingress:
       enabled: true
       className: nginx

@@ -470,6 +470,32 @@ landing:
     # internal/landingconfig.Config.AppURL for what every page builds
     # from this value.
     appUrl: ""
+    # The real-world operator behind this deployment, mapped 1:1 to the
+    # OPERATOR_* environment variables internal/landingconfig.Load reads.
+    # The imprint, the privacy statement and the terms name this person,
+    # so the landing server refuses to start without the five required
+    # fields, and values.schema.json fails this chart's render first. None
+    # of it is a secret, and none of it has a default: the repository
+    # holds no operator data and invents none. An empty optional field
+    # renders no variable and leaves its line out of the pages.
+    operator:
+      # Required: OPERATOR_NAME, OPERATOR_STREET, OPERATOR_POSTAL_CODE,
+      # OPERATOR_CITY and OPERATOR_EMAIL.
+      name: ""
+      street: ""
+      postalCode: ""
+      city: ""
+      email: ""
+      # Optional: OPERATOR_COUNTRY, OPERATOR_PHONE,
+      # OPERATOR_REPRESENTATIVE, OPERATOR_REGISTER, OPERATOR_VAT_ID,
+      # OPERATOR_CONTENT_RESPONSIBLE and OPERATOR_DATA_PROTECTION.
+      country: ""
+      phone: ""
+      representative: ""
+      register: ""
+      vatId: ""
+      contentResponsible: ""
+      dataProtection: ""
 
 migrationJob:
   enabled: true
