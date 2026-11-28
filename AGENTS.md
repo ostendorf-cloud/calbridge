@@ -78,6 +78,18 @@ task check
   - `golangci-lint fmt` reads every file, so the format check needs no list.
   - `task lint:vet` runs a plain `go vet ./...`. The `govet` linter inside `lint:golangci` is
     what covers the tagged files.
+- Two checks guard the license headers, and each catches what the other cannot.
+  - `task lint:license` runs `addlicense -check` against `.license-header.txt`. It fails on a
+    missing header. It passes a header that names another license, so it cannot catch a stale one.
+  - `TestSourceHeadersNameTheRepositoryLicense` in `internal/depsync` compares the SPDX
+    identifier in every covered file and in `.license-header.txt` with `LICENSE`. It runs in
+    `task test:go`. See `internal/depsync/AGENTS.md`.
+  - Both cover the Go files, and the `.ts` and `.vue` files under `web/src` and `web-landing/src`.
+    The frontends carry the same header as the Go code.
+  - Neither covers `.css` and `.json` files, or the sqlc output in `internal/storage/postgres/sqlcgen`.
+    That output is generated and `task generate:sqlc` rewrites it.
+  - A file set changes in the `lint:license` target, the `license` job in `checks.yaml` and the
+    test together.
 - A later issue adds its own `lint:*`, `test:*` or `validate` target and extends `check` with
   it, rather than folding its check into an existing target.
 
