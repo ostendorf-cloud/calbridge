@@ -5,27 +5,29 @@ import { createApp } from 'vue'
 import { useTheme } from '@ostendorf-cloud/govue'
 
 import App from './App.vue'
-import { createAppI18n, detectPreferredLocale, readStoredLocale } from './i18n'
+import { createAppI18n } from './i18n'
 import { createAppRouter } from './router'
 import './styles.css'
 
 // The theme never varies: this build ships exactly one brand, the same
 // one web/src/main.ts selects for the application. Mode starts at
-// "system", matching useTheme's own documented default.
+// "system", matching useTheme's own documented default. The visitor's
+// light or dark choice comes from the theme switch in the header.
 useTheme({ theme: 'calbridge' })
 
-const initialLocale =
-  readStoredLocale() ?? detectPreferredLocale(navigator.languages ?? [navigator.language])
-
-// The lang attribute index.html ships statically has to be set from the
-// resolved locale before any content renders, or an English visitor gets
-// the English strings inside a document still declared as German.
-document.documentElement.lang = initialLocale
-
-const i18n = createAppI18n(initialLocale)
-const router = createAppRouter()
+// govue's language layer resolves the language and sets the lang attribute
+// of the document before anything renders, so an English visitor never
+// gets English strings inside a document still declared as German.
+const { i18n, govue } = createAppI18n()
+const router = createAppRouter(govue.language)
 
 const app = createApp(App)
 app.use(router)
 app.use(i18n)
-app.mount('#app')
+app.use(govue)
+
+// Mount after the first navigation: a prefixed address sets its own
+// language in the router guard, and the first render has to be in it.
+void router.isReady().then(() => {
+  app.mount('#app')
+})

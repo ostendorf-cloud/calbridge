@@ -1,59 +1,49 @@
+import { createGovueI18n } from '@ostendorf-cloud/govue'
 import { createI18n } from 'vue-i18n'
 
 import de from './locales/de.json'
 import en from './locales/en.json'
 
-/** The only two locales this build serves, the same two the application
- *  carries. German is the source of truth: this is calbridge's public
- *  face, on calbridge.de. */
-export const SUPPORTED_LOCALES = ['de', 'en'] as const
-export type Locale = (typeof SUPPORTED_LOCALES)[number]
-export const DEFAULT_LOCALE: Locale = 'de'
+/** The language the first render falls back to when the visitor has no
+ *  stored choice and no browser language this build serves. German is the
+ *  source of truth for the copy: this is calbridge's public face, on
+ *  calbridge.de. */
+export const DEFAULT_LOCALE = 'de'
 
-export function isLocale(value: string): value is Locale {
-  return (SUPPORTED_LOCALES as readonly string[]).includes(value)
-}
-
-/** detectPreferredLocale picks English when it is the visitor's highest
- *  weighted browser language, German otherwise. */
-export function detectPreferredLocale(languages: readonly string[]): Locale {
-  const primary = languages[0]?.split('-')[0]?.toLowerCase()
-  return primary === 'en' ? 'en' : DEFAULT_LOCALE
-}
-
-/** localeStorageKey is where a chosen locale persists across visits, kept
- *  under its own key rather than the application's: the two are served
- *  from different hosts and a visitor's choice on one says nothing about
- *  the other. Nothing writes it yet; a later locale toggle is the first
- *  writer. */
-const localeStorageKey = 'calbridge-landing-locale'
-
-/** readStoredLocale reads a previously chosen locale back out of storage,
- *  or undefined when none was stored, the key held something other than
- *  a supported locale, or storage itself is unreachable (a private
- *  window, cleared site data, or storage blocked outright). */
-export function readStoredLocale(
-  storage: Pick<Storage, 'getItem'> = localStorage,
-): Locale | undefined {
-  try {
-    const stored = storage.getItem(localeStorageKey)
-    return stored && isLocale(stored) ? stored : undefined
-  } catch {
-    return undefined
-  }
-}
-
-/** createAppI18n builds one vue-i18n instance. English falls back to
- *  German for any key not yet translated, rather than showing the raw
- *  key: fallbackLocale is what gives that for free, since German is
- *  authored as the complete set of messages. */
-export function createAppI18n(locale: Locale = DEFAULT_LOCALE) {
-  return createI18n({
+/** createAppI18n builds the one vue-i18n instance and hands it to govue's
+ *  language layer, which owns the choice order (stored choice, then the
+ *  browser, then the default), the switch, the lang attribute and where the
+ *  choice is kept.
+ *
+ *  The choice lives in a cookie, not in localStorage. The server reads the
+ *  same cookie to pick the page the short legal paths redirect to, so a
+ *  visitor who chose a language once gets it from /privacy on the next
+ *  visit too. govue and the Go side both name it govue-language.
+ *
+ *  English falls back to German for any key not yet translated, rather than
+ *  showing the raw key: German is authored as the complete set of messages.
+ *  locales.test.ts is what keeps that fallback from hiding a missing key. */
+export function createAppI18n() {
+  const i18n = createI18n({
     legacy: false,
-    locale,
+    locale: DEFAULT_LOCALE,
     fallbackLocale: DEFAULT_LOCALE,
     missingWarn: true,
     fallbackWarn: false,
     messages: { de, en },
   })
+  // govue labels the terms link "AGB", the German word for the general
+  // terms of a seller. calbridge sells nothing, so the footer says what the
+  // page is called, the same as the page's own title.
+  const govue = createGovueI18n({
+    i18n,
+    detect: true,
+    storage: { kind: 'cookie' },
+    messages: {
+      de: { govue: { legal: { link: { terms: de.terms.title } } } },
+      en: { govue: { legal: { link: { terms: en.terms.title } } } },
+    },
+  })
+
+  return { i18n, govue }
 }

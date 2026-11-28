@@ -7,13 +7,19 @@
     "ariaLabel": "Navigation",
     "home": "Start",
     "pricing": "Preise",
-    "imprint": "Impressum",
-    "privacy": "Datenschutz",
     "openApp": "Zur Anwendung"
   },
   "footer": {
     "ariaLabel": "Fußzeile",
     "note": "calbridge wird privat betrieben."
+  },
+  "operator": {
+    "unavailable": "Die Angaben zum Betreiber sind auf dieser Seite nicht verfügbar. Bitte später noch einmal versuchen."
+  },
+  "notFound": {
+    "title": "Seite nicht gefunden",
+    "body": "Diese Adresse führt zu keiner Seite von calbridge.",
+    "home": "Zurück zur Startseite"
   },
   "home": {
     "hero": {
@@ -55,38 +61,56 @@
   "imprint": {
     "title": "Impressum",
     "lead": "Angaben zum Betreiber dieser Installation.",
-    "operator": {
-      "heading": "Betreiber",
-      "placeholder": "[Name des Betreibers — vom Betreiber dieser Installation auszufüllen]"
+    "field": {
+      "operator": "Betreiber",
+      "address": "Anschrift",
+      "contact": "Kontakt",
+      "email": "E-Mail",
+      "phone": "Telefon",
+      "representative": "Vertreten durch",
+      "register": "Registereintrag",
+      "vat": "Umsatzsteuer-Identifikationsnummer",
+      "responsibleContent": "Verantwortlich für den Inhalt"
+    }
+  },
+  "terms": {
+    "title": "Nutzungsbedingungen",
+    "lead": "Die Regeln für die Nutzung dieser Installation von calbridge.",
+    "intro": {
+      "heading": "Zu diesem Text",
+      "body": "Diese Bedingungen beschreiben, wie diese Installation von calbridge genutzt werden darf. Wer sie betreibt, steht im Impressum. Wer diesen Text liest, sollte auch die Datenschutzerklärung lesen."
     },
-    "address": {
-      "heading": "Anschrift",
-      "placeholder": "[Postanschrift — vom Betreiber dieser Installation auszufüllen]"
+    "scope": {
+      "heading": "Was calbridge tut",
+      "body": "calbridge kopiert Kalendertermine von einem Kalender in einen anderen, in einem Detailgrad, der für jede Verbindung gewählt wird. Der Dienst wird privat betrieben und kostet heute nichts. Aus diesem Text folgt kein Anspruch auf eine bestimmte Funktion, einen bestimmten Anbieter oder einen unterbrechungsfreien Betrieb."
+    },
+    "account": {
+      "heading": "Ihr Konto",
+      "body": "Der Betreiber entscheidet, wer ein Konto anlegen darf. Sie halten Ihre Zugangsdaten geheim und melden dem Betreiber, wenn Sie vermuten, dass sie jemand anderes kennt. Sie sind für alles verantwortlich, was unter Ihrem Konto geschieht."
+    },
+    "use": {
+      "heading": "Wie Sie den Dienst nutzen dürfen",
+      "body": "Nutzen Sie calbridge nur für Kalender, die Sie lesen und beschreiben dürfen. Nutzen Sie den Dienst nicht, um ohne Einwilligung an Daten anderer Personen zu gelangen, um ihn zu überlasten oder um gegen eine Regel eines Kalenderanbieters zu verstoßen. Der Betreiber darf ein Konto sperren, das dagegen verstößt."
+    },
+    "availability": {
+      "heading": "Verfügbarkeit und Änderungen am Dienst",
+      "body": "Der Betreiber betreibt calbridge nach bestem Bemühen. Der Dienst kann jederzeit unterbrochen, geändert oder beendet werden, zum Beispiel für Wartungsarbeiten. Ein Kalenderanbieter kann seine Schnittstelle ändern oder zurückziehen, und calbridge kann dann für diesen Anbieter nicht mehr funktionieren."
+    },
+    "liability": {
+      "heading": "Haftung",
+      "body": "Der Betreiber haftet unbeschränkt für Vorsatz, grobe Fahrlässigkeit, die Verletzung des Lebens, des Körpers oder der Gesundheit und überall dort, wo das Gesetz zwingend eine Haftung vorsieht. Bei der leicht fahrlässigen Verletzung einer wesentlichen Pflicht ist die Haftung auf den Schaden begrenzt, der bei der Nutzung des Dienstes vorhersehbar war. Darüber hinaus ist die Haftung ausgeschlossen. Prüfen Sie die Kopien in Ihren Kalendern, bevor Sie sich darauf verlassen."
+    },
+    "termination": {
+      "heading": "Ende der Nutzung",
+      "body": "Sie können Ihr Konto jederzeit in der Anwendung löschen. Die Datenschutzerklärung nennt, was dabei entfernt wird. Der Betreiber darf ein Konto aus wichtigem Grund beenden, insbesondere nach einem Verstoß gegen diese Bedingungen."
+    },
+    "changes": {
+      "heading": "Änderungen dieser Bedingungen",
+      "body": "Der Betreiber darf diese Bedingungen aus einem sachlichen Grund ändern, zum Beispiel wenn der Dienst eine neue Funktion erhält. Maßgeblich ist die Fassung auf dieser Seite. Wer den Dienst nach einer Änderung weiter nutzt, stimmt ihr zu."
     },
     "contact": {
       "heading": "Kontakt",
-      "emailPlaceholder": "[E-Mail-Adresse — vom Betreiber dieser Installation auszufüllen]",
-      "phonePlaceholder": "[Telefonnummer — vom Betreiber dieser Installation auszufüllen]"
-    },
-    "representative": {
-      "heading": "Vertreten durch",
-      "placeholder": "[Name der vertretungsberechtigten Person — vom Betreiber dieser Installation auszufüllen]"
-    },
-    "register": {
-      "heading": "Registereintrag",
-      "placeholder": "[Registergericht und Registernummer, falls vorhanden — vom Betreiber dieser Installation auszufüllen]"
-    },
-    "vat": {
-      "heading": "Umsatzsteuer-Identifikationsnummer",
-      "placeholder": "[Umsatzsteuer-Identifikationsnummer, falls vorhanden — vom Betreiber dieser Installation auszufüllen]"
-    },
-    "responsibleContent": {
-      "heading": "Verantwortlich für den Inhalt",
-      "placeholder": "[Name und Anschrift der inhaltlich verantwortlichen Person — vom Betreiber dieser Installation auszufüllen]"
-    },
-    "disputeResolution": {
-      "heading": "Streitschlichtung",
-      "placeholder": "[Ob und bei welcher Verbraucherschlichtungsstelle der Betreiber teilnimmt — vom Betreiber dieser Installation auszufüllen]"
+      "body": "Das Impressum nennt den Betreiber und die Anschrift für Fragen zu diesen Bedingungen."
     }
   },
   "privacy": {
@@ -102,9 +126,8 @@
     },
     "operator": {
       "heading": "Verantwortliche Stelle",
-      "body": "[Name und Anschrift der verantwortlichen Stelle — vom Betreiber dieser Installation auszufüllen. Siehe Impressum.]",
-      "contactPlaceholder": "[Kontakt für Anfragen zum Datenschutz, zum Beispiel eine E-Mail-Adresse — vom Betreiber dieser Installation auszufüllen]",
-      "dpoPlaceholder": "[Datenschutzbeauftragte oder Datenschutzbeauftragter, falls bestellt — vom Betreiber dieser Installation auszufüllen]"
+      "body": "Verantwortlich für diese Installation ist der Betreiber, der im Impressum genannt wird:",
+      "dataProtection": "Kontakt für Fragen zum Datenschutz:"
     },
     "account": {
       "heading": "Konto mit Passwort",
@@ -119,6 +142,11 @@
       "heading": "Verbundene Kalenderkonten",
       "body": "Ein Kalenderkonto zu verbinden ist ein zweiter, eigenständiger Schritt nach der Anmeldung. Der einzige Konnektor, den calbridge hat, ist CalDAV, mit iCloud als erstem Serverprofil: Verbinden ließe sich heute also ein CalDAV-Konto, für iCloud eine Apple-ID mit einem app-spezifischen Passwort, weil Apple für Kalender keinen OAuth-Weg anbietet. Der laufende Dienst hat für das Anlegen einer solchen Verbindung noch keinen Endpunkt, es werden hier derzeit also keine Zugangsdaten für Kalenderkonten gespeichert.",
       "encryptionBody": "Wird eines gespeichert, dann verschlüsselt: Die Speicherschicht verschlüsselt es mit AES-256-GCM, bevor es in die Datenbank gelangt, und entschlüsselt es beim Lesen wieder, sodass in der Datenbank selbst nie die Klartextform liegt. Der Schlüssel liegt beim Betreiber dieser Installation und wird über die Umgebungsvariable ENCRYPTION_KEY bereitgestellt. Das ist Verschlüsselung im Ruhezustand, keine Ende-zu-Ende-Verschlüsselung: Ein Konnektor braucht das Passwort, um den Server zu erreichen, also liegt das entschlüsselte Zugangsdatum währenddessen im Arbeitsspeicher der Anwendung. Unverschlüsselt geschrieben wird es nirgends, und in Protokollzeilen und Fehlermeldungen erscheint es nicht: Der Code, der es hält, ersetzt es dort durch einen Platzhalter."
+    },
+    "calendarAccess": {
+      "heading": "Kalenderzugriff bei Google und Microsoft",
+      "body": "Die Anmeldung mit Google oder Microsoft fragt ausschließlich nach der Identität. Kalenderzugriff ist eine eigene Einwilligung, die Sie später erteilen, wenn Sie einen Kalender dieses Anbieters verbinden. calbridge fordert heute keine Kalenderberechtigung bei Google oder Microsoft an, weil sich eine solche Verbindung noch nicht herstellen lässt. Sobald das möglich ist, fragt calbridge nur nach den Berechtigungen, die nötig sind, um die Termine der von Ihnen gewählten Kalender zu lesen und die Kopien dieser Termine in die von Ihnen gewählten Zielkalender zu schreiben. Für nichts anderes werden sie verwendet.",
+      "tokensBody": "Eine solche Verbindung bewahrt das Aktualisierungstoken (Refresh-Token) auf, das der Anbieter ausstellt, weil die Synchronisierung es braucht, um auch in Ihrer Abwesenheit zu arbeiten. calbridge speichert ein Aktualisierungstoken nur verschlüsselt, mit derselben AES-256-GCM-Verschlüsselung wie jedes verbundene Kalenderzugangsdatum, und schreibt es nie in eine Protokollzeile oder eine Fehlermeldung. Heute wird kein Aktualisierungstoken gespeichert."
     },
     "syncData": {
       "heading": "Was eine Verbindung zwischen zwei Kalendern speichert",
@@ -140,6 +168,19 @@
       "body": "Über die Funktion zum Löschen des eigenen Kontos entfernt calbridge in einer einzigen Transaktion: jeden Eintrag in der Zuordnungstabelle, jede Verbindung, jede erteilte und jede empfangene Freigabe, jeden erfassten Kalender, jede verbundene Kalenderverbindung samt ihrer verschlüsselten Zugangsdaten, jede Anmeldeidentität und zuletzt das Konto selbst. Jede angemeldete Sitzung dieses Kontos wird dabei ebenfalls beendet.",
       "limitBody": "Eine Einschränkung bleibt: Termine, die eine Verbindung bereits in einen Kalender beim Anbieter geschrieben hat, werden beim Löschen des Kontos dort nicht entfernt, weil dafür ein Zugriff auf den jeweiligen Anbieter nötig wäre, den das Löschen eines Kontos nicht vornimmt. Das Löschen einer einzelnen Verbindung soll ihre Kopien mitnehmen, und der Teil, der das tut, ist vorhanden und getestet; auch ihn ruft der laufende Dienst noch nicht auf. Heute entfernt also keiner der beiden Wege etwas aus einem Kalender beim Anbieter. Geschrieben wurde dorthin bisher nichts, weil noch kein Kalenderkonto verbunden werden kann."
     },
+    "retention": {
+      "heading": "Wie lange Daten gespeichert bleiben",
+      "body": "calbridge bewahrt die oben beschriebenen Daten so lange auf, wie Ihr Konto besteht, und entfernt sie, wenn Sie das Konto löschen, wie der Abschnitt zum Löschen des Kontos beschreibt. Eine kürzere Frist legt calbridge selbst nicht fest. Eine angemeldete Sitzung endet mit der Abmeldung oder der Löschung des Kontos."
+    },
+    "revocation": {
+      "heading": "Zugriff widerrufen",
+      "body": "Sie beenden den Zugriff von calbridge auf ein Kalenderkonto, indem Sie dessen Verbindung in der Anwendung löschen oder Ihr Konto löschen. Beides entfernt die gespeicherten Zugangsdaten, ein Aktualisierungstoken eingeschlossen, aus calbridge.",
+      "providerBody": "Die Einwilligung können Sie auch beim Anbieter zurückziehen: Entfernen Sie in den Sicherheitseinstellungen Ihres Google-, Microsoft- oder Apple-Kontos calbridge aus den Apps mit Zugriff auf Ihr Konto. Hat der Anbieter den Zugriff widerrufen, kann calbridge diesen Kalender weder lesen noch beschreiben."
+    },
+    "googleLimitedUse": {
+      "heading": "Daten aus Google-APIs",
+      "body": "Die Verwendung und die Weitergabe von Informationen, die calbridge aus Google-APIs erhält, an andere Apps erfolgt in Übereinstimmung mit der Google API Services User Data Policy, einschließlich der Limited-Use-Anforderungen. calbridge verwendet solche Informationen ausschließlich, um die von Ihnen eingerichtete Kalenderspiegelung bereitzustellen. calbridge verkauft sie nicht, nutzt sie nicht für Werbung, und keine Person liest sie, außer wenn das Gesetz es verlangt oder Sie es wünschen."
+    },
     "noAnalytics": {
       "heading": "Keine Analyse, keine Drittanbieter",
       "body": "Diese Seite und die Anwendung laden keine Analyse- oder Tracking-Dienste, keine Einbettungen von Drittanbietern und keine Schriftarten zur Laufzeit von einem fremden Server. Es gibt nichts zu offenlegen, weil nichts dieser Art eingebunden ist."
@@ -147,6 +188,11 @@
     "session": {
       "heading": "Sitzungs-Cookie",
       "body": "Nach einer Anmeldung setzt die Anwendung ein Sitzungs-Cookie, das ausschließlich dazu dient, eine angemeldete Sitzung wiederzuerkennen. Es wird für kein anderes Konto und für keine andere Seite verwendet und endet spätestens mit der Abmeldung oder der Löschung des Kontos."
+    },
+    "preferences": {
+      "heading": "Sprache und Darstellung auf dieser Seite",
+      "body": "Wenn Sie mit dem Sprachschalter eine Sprache wählen, speichert diese Seite die Wahl ein Jahr lang in einem Cookie namens govue-language. Der Server liest es, um eine kurze Adresse wie /privacy auf die Seite in Ihrer Sprache weiterzuleiten. Das Cookie enthält nur den Sprachcode und dient nicht dazu, Sie wiederzuerkennen.",
+      "themeBody": "Ihre Wahl zwischen hellem und dunklem Modus liegt im lokalen Speicher Ihres Browsers unter govue-theme. Sie verlässt Ihren Browser nicht."
     }
   }
 }
