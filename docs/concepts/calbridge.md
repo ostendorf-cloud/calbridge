@@ -109,6 +109,11 @@ Selective calendar mirroring across providers, one detail level per edge.
 - Change detection combines Google `events.watch` channels and Graph change-notification
   subscriptions on one public webhook endpoint, CalDAV `sync-collection` tokens for iCloud, and a
   scheduled full reconcile for all three, because channels expire and notifications are lossy.
+- What triggers a pass today is the scheduled full reconcile, every `RECONCILE_INTERVAL` (ten
+  minutes by default) and once at start, plus a queued pass over one edge right after the API
+  creates it. The schedule is the floor because it needs no notification to have arrived. Deleting
+  an edge tears it down inside the request. Revoking a grant queues the teardown of the edges it
+  covered, run in the grantee's scope by `internal/mirror`.
 - The UI is a Vue Flow canvas: calendars are nodes grouped by account, an edge is drawn by dragging
   one onto another, and the detail level is edited on the edge.
 - The domain is split: `calbridge.de` is the public landing page (what calbridge does, pricing,

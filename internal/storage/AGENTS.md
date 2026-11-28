@@ -19,7 +19,8 @@ Nothing here imports a provider SDK or generated sqlc code directly.
 - Lookups that cannot be reached under the asking user's own scope go through a
   `SECURITY DEFINER` function, not a widened policy.
 - They are: a local account by email, a sign-in identity by `(provider, subject)`, and the
-  addresses on the other side of a grant (`grant_counterparties`).
+  addresses on the other side of a grant (`grant_counterparties`), and the ids of the users who
+  own an edge (`edge_owners`), which the scheduled reconcile walks.
 - Each is revoked from `PUBLIC` in `db/migrations`. The explicit grant to the application role
   decides who may call it.
 - Each nulls in its own body whatever its callers have no business with.

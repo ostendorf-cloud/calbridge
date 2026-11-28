@@ -2,29 +2,28 @@
 
 What the code does not do yet, on purpose.
 
-## Provisional calendar ids
+## No route creates a provider connection
 
-- A calendar calbridge is asked to create as an edge's target is written with a provisional
-  `external_id`: `calbridge-pending:` plus a uuid.
-- No connector is wired into the service yet, and `calendars.external_id` is `NOT NULL`.
-- A connector's own calendar creation replaces it with the provider's id.
-- See `provisionalExternalIDPrefix` in `internal/httpapi/graph.go`.
-
-## Revoking a grant
-
-- Revoking a grant removes the grant row.
-- Tearing down the edges it covered, and taking back the events they wrote, is
-  `internal/sync`'s `EnforceGrants`. It runs when the engine is wired.
-- The edges belong to the grantee and are out of the owner's scope, so no API handler could do
-  it even in principle.
-- See `docs/adr/0002-a-revoked-grant-deletes-the-edge.md`.
-
-## No connector in the running service
-
-- No connector is wired into the running service and no route creates a provider connection.
-- So no calendar credentials are stored and no event is written into a provider calendar yet.
-- Nothing outside `internal/sync` calls `EnforceGrants`, `DeleteEdge` or `Teardown` either.
-- So deleting an edge or revoking a grant removes the row and nothing more.
-- The landing server's privacy policy says all of this in its own "What is not in operation yet"
+- The connector registry and the sync engine are wired into the running service.
+- No route creates a provider connection yet, so no calendar credentials are stored.
+- The engine therefore has nothing to run on, and no event is written into a provider calendar.
+- The landing server's privacy policy says this in its own "What is not in operation yet"
   section, rather than describing the design as if it ran.
-- Keep the two together when the engine is wired.
+- Keep the two together when a connection route lands.
+
+## A refused credential is remembered in memory
+
+- The mirror service records which edges the provider turned away, and the graph API shows it as
+  `credential_refused`.
+- The record is lost on restart and is rebuilt by the next pass.
+- Deleting an edge answers `credential_refused` while its credential is refused, and the edge
+  stays. No route exists yet to reconnect an account, so that edge cannot be removed meanwhile.
+- An edge whose stored credential cannot be decoded, or whose provider is not registered, cannot
+  be deleted either, because the binder cannot build its endpoint and the delete stops before
+  the engine runs.
+
+## The teardown of a shared managed calendar
+
+- `internal/sync`'s teardown removes a managed target calendar at the provider.
+- It does so even when a second edge writes into the same calendar.
+- That is the engine's contract and out of scope for the wiring. See `internal/sync/AGENTS.md`.

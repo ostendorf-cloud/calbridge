@@ -14,7 +14,8 @@ record the agreed layout for issues still ahead. Every other path already exists
 - `cmd/calbridge` wires the service. `internal/config` loads and validates the environment.
   `main.go` opens the database pool, builds the sign-in providers `internal/config` describes,
   builds `internal/httpapi`'s handler and runs it through govue's `httpserver` with graceful
-  shutdown. A later issue adds the provider registry and the sync engine to this wiring.
+  shutdown. It also builds the provider registry, the sync engine and the mirror service.
+- `internal/mirror` runs the sync engine inside the service. See `internal/mirror/AGENTS.md`.
 - `cmd/calbridge-landing` is the public landing server. See `cmd/calbridge-landing/AGENTS.md`.
 - `cmd/calbridge-mcp` will be the MCP server. See `docs/calbridge-mcp.md`.
 - `internal/config` loads the configuration from the environment once, at startup, through

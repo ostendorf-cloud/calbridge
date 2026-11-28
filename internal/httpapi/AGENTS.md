@@ -23,6 +23,19 @@ The file's own doc comment writes them out.
 - `internal/sync` stays the only package that decides what a detail level means, through
   `MaskFor`, `CheckGrants` and `CheckLoop`.
 
+## The mirror
+
+- `Deps.Mirror` is required. `NewHandler` refuses a nil one.
+- A handler never calls a provider inside `Store.WithUser`. An edge into a calendar calbridge
+  creates takes two scopes with `Mirror.CreateCalendar` between them.
+- The calendar row is written once, with the provider's own id. The application role has no
+  `UPDATE` on `calendars`.
+- A failed second scope discards the provider calendar again.
+- Deleting an edge runs the teardown before the row goes. Revoking a grant queues the teardown of
+  the edges it covered.
+- A refused credential answers `502 credential_refused` and shows as `credential_refused` on the
+  edge in `GET /api/v1/graph`.
+
 ## Public site link
 
 - `newSPAHandler` substitutes `config.publicSiteUrl` into the served `index.html` in place of a
