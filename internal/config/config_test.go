@@ -502,6 +502,14 @@ func TestLoad(t *testing.T) {
 // APP_URL goes through and which accepts the same value. The landing
 // side's TestLoadDropsATrailingSlashFromAppURL is this test's other
 // half.
+func TestCheckPublicSiteURLAcceptsATrailingSlash(t *testing.T) {
+	t.Parallel()
+
+	if err := checkPublicSiteURL("https://calbridge.example.com/"); err != nil {
+		t.Errorf("checkPublicSiteURL() error = %v, want a trailing slash accepted", err)
+	}
+}
+
 // TestLoadReadsTheRegistrationSwitch: registration stays open for a
 // deployment that sets nothing, and a value that is not a boolean is a
 // startup error rather than a quietly open instance.
@@ -540,14 +548,6 @@ func TestLoadReadsTheRegistrationSwitch(t *testing.T) {
 				t.Fatalf("RegistrationClosed = %v, want %v", cfg.RegistrationClosed, test.want)
 			}
 		})
-	}
-}
-
-func TestCheckPublicSiteURLAcceptsATrailingSlash(t *testing.T) {
-	t.Parallel()
-
-	if err := checkPublicSiteURL("https://calbridge.example.com/"); err != nil {
-		t.Errorf("checkPublicSiteURL() error = %v, want a trailing slash accepted", err)
 	}
 }
 
