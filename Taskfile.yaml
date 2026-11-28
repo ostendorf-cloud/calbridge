@@ -48,15 +48,23 @@ tasks:
   # is rewritten by task generate:sqlc, so a header added there would not survive.
   # The checks.yaml "license" job runs the same invocation through the shared reusable
   # workflow.
+  # Each file list goes into a variable first, because a find inside an argument list hides
+  # its exit status. A renamed source directory then fails here as it does in CI, instead of
+  # leaving addlicense a shorter list that passes.
   lint:license:
     desc: License header presence check for every Go, TypeScript and Vue source file
     cmds:
       - |
-        addlicense -check -c "Simon Ostendorf" -y 2026 -f .license-header.txt \
-          $(find . \( -name .claude -o -name node_modules -o -name sqlcgen -o -name testdata \) -prune \
-            -o -name "*.go" -print) \
-          $(find web/src web-landing/src -type f \( -name "*.ts" -o -name "*.vue" \) \
-            -not -path "*/node_modules/*" -not -path "*/dist/*")
+        set -e
+        go_files=$(find . \( -name .claude -o -name node_modules -o -name sqlcgen -o -name testdata \) -prune \
+          -o -name "*.go" -print)
+        frontend_files=$(find web/src web-landing/src -type f \( -name "*.ts" -o -name "*.vue" \) \
+          -not -path "*/node_modules/*" -not -path "*/dist/*")
+        if [ -z "$go_files" ] || [ -z "$frontend_files" ]; then
+          echo "lint:license: a source file list is empty" >&2
+          exit 1
+        fi
+        addlicense -check -c "Simon Ostendorf" -y 2026 -f .license-header.txt $go_files $frontend_files
 
   lint:fmt:
     desc: Go format check through golangci-lint
