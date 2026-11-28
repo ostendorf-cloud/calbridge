@@ -180,6 +180,14 @@ type Config struct {
 	// shows no such link.
 	PublicSiteURL string
 
+	// RegistrationClosed refuses every path that would create an account:
+	// the local signup and a provider sign-in whose subject has no account
+	// yet. False by default, which keeps the hosted service open to anyone
+	// who can reach it. Existing accounts keep logging in either way. An
+	// operator running calbridge privately sets it, since an open instance
+	// lets the first stranger who finds it create an account on it.
+	RegistrationClosed bool
+
 	// AuthProviders carries the sign-in providers this deployment
 	// configured, in the fixed order of authProviderIDs. A provider with
 	// no client id is simply not offered; internal/auth and
@@ -265,6 +273,8 @@ func Load(getenv func(string) string) (Config, error) {
 	trustedProxyCIDRs, err := clientip.ParseCIDRs(l.String("TRUSTED_PROXY_CIDRS", ""))
 	fail(err)
 	cfg.TrustedProxyCIDRs = trustedProxyCIDRs
+
+	cfg.RegistrationClosed = l.Bool("REGISTRATION_CLOSED", false)
 
 	cfg.AuthBaseURL = strings.TrimSuffix(strings.TrimSpace(l.String("AUTH_BASE_URL", "")), "/")
 

@@ -7,3 +7,5 @@ govue's `envconf`.
   `envconf`'s `SecretOrFile` and `RequiredSecretOrFile` `_FILE` suffix convention.
 - The rest is server, logging, session, rate limit and provider sign-in configuration.
 - The two rate limit budgets are described in `internal/httpapi/AGENTS.md`.
+- `REGISTRATION_CLOSED` is a boolean and defaults to false, so registration is open. See
+  `internal/auth/AGENTS.md`.

@@ -104,16 +104,18 @@ type Enrolment struct {
 type Local struct {
 	store Store
 	now   func() time.Time
+	opts  options
 }
 
 // NewLocal builds a Local against store. now is the clock the TOTP check
-// runs against; nil is time.Now.
-func NewLocal(store Store, now func() time.Time) *Local {
+// runs against; nil is time.Now. Registration is open unless opts close
+// it; see WithRegistrationClosed.
+func NewLocal(store Store, now func() time.Time, opts ...Option) *Local {
 	if now == nil {
 		now = time.Now
 	}
 
-	return &Local{store: store, now: now}
+	return &Local{store: store, now: now, opts: newOptions(opts)}
 }
 
 // SignUp creates an active local account for email with password, enrols
@@ -132,6 +134,14 @@ func NewLocal(store Store, now func() time.Time) *Local {
 // which is what makes the person prove the enrolment worked before they
 // rely on it.
 func (l *Local) SignUp(ctx context.Context, email, password string) (Identity, Enrolment, error) {
+	// First, before the input is looked at: a closed instance answers the
+	// same way whatever was sent, so the refusal says nothing about which
+	// addresses already have an account, and no Argon2id derivation runs
+	// for a request that cannot succeed.
+	if l.opts.registrationClosed {
+		return Identity{}, Enrolment{}, ErrRegistrationClosed
+	}
+
 	email = strings.TrimSpace(email)
 	if _, err := mail.ParseAddress(email); err != nil {
 		return Identity{}, Enrolment{}, ErrEmailInvalid

@@ -502,6 +502,47 @@ func TestLoad(t *testing.T) {
 // APP_URL goes through and which accepts the same value. The landing
 // side's TestLoadDropsATrailingSlashFromAppURL is this test's other
 // half.
+// TestLoadReadsTheRegistrationSwitch: registration stays open for a
+// deployment that sets nothing, and a value that is not a boolean is a
+// startup error rather than a quietly open instance.
+func TestLoadReadsTheRegistrationSwitch(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		value      string
+		want       bool
+		wantFailed bool
+	}{
+		"not set":     {value: "", want: false},
+		"true":        {value: "true", want: true},
+		"false":       {value: "false", want: false},
+		"not boolean": {value: "closed", wantFailed: true},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, err := Load(validEnv(map[string]string{"REGISTRATION_CLOSED": test.value}))
+			if test.wantFailed {
+				if err == nil {
+					t.Fatal("Load() error = nil, want an error for a REGISTRATION_CLOSED that is not a boolean")
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+
+			if cfg.RegistrationClosed != test.want {
+				t.Fatalf("RegistrationClosed = %v, want %v", cfg.RegistrationClosed, test.want)
+			}
+		})
+	}
+}
+
 func TestCheckPublicSiteURLAcceptsATrailingSlash(t *testing.T) {
 	t.Parallel()
 

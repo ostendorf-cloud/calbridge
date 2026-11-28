@@ -33,6 +33,15 @@ The file's own doc comment writes them out.
 - `PUBLIC_SITE_URL` and `APP_URL` are checked to the same strictness, credentials in the URL
   included.
 
+## Closed registration
+
+- `Deps.RegistrationClosed` closes both ways in, `POST /api/v1/auth/signup` and a first sign-in
+  through a provider.
+- A refusal is a 403 with the code `permission_denied`.
+- Both paths build it through `registrationClosedError`.
+- `GET /api/v1/auth/providers` carries `registration_open`, so the login screen can say so.
+- An existing account still signs in.
+
 ## Rate limits
 
 - There are two budgets, not one.

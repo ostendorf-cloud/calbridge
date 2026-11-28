@@ -10,6 +10,10 @@
 // Public. The graph routes live in graph.go, and the three rules every
 // one of them holds to are written out in that file's own doc comment.
 //
+// Deps.RegistrationClosed closes both ways an account is created, signup
+// and a first sign-in through a provider. Both answer 403 with the code
+// permission_denied, and an existing account still signs in.
+//
 // Every dependency is constructed by cmd/calbridge's main and handed to
 // NewHandler through Deps; this package builds no logger, no health
 // registry and no metrics registry of its own. The session manager and
@@ -164,7 +168,6 @@ import (
 	"github.com/ostendorf-cloud/govue/health"
 	"github.com/ostendorf-cloud/govue/metrics"
 	"github.com/ostendorf-cloud/govue/middleware"
-	"github.com/ostendorf-cloud/govue/oidc"
 	"github.com/ostendorf-cloud/govue/ratelimit"
 	"github.com/ostendorf-cloud/govue/session"
 
@@ -326,6 +329,12 @@ type Deps struct {
 	// ProviderLoginPath and ProviderCallbackPath for its own id.
 	AuthProviders []*auth.Provider
 
+	// RegistrationClosed mirrors config.Config.RegistrationClosed. False,
+	// the default, leaves signup and first-time provider sign-in open. True
+	// refuses both with 403 and has the SPA stop offering signup; logging in
+	// to an existing account is unaffected.
+	RegistrationClosed bool
+
 	// Now is the clock the TOTP check runs against. Nil is time.Now; a
 	// test passes a fixed one.
 	Now func() time.Time
@@ -447,15 +456,24 @@ func NewHandler(d Deps) (Handlers, error) {
 		return Handlers{}, fmt.Errorf("httpapi: build handler: %w", err)
 	}
 
-	a := &app{
-		sessions: sessions,
-		csrfKey:  csrfKey,
-		store:    d.Store,
-		local:    auth.NewLocal(d.Store, d.Now),
-		logger:   d.Logger,
+	// One option set for both account creating paths, so the local signup
+	// and a first-time provider sign-in can never disagree about whether
+	// the instance is open.
+	var authOptions []auth.Option
+	if d.RegistrationClosed {
+		authOptions = append(authOptions, auth.WithRegistrationClosed())
 	}
 
-	providerHandlers := make(map[string]*oidc.Handlers, len(d.AuthProviders))
+	a := &app{
+		sessions:           sessions,
+		csrfKey:            csrfKey,
+		store:              d.Store,
+		local:              auth.NewLocal(d.Store, d.Now, authOptions...),
+		logger:             d.Logger,
+		registrationClosed: d.RegistrationClosed,
+	}
+
+	providerHandlers := make(map[string]*auth.ProviderHandlers, len(d.AuthProviders))
 
 	for _, provider := range d.AuthProviders {
 		id := string(provider.ID())
@@ -464,6 +482,7 @@ func NewHandler(d Deps) (Handlers, error) {
 			Logins:   logins,
 			Sessions: sessions,
 			Store:    d.Store,
+			Options:  authOptions,
 			// The SPA's own entry point: a finished sign-in lands there
 			// and the client routes from there, which is also why
 			// internal/auth sets govue's NoNext.
@@ -633,9 +652,14 @@ type app struct {
 	local    *auth.Local
 	logger   *slog.Logger
 
+	// registrationClosed is what GET /api/v1/auth/providers reports as
+	// registration_open, inverted, for the SPA to hide its signup offer.
+	// The refusal itself lives in internal/auth, not in a check here.
+	registrationClosed bool
+
 	// providers is what GET /api/v1/auth/providers answers with, built
-	// once at startup; providerHandlers is the pair of govue handlers
-	// each of them is mounted as, keyed by provider id.
+	// once at startup; providerHandlers is the pair of handlers each of
+	// them is mounted as, keyed by provider id.
 	providers        []auth.ProviderInfo
-	providerHandlers map[string]*oidc.Handlers
+	providerHandlers map[string]*auth.ProviderHandlers
 }

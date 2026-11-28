@@ -8,8 +8,10 @@ package httpapi
 // a test only: reaching the shed path through a real request would mean
 // holding every one of internal/auth's derivation slots for the length
 // of the request, which is a race to arrange and nothing to do with what
-// the mapping has to get right.
+// the mapping has to get right. ProviderSignInError is the third, for the
+// refusals a provider callback can end in.
 var (
-	LoginError  = loginError
-	SignUpError = signUpError
+	LoginError          = loginError
+	SignUpError         = signUpError
+	ProviderSignInError = providerSignInError
 )
