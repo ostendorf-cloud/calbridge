@@ -174,7 +174,7 @@
     },
     "revocation": {
       "heading": "Revoking access",
-      "body": "You end calbridge's access to a calendar account by deleting its connection in the application, or by deleting your account. Both remove the stored credentials, a refresh token included, from calbridge.",
+      "body": "No calendar account can be connected yet, so calbridge stores no calendar credentials that you could revoke today. Once one can be connected, deleting your account removes its stored credentials, a refresh token included, from calbridge. Deleting a single connection between two calendars removes that connection only. It leaves the stored credentials of the calendar account in place.",
       "providerBody": "You can also withdraw the consent at the provider: in the security settings of your Google, Microsoft or Apple account, remove calbridge from the apps with access to your account. Once the provider has revoked it, calbridge can no longer read or write that calendar."
     },
     "googleLimitedUse": {
@@ -184,6 +184,10 @@
     "noAnalytics": {
       "heading": "No analytics, no third parties",
       "body": "Neither this site nor the application loads an analytics or tracking service, a third-party embed, or a font fetched from another server at runtime. There is nothing of that kind to disclose, because none of it is included."
+    },
+    "hosting": {
+      "heading": "Hosting and server logs",
+      "body": "This site runs on hosting infrastructure that the operator chooses. The landing server writes one log line per request with the method, the route, the status, the size and the duration. That line holds no client address and no user agent. A proxy or ingress in front of the server can keep its own access log, which can hold the IP address of your request."
     },
     "session": {
       "heading": "Session cookie",

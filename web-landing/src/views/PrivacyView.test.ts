@@ -68,6 +68,20 @@ describe('PrivacyView', () => {
     expect(screen.getByText(/stores a refresh token only encrypted/)).toBeVisible()
   })
 
+  it.each([
+    ['en', 'Hosting and server logs', /Deleting a single connection between two calendars removes/],
+    ['de', 'Hosting und Server-Protokolle', /Das Löschen einer einzelnen Verbindung zwischen/],
+  ] as const)(
+    'limits the credential removal to the account and names the hosting logs in %s',
+    (locale, hostingHeading, edgeSentence) => {
+      setOperatorMeta()
+      render(PrivacyView, { global: { plugins: languagePlugins(locale).plugins } })
+
+      expect(screen.getByRole('heading', { level: 2, name: hostingHeading })).toBeVisible()
+      expect(screen.getByText(edgeSentence)).toBeVisible()
+    },
+  )
+
   it('carries the Google Limited Use statement', () => {
     setOperatorMeta()
     render(PrivacyView, { global: { plugins: languagePlugins('en').plugins } })

@@ -50,6 +50,7 @@ const processing: Section[] = [
   { id: 'revocation', paragraphs: ['body', 'providerBody'] },
   { id: 'googleLimitedUse', paragraphs: ['body'] },
   { id: 'noAnalytics', paragraphs: ['body'] },
+  { id: 'hosting', paragraphs: ['body'] },
   { id: 'session', paragraphs: ['body'] },
   { id: 'preferences', paragraphs: ['body', 'themeBody'] },
 ]

@@ -174,7 +174,7 @@
     },
     "revocation": {
       "heading": "Zugriff widerrufen",
-      "body": "Sie beenden den Zugriff von calbridge auf ein Kalenderkonto, indem Sie dessen Verbindung in der Anwendung löschen oder Ihr Konto löschen. Beides entfernt die gespeicherten Zugangsdaten, ein Aktualisierungstoken eingeschlossen, aus calbridge.",
+      "body": "Heute lässt sich noch kein Kalenderkonto verbinden, deshalb speichert calbridge noch keine Kalender-Zugangsdaten, die Sie widerrufen könnten. Sobald sich eines verbinden lässt, entfernt das Löschen Ihres Kontos dessen gespeicherte Zugangsdaten, ein Aktualisierungstoken eingeschlossen, aus calbridge. Das Löschen einer einzelnen Verbindung zwischen zwei Kalendern entfernt nur diese Verbindung. Die gespeicherten Zugangsdaten des Kalenderkontos bleiben bestehen.",
       "providerBody": "Die Einwilligung können Sie auch beim Anbieter zurückziehen: Entfernen Sie in den Sicherheitseinstellungen Ihres Google-, Microsoft- oder Apple-Kontos calbridge aus den Apps mit Zugriff auf Ihr Konto. Hat der Anbieter den Zugriff widerrufen, kann calbridge diesen Kalender weder lesen noch beschreiben."
     },
     "googleLimitedUse": {
@@ -184,6 +184,10 @@
     "noAnalytics": {
       "heading": "Keine Analyse, keine Drittanbieter",
       "body": "Diese Seite und die Anwendung laden keine Analyse- oder Tracking-Dienste, keine Einbettungen von Drittanbietern und keine Schriftarten zur Laufzeit von einem fremden Server. Es gibt nichts zu offenlegen, weil nichts dieser Art eingebunden ist."
+    },
+    "hosting": {
+      "heading": "Hosting und Server-Protokolle",
+      "body": "Diese Seite läuft auf einer Hosting-Infrastruktur, die der Betreiber auswählt. Der Landing-Server schreibt pro Anfrage eine Protokollzeile mit Methode, Route, Status, Größe und Dauer. Diese Zeile enthält weder eine Client-Adresse noch einen User-Agent. Ein Proxy oder Ingress vor dem Server kann ein eigenes Zugriffsprotokoll führen, das die IP-Adresse Ihrer Anfrage enthalten kann."
     },
     "session": {
       "heading": "Sitzungs-Cookie",
