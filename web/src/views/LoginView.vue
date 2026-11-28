@@ -8,7 +8,7 @@
 // Provider sign-in is a browser redirect, not a fetch: the backend answers
 // with a redirect to the provider's own consent screen, so this view only
 // navigates to it.
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import {
   GovueButton,
   GovueCard,
@@ -65,6 +65,9 @@ interface ProviderResponse {
 
 interface ProvidersResponse {
   providers: ProviderResponse[]
+  // False when the operator closed registration. An older backend sends
+  // no field, which reads as open, the backend's own default.
+  registration_open?: boolean
 }
 
 interface Provider {
@@ -81,9 +84,16 @@ interface Provider {
 const providers = ref<Provider[]>([])
 const providersError = ref('')
 
+// Open until the backend says otherwise, so a failed provider fetch never
+// hides a sign-up the backend would accept. The backend refuses a closed
+// sign-up on its own; hiding the form here is only so nobody fills it in.
+const registrationOpen = ref(true)
+const showSignUp = computed(() => registrationOpen.value && mode.value === 'sign-up')
+
 onMounted(async () => {
   try {
     const response = await apiClient.get<ProvidersResponse>('/auth/providers')
+    registrationOpen.value = response.registration_open !== false
     providers.value = response.providers.map((provider) => ({
       id: provider.id,
       name: provider.name,
@@ -163,7 +173,7 @@ const signUpForm = useForm<SignUpFields>({
 
 <template>
   <GovuePage :title="t('login.title')" :lead="t('login.lead')">
-    <GovueCard v-if="mode === 'sign-in'">
+    <GovueCard v-if="!showSignUp">
       <!-- novalidate: the required attribute below stays for accessibility
            and the field's own styling, but validation feedback is
            useForm's own i18n'd messages, never the browser's native,
@@ -219,9 +229,18 @@ const signUpForm = useForm<SignUpFields>({
           {{ t('login.signIn.submit') }}
         </GovueButton>
 
-        <GovueButton type="button" variant="quiet" block @click="switchToSignUp">
+        <GovueButton
+          v-if="registrationOpen"
+          type="button"
+          variant="quiet"
+          block
+          @click="switchToSignUp"
+        >
           {{ t('login.signIn.switchToSignup') }}
         </GovueButton>
+        <p v-else class="text-center text-sm text-text-muted">
+          {{ t('login.signIn.registrationClosed') }}
+        </p>
       </form>
     </GovueCard>
 

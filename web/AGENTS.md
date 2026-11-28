@@ -11,6 +11,8 @@
 - `LoginView` carries sign-in with both factors, and sign-up with its TOTP enrolment.
 - It shows a button per configured sign-in provider, with Apple marked as granting identity
   only.
+- `LoginView` reads `registration_open` from the provider list. A closed instance shows a notice
+  in place of the sign-up switch. The backend refuses a closed sign-up on its own.
 - `LoginView` and the authenticated shell both carry a "back to the public site" link.
 - It reads `config.publicSiteUrl` and renders no link where that is empty. See
   `internal/httpapi/AGENTS.md`.
