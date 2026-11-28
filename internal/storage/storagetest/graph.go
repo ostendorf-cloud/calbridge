@@ -70,6 +70,30 @@ func (s *Store) Edge(id uuid.UUID) (storage.Edge, bool) {
 	return edge, ok
 }
 
+// ListEdgeOwners returns the id of every user who owns an edge, in the
+// order their first edge was created. Like the real function it needs no
+// scope: it is what a scheduled pass asks before it has one.
+func (s *Store) ListEdgeOwners(_ context.Context) ([]uuid.UUID, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var owners []uuid.UUID
+
+	seen := map[uuid.UUID]bool{}
+
+	for _, id := range s.edgeOrder {
+		edge, ok := s.edges[id]
+		if !ok || seen[edge.UserID] {
+			continue
+		}
+
+		seen[edge.UserID] = true
+		owners = append(owners, edge.UserID)
+	}
+
+	return owners, nil
+}
+
 // grantsCalendarTo reports whether a grant lets granteeID reach
 // calendarID. The caller already holds the lock.
 func (s *Store) grantsCalendarTo(calendarID, granteeID uuid.UUID) bool {
