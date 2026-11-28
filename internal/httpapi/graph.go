@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/ostendorf-cloud/govue/api"
 
+	"github.com/ostendorf-cloud/calbridge/internal/provider"
 	"github.com/ostendorf-cloud/calbridge/internal/storage"
 	"github.com/ostendorf-cloud/calbridge/internal/sync"
 )
@@ -58,20 +60,46 @@ import (
 // calendar name, so this is generous for all of them and still small.
 const maxGraphBody = 4 << 10
 
-// provisionalExternalIDPrefix is what a calendar calbridge is asked to
-// create carries as its provider identifier until a connector has
-// actually created it at the provider and can say what the provider
-// called it.
+// providerCallTimeout bounds the calls a handler makes to a provider
+// outside any database scope: creating the calendar an edge writes into,
+// and removing it again when the edge could not be stored.
+const providerCallTimeout = 30 * time.Second
+
+// deleteEdgeTimeout bounds taking back every event one edge wrote. It is
+// longer than one provider call because the teardown makes one per event.
+const deleteEdgeTimeout = 2 * time.Minute
+
+// Mirror is what the graph routes need from the service that runs the sync
+// engine. It is defined here, at the consumer, and internal/mirror's
+// Service satisfies it.
 //
-// calendars.external_id is NOT NULL and non-empty, and no connector is
-// wired into this service yet (see AGENTS.md), so the row has to carry
-// something and that something has to be recognisable as not yet real. A
-// connector's own calendar creation replaces it with the provider's id;
-// until then the row records the person's choice of target and nothing
-// more. Every id built with this prefix is unique, so the
-// calendars_connection_id_external_id_idx uniqueness rule still holds
-// between two provisional calendars in the same account.
-const provisionalExternalIDPrefix = "calbridge-pending:"
+// CreateCalendar and DiscardCalendar reach the provider, so a handler
+// calls them outside Store.WithUser: a provider call held inside an open
+// transaction holds the connection for as long as the provider takes.
+// Creating the calendar first is also what lets the row be written once,
+// with the provider's own id, and never updated.
+//
+// EdgeCreated and GrantRevoked only queue work and never block. DeleteEdge
+// takes back everything the edge wrote and then removes the row, and it
+// answers for a provider that refused the credential.
+type Mirror interface {
+	CreateCalendar(ctx context.Context, userID, connectionID uuid.UUID, name string) (string, error)
+	DiscardCalendar(ctx context.Context, userID, connectionID uuid.UUID, externalID string) error
+	EdgeCreated(userID, edgeID uuid.UUID)
+	DeleteEdge(ctx context.Context, userID, edgeID uuid.UUID) error
+	GrantRevoked(grant storage.CalendarGrant)
+	CredentialRefused(edgeID uuid.UUID) bool
+}
+
+// errCredentialRefused answers a request that needed the provider while
+// the provider turned the stored credential away. It is a 502 with its own
+// code, so the screen can tell the person to reconnect the account
+// instead of showing a failure with no cause. The message is written for
+// a person and carries no cause, so it is exposed past the 5xx collapse.
+func errCredentialRefused() error {
+	return api.New(http.StatusBadGateway, "credential_refused",
+		"the provider refused the credential of this account, reconnect it and try again").Exposed()
+}
 
 // The refusals this file answers an id it will not resolve with. Each is
 // one value rather than a message written at each call site, so "this
@@ -132,6 +160,11 @@ type edgeResponse struct {
 	SourceCalendarID string `json:"source_calendar_id"`
 	TargetCalendarID string `json:"target_calendar_id"`
 	DetailLevel      string `json:"detail_level"`
+	// CredentialRefused is true while the provider turns away the
+	// credential this edge reads or writes with. It is what the service
+	// last saw, held in memory, so it can be false for a moment after a
+	// restart for an account that is still refused.
+	CredentialRefused bool `json:"credential_refused"`
 	// CreatedCalendar is set only on the answer to a create that asked
 	// calbridge for its target, so the client can place the new node
 	// without reading the whole graph again.
@@ -227,9 +260,23 @@ type createGrantRequest struct {
 // all whatever the body happened to be wrong about, which both leaks the
 // order of the checks and lets an unauthenticated request spend work.
 func (a *app) inUserScope(r *http.Request, fn func(ctx context.Context, userID uuid.UUID) error) error {
-	s, err := a.sessionFromRequest(r)
+	userID, err := a.userID(r)
 	if err != nil {
 		return err
+	}
+
+	return a.store.WithUser(r.Context(), userID, func(ctx context.Context) error {
+		return fn(ctx, userID)
+	})
+}
+
+// userID resolves the session to a user id without opening a scope. A
+// handler that has to call a provider between two scopes uses it, and
+// then opens each scope itself with Store.WithUser.
+func (a *app) userID(r *http.Request) (uuid.UUID, error) {
+	s, err := a.sessionFromRequest(r)
+	if err != nil {
+		return uuid.Nil, err
 	}
 
 	userID, err := uuid.Parse(s.Subject)
@@ -237,12 +284,10 @@ func (a *app) inUserScope(r *http.Request, fn func(ctx context.Context, userID u
 		// Every session this application starts carries a users row id
 		// as its subject (see auth.Identity.Session), so anything else
 		// is a session from a build that did not.
-		return fmt.Errorf("httpapi: session subject is not a user id: %w", err)
+		return uuid.Nil, fmt.Errorf("httpapi: session subject is not a user id: %w", err)
 	}
 
-	return a.store.WithUser(r.Context(), userID, func(ctx context.Context) error {
-		return fn(ctx, userID)
-	})
+	return userID, nil
 }
 
 // handleGraph answers the whole canvas.
@@ -349,7 +394,9 @@ func (a *app) buildGraph(ctx context.Context, userID uuid.UUID) (graphResponse, 
 	}
 
 	for _, edge := range edges {
-		body.Edges = append(body.Edges, edgeFor(edge))
+		rendered := edgeFor(edge)
+		rendered.CredentialRefused = a.mirror.CredentialRefused(edge.ID)
+		body.Edges = append(body.Edges, rendered)
 	}
 
 	for _, grant := range grants {
@@ -404,29 +451,56 @@ func detailLevels() ([]detailLevelResponse, error) {
 
 // handleCreateEdge draws one edge, either into an existing calendar or
 // into one it creates for the purpose.
+//
+// An edge into a calendar calbridge creates takes two scopes with a
+// provider call between them. The first scope only checks that the edge
+// could be stored, so a request that is going to be refused anyway never
+// creates a calendar at the provider. The calendar is then created
+// outside any scope, and the second scope writes its row with the id the
+// provider gave it. When the second scope fails, the calendar is removed
+// again so a refused request leaves nothing behind at the provider.
 func (a *app) handleCreateEdge(w http.ResponseWriter, r *http.Request) error {
-	var created edgeResponse
+	userID, err := a.userID(r)
+	if err != nil {
+		return err
+	}
 
-	if err := a.inUserScope(r, func(ctx context.Context, userID uuid.UUID) error {
-		var req createEdgeRequest
-		if err := api.DecodeLimit(r, &req, maxGraphBody); err != nil {
-			return err
-		}
+	var req createEdgeRequest
+	if err := api.DecodeLimit(r, &req, maxGraphBody); err != nil {
+		return err
+	}
 
-		level, err := detailLevelFrom(req.DetailLevel)
+	level, err := detailLevelFrom(req.DetailLevel)
+	if err != nil {
+		return err
+	}
+
+	sourceID, err := calendarIDFrom(req.SourceCalendarID)
+	if err != nil {
+		return err
+	}
+
+	if (req.TargetCalendarID == "") == (req.Target == nil) {
+		return api.Invalid("name either an existing target calendar or the account to create one in, not both")
+	}
+
+	var provisioned *provisionedTarget
+
+	if req.Target != nil {
+		made, err := a.provisionTarget(r.Context(), userID, req, sourceID, level)
 		if err != nil {
 			return err
 		}
 
-		sourceID, err := calendarIDFrom(req.SourceCalendarID)
-		if err != nil {
-			return err
-		}
+		provisioned = &made
+	}
 
-		if (req.TargetCalendarID == "") == (req.Target == nil) {
-			return api.Invalid("name either an existing target calendar or the account to create one in, not both")
-		}
+	var (
+		created edgeResponse
+		edgeID  uuid.UUID
+	)
 
+	if err := a.store.WithUser(r.Context(), userID, func(ctx context.Context) error {
 		reach, err := a.reachable(ctx)
 		if err != nil {
 			return err
@@ -436,7 +510,7 @@ func (a *app) handleCreateEdge(w http.ResponseWriter, r *http.Request) error {
 			return errCalendarNotFound()
 		}
 
-		targetID, createdCalendar, err := a.resolveTarget(ctx, userID, req, reach)
+		targetID, createdCalendar, err := a.resolveTarget(ctx, userID, req, provisioned, reach)
 		if err != nil {
 			return err
 		}
@@ -472,22 +546,155 @@ func (a *app) handleCreateEdge(w http.ResponseWriter, r *http.Request) error {
 
 		created = edgeFor(stored)
 		created.CreatedCalendar = createdCalendar
+		edgeID = stored.ID
 
 		return nil
 	}); err != nil {
+		if provisioned != nil {
+			a.discardTarget(r.Context(), userID, *provisioned)
+		}
+
 		return err
 	}
+
+	// A reconcile of the new edge runs soon after, without waiting for the
+	// scheduled pass. The answer does not wait for it.
+	a.mirror.EdgeCreated(userID, edgeID)
 
 	return api.Write(w, http.StatusCreated, created)
 }
 
+// provisionedTarget is a calendar the provider has created for an edge
+// whose row is not written yet.
+type provisionedTarget struct {
+	connectionID uuid.UUID
+	externalID   string
+}
+
+// provisionTarget checks that the edge could be stored and then creates
+// its target calendar at the provider. The check is the same one the
+// second scope makes, run against a calendar id that does not exist yet,
+// because the target is this user's own and cannot widen what a grant
+// allows by existing.
+func (a *app) provisionTarget(
+	ctx context.Context,
+	userID uuid.UUID,
+	req createEdgeRequest,
+	sourceID uuid.UUID,
+	level storage.DetailLevel,
+) (provisionedTarget, error) {
+	var accountID uuid.UUID
+
+	if err := a.store.WithUser(ctx, userID, func(ctx context.Context) error {
+		reach, err := a.reachable(ctx)
+		if err != nil {
+			return err
+		}
+
+		if !reach.has(sourceID) {
+			return errCalendarNotFound()
+		}
+
+		accountID, err = uuid.Parse(req.Target.AccountID)
+		if err != nil {
+			return api.Invalid("name the account the target calendar should be created in")
+		}
+
+		if req.Target.Name == "" {
+			return api.Invalid("give the target calendar a name")
+		}
+
+		// The account has to be one this user owns, and the read that
+		// decides that is scoped, so an account id belonging to somebody
+		// else and one that was never real are refused with the same
+		// answer.
+		if _, err := a.store.Connections().FindByID(ctx, accountID); err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				return api.NotFound("no such account")
+			}
+
+			return fmt.Errorf("httpapi: find account: %w", err)
+		}
+
+		pending := uuid.New()
+		reach.own[pending] = struct{}{}
+
+		return a.checkWithinGrants(ctx, storage.Edge{
+			UserID:           userID,
+			SourceCalendarID: sourceID,
+			TargetCalendarID: pending,
+			DetailLevel:      level,
+		}, reach)
+	}); err != nil {
+		return provisionedTarget{}, err
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, providerCallTimeout)
+	defer cancel()
+
+	externalID, err := a.mirror.CreateCalendar(callCtx, userID, accountID, req.Target.Name)
+	if err != nil {
+		switch {
+		case errors.Is(err, provider.ErrCredentialRejected):
+			return provisionedTarget{}, errCredentialRefused()
+		case errors.Is(err, provider.ErrUnsupported):
+			return provisionedTarget{}, api.Invalid("this account cannot create a calendar, choose an existing one")
+		case errors.Is(err, storage.ErrNotFound):
+			return provisionedTarget{}, api.NotFound("no such account")
+		default:
+			return provisionedTarget{}, providerFailure("create target calendar", err)
+		}
+	}
+
+	return provisionedTarget{connectionID: accountID, externalID: externalID}, nil
+}
+
+// discardTarget removes a calendar provisionTarget created for an edge
+// that was then refused. It runs after the request's own context may have
+// ended, so it carries its own deadline. A failure is logged and not
+// returned: the request already has its answer, and the calendar left at
+// the provider is the only thing the log line has to name.
+func (a *app) discardTarget(ctx context.Context, userID uuid.UUID, made provisionedTarget) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), providerCallTimeout)
+	defer cancel()
+
+	if err := a.mirror.DiscardCalendar(ctx, userID, made.connectionID, made.externalID); err != nil {
+		// The error wraps what a provider and its server wrote, so the log
+		// line carries a classified reason and never the error itself.
+		a.logger.Error("remove a calendar created for an edge that was refused",
+			"connection", made.connectionID, "reason", failureReason(err))
+	}
+}
+
+// failureReason classifies the error of a mirror call as one fixed word.
+func failureReason(err error) string {
+	if errors.Is(err, storage.ErrNotFound) {
+		return "not_found"
+	}
+
+	return provider.Reason(err)
+}
+
+// providerFailure is the error a handler returns for a mirror call that
+// failed in a way the caller has no answer for. The framework logs what a
+// handler returns, and the error of a mirror call wraps what a provider and
+// its server wrote, so the returned error names the step and the classified
+// reason and drops the rest.
+func providerFailure(step string, err error) error {
+	return fmt.Errorf("httpapi: %s: %s", step, failureReason(err))
+}
+
 // resolveTarget answers which calendar the new edge writes into: the one
 // the request named, which has to be reachable like the source, or a new
-// one calbridge creates in an account this user owns.
+// one calbridge created in an account this user owns. In the second case
+// the provider already made the calendar, so the row is written once with
+// the provider's own id and never updated: the application role has no
+// UPDATE on calendars.
 func (a *app) resolveTarget(
 	ctx context.Context,
 	userID uuid.UUID,
 	req createEdgeRequest,
+	provisioned *provisionedTarget,
 	reach reachableCalendars,
 ) (uuid.UUID, *calendarResponse, error) {
 	if req.Target == nil {
@@ -503,30 +710,14 @@ func (a *app) resolveTarget(
 		return targetID, nil, nil
 	}
 
-	accountID, err := uuid.Parse(req.Target.AccountID)
-	if err != nil {
-		return uuid.Nil, nil, api.Invalid("name the account the target calendar should be created in")
-	}
-
-	if req.Target.Name == "" {
-		return uuid.Nil, nil, api.Invalid("give the target calendar a name")
-	}
-
-	// The account has to be one this user owns, and the read that decides
-	// that is scoped, so an account id belonging to somebody else and one
-	// that was never real are refused with the same answer.
-	if _, err := a.store.Connections().FindByID(ctx, accountID); err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			return uuid.Nil, nil, api.NotFound("no such account")
-		}
-
-		return uuid.Nil, nil, fmt.Errorf("httpapi: find account: %w", err)
+	if provisioned == nil {
+		return uuid.Nil, nil, errors.New("httpapi: a target to create has no provisioned calendar")
 	}
 
 	calendar, err := a.store.Calendars().Create(ctx, storage.Calendar{
 		UserID:       userID,
-		ConnectionID: accountID,
-		ExternalID:   provisionalExternalIDPrefix + uuid.NewString(),
+		ConnectionID: provisioned.connectionID,
+		ExternalID:   provisioned.externalID,
 		Name:         req.Target.Name,
 		Managed:      true,
 	})
@@ -605,6 +796,7 @@ func (a *app) handleUpdateEdge(w http.ResponseWriter, r *http.Request) error {
 		}
 
 		updated = edgeFor(stored)
+		updated.CredentialRefused = a.mirror.CredentialRefused(stored.ID)
 
 		return nil
 	}); err != nil {
@@ -616,29 +808,52 @@ func (a *app) handleUpdateEdge(w http.ResponseWriter, r *http.Request) error {
 
 // handleDeleteEdge removes one edge.
 //
-// It removes the row and nothing else. Every event the edge wrote is
-// taken back by internal/sync's own teardown, which is where that
-// belongs: it has the connectors and the mapping rows, and a second
-// implementation here would be a second answer to what an edge left
-// behind. See internal/sync's package doc.
+// It does not delete the row itself. Every event the edge wrote is taken
+// back by internal/sync's own teardown, which has the connectors and the
+// mapping rows, and the row goes only after that. The mirror service runs
+// it, so the handler first checks in scope that the edge is this user's
+// and then leaves the scope: the teardown calls the provider, and a
+// provider call never sits inside an open transaction. A provider that
+// refuses the credential leaves the edge in place and answers
+// credential_refused.
 func (a *app) handleDeleteEdge(w http.ResponseWriter, r *http.Request) error {
-	if err := a.inUserScope(r, func(ctx context.Context, _ uuid.UUID) error {
-		edgeID, err := uuid.Parse(r.PathValue("id"))
+	var userID, edgeID uuid.UUID
+
+	if err := a.inUserScope(r, func(ctx context.Context, id uuid.UUID) error {
+		var err error
+
+		edgeID, err = uuid.Parse(r.PathValue("id"))
 		if err != nil {
 			return errEdgeNotFound()
 		}
 
-		if err := a.store.Edges().Delete(ctx, edgeID); err != nil {
+		if _, err := a.store.Edges().FindByID(ctx, edgeID); err != nil {
 			if errors.Is(err, storage.ErrNotFound) {
 				return errEdgeNotFound()
 			}
 
-			return fmt.Errorf("httpapi: delete edge: %w", err)
+			return fmt.Errorf("httpapi: find edge: %w", err)
 		}
+
+		userID = id
 
 		return nil
 	}); err != nil {
 		return err
+	}
+
+	callCtx, cancel := context.WithTimeout(r.Context(), deleteEdgeTimeout)
+	defer cancel()
+
+	if err := a.mirror.DeleteEdge(callCtx, userID, edgeID); err != nil {
+		switch {
+		case errors.Is(err, provider.ErrCredentialRejected):
+			return errCredentialRefused()
+		case errors.Is(err, storage.ErrNotFound):
+			return errEdgeNotFound()
+		default:
+			return providerFailure("delete edge", err)
+		}
 	}
 
 	api.NoContent(w)
@@ -743,19 +958,35 @@ func (a *app) handleCreateGrant(w http.ResponseWriter, r *http.Request) error {
 // handleDeleteGrant revokes one grant. Either side may do it, matching
 // calendar_grants' own policy.
 //
-// It removes the grant row and nothing else, and that is deliberate: the
-// edges the grant covered belong to the grantee and are invisible to the
-// owner's scope, so the owner's own transaction could not reach them
-// even to try. internal/sync's EnforceGrants is what tears them down and
-// takes back what they wrote, scoped to the grantee, which is the only
-// scope that can; see docs/adr/0002-a-revoked-grant-deletes-the-edge.md
-// for why that teardown is the agreed consequence rather than leaving a
-// narrowed edge standing.
+// It removes the grant row, and the mirror service then tears down the
+// edges the grant covered. Those edges belong to the grantee and are
+// invisible to the owner's scope, so this handler cannot reach them.
+// internal/sync's EnforceGrants takes them down and takes back what they
+// wrote, scoped to the grantee, which is the only scope that can. The
+// mirror service runs it after the response: the teardown reaches
+// providers, and the revoke is already complete once the row is gone. See
+// docs/adr/0002-a-revoked-grant-deletes-the-edge.md for why that
+// teardown is the agreed consequence rather than leaving a narrowed edge
+// standing.
 func (a *app) handleDeleteGrant(w http.ResponseWriter, r *http.Request) error {
+	var revoked storage.CalendarGrant
+
 	if err := a.inUserScope(r, func(ctx context.Context, _ uuid.UUID) error {
 		grantID, err := uuid.Parse(r.PathValue("id"))
 		if err != nil {
 			return errGrantNotFound()
+		}
+
+		// The grant is read first because the teardown needs to know which
+		// calendar and which grantee it covered, and the row is gone after
+		// the delete.
+		revoked, err = a.store.CalendarGrants().FindByID(ctx, grantID)
+		if err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				return errGrantNotFound()
+			}
+
+			return fmt.Errorf("httpapi: find grant: %w", err)
 		}
 
 		if err := a.store.CalendarGrants().Delete(ctx, grantID); err != nil {
@@ -770,6 +1001,8 @@ func (a *app) handleDeleteGrant(w http.ResponseWriter, r *http.Request) error {
 	}); err != nil {
 		return err
 	}
+
+	a.mirror.GrantRevoked(revoked)
 
 	api.NoContent(w)
 

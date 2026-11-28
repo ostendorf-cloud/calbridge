@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1204,6 +1205,7 @@ func TestTheSecurityDefinerLookupsAreNotExecutableByPublic(t *testing.T) {
 		"users_find_by_email(text)",
 		"identities_find_by_provider_subject(text, text)",
 		"grant_counterparties()",
+		"edge_owners()",
 	} {
 		var executableByPublic bool
 
@@ -1658,6 +1660,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON users TO ` + testAppRole + `;
 GRANT EXECUTE ON FUNCTION users_find_by_email(text) TO ` + testAppRole + `;
 GRANT EXECUTE ON FUNCTION identities_find_by_provider_subject(text, text) TO ` + testAppRole + `;
 GRANT EXECUTE ON FUNCTION grant_counterparties() TO ` + testAppRole + `;
+GRANT EXECUTE ON FUNCTION edge_owners() TO ` + testAppRole + `;
 GRANT SELECT, INSERT, DELETE ON identities, calendars, calendar_grants TO ` + testAppRole + `;
 GRANT SELECT, INSERT, UPDATE, DELETE ON connections, edges, event_mapping TO ` + testAppRole + `;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ` + testAppRole + `;`
@@ -2223,6 +2226,59 @@ func granteeTx(ctx context.Context, t *testing.T, pool *pgxpool.Pool, userID uui
 	}
 
 	fn(tx)
+}
+
+// TestEdgeOwnersNamesTheUsersWhoOwnAnEdgeAndNobodyElse holds down the
+// function the scheduled reconcile learns whose edges to run from. It
+// bypasses row level security on edges, so what it returns is the whole
+// of what it discloses: the user who built an edge, never the owner of
+// a calendar the edge only reads across a grant.
+func TestEdgeOwnersNamesTheUsersWhoOwnAnEdgeAndNobodyElse(t *testing.T) {
+	adminURL := requireDatabaseURL(t)
+
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	store := restrictedStore(ctx, t, adminPool, adminURL)
+	fixture := seedSharing(ctx, t, store)
+
+	requireUsersExist(ctx, t, adminPool, fixture.owner.ID, fixture.grantee.ID, fixture.unrelated.ID)
+
+	if err := store.WithUser(ctx, fixture.grantee.ID, func(ctx context.Context) error {
+		_, err := store.Edges().Create(ctx, storage.Edge{
+			UserID:           fixture.grantee.ID,
+			SourceCalendarID: fixture.ownerCalendar.ID,
+			TargetCalendarID: fixture.granteeCalendar.ID,
+			DetailLevel:      fixture.grantDetailLevel,
+		})
+
+		return err
+	}); err != nil {
+		t.Fatalf("create the grantee's edge: %v", err)
+	}
+
+	owners, err := store.ListEdgeOwners(ctx)
+	if err != nil {
+		t.Fatalf("list the edge owners: %v", err)
+	}
+
+	if !slices.Contains(owners, fixture.grantee.ID) {
+		t.Errorf("edge owners = %v, want it to hold the grantee %v", owners, fixture.grantee.ID)
+	}
+
+	for name, absent := range map[string]uuid.UUID{
+		"the owner of the shared calendar, who built no edge": fixture.owner.ID,
+		"an account with no edge at all":                      fixture.unrelated.ID,
+	} {
+		if slices.Contains(owners, absent) {
+			t.Errorf("edge owners holds %s (%v)", name, absent)
+		}
+	}
 }
 
 // TestGrantCounterpartiesDisclosesOnlyThePeopleAGrantAlreadyNames holds

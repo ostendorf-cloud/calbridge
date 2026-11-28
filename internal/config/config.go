@@ -85,6 +85,18 @@ const (
 	defaultGrantRateLimitPer   = time.Minute
 )
 
+// The reconcile interval bounds. A pass reads both calendars of every edge
+// from the zero sync token, so a short interval is a request rate against
+// the providers, and the lower bound is what keeps a typo from becoming
+// one. The upper bound is a day, past which "within the interval" stops
+// being a promise anybody would accept. What a provider's rate limits
+// actually permit is still an open question in docs/concepts/calbridge.md.
+const (
+	defaultReconcileInterval = 10 * time.Minute
+	minReconcileInterval     = time.Minute
+	maxReconcileInterval     = 24 * time.Hour
+)
+
 // Config is every setting calbridge reads from the environment, loaded
 // and validated once by Load.
 type Config struct {
@@ -146,6 +158,13 @@ type Config struct {
 	// bucket above.
 	GrantRateLimitBurst int
 	GrantRateLimitPer   time.Duration
+
+	// ReconcileInterval is how often internal/mirror runs a full pass
+	// over every user's edges. It is the floor under every edge: a
+	// change reaches its target within this interval, whether or not
+	// anything else triggered a pass. Where a provider pushes
+	// notifications, a later issue shortens that for its own calendars.
+	ReconcileInterval time.Duration
 
 	// TrustedProxyCIDRs lists the addresses internal/httpapi's rate
 	// limiters trust to have appended the real client address to
@@ -248,6 +267,7 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 
 	cfg.DrainDelay = l.Duration("DRAIN_DELAY", httpserver.DefaultDrainDelay, time.Second, 5*time.Minute)
+	cfg.ReconcileInterval = l.Duration("RECONCILE_INTERVAL", defaultReconcileInterval, minReconcileInterval, maxReconcileInterval)
 
 	level, err := logging.Level(l.String("LOG_LEVEL", "info"))
 	fail(err)

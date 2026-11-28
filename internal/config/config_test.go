@@ -127,6 +127,40 @@ func TestLoad(t *testing.T) {
 		}
 	})
 
+	t.Run("reconcile interval defaults to ten minutes", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, err := Load(validEnv(nil))
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.ReconcileInterval != 10*time.Minute {
+			t.Errorf("ReconcileInterval = %v, want default 10m", cfg.ReconcileInterval)
+		}
+	})
+
+	t.Run("reconcile interval override", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, err := Load(validEnv(map[string]string{"RECONCILE_INTERVAL": "30m"}))
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.ReconcileInterval != 30*time.Minute {
+			t.Errorf("ReconcileInterval = %v, want 30m", cfg.ReconcileInterval)
+		}
+	})
+
+	t.Run("reconcile interval outside its bounds is an error", func(t *testing.T) {
+		t.Parallel()
+
+		for _, value := range []string{"10s", "48h"} {
+			if _, err := Load(validEnv(map[string]string{"RECONCILE_INTERVAL": value})); err == nil {
+				t.Errorf("Load() error = nil, want an error for RECONCILE_INTERVAL=%s", value)
+			}
+		}
+	})
+
 	t.Run("log level override", func(t *testing.T) {
 		t.Parallel()
 

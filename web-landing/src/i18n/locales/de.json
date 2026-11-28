@@ -122,7 +122,7 @@
     },
     "notInOperation": {
       "heading": "Was noch nicht in Betrieb ist",
-      "body": "calbridge entsteht in Schritten, und dieser Text beschreibt die Software, wie sie heute läuft, nicht wie sie entworfen ist. Drei Teile des Entwurfs sind im laufenden Dienst noch nicht angeschlossen: Es gibt noch keinen Weg, ein Kalenderkonto zu verbinden, also werden auch noch keine Zugangsdaten für Kalender gespeichert; es wird folglich kein Termin in einen Kalender kopiert; und der Teil, der eine Verbindung abbaut und die damit geschriebenen Termine zurücknimmt, ist vorhanden und getestet, wird vom laufenden Dienst aber nicht aufgerufen. Jeder Abschnitt unten sagt, was davon heute gilt."
+      "body": "calbridge entsteht in Schritten, und dieser Text beschreibt die Software, wie sie heute läuft, nicht wie sie entworfen ist. Die Synchronisierung ist Teil des laufenden Dienstes: Sie läuft nach Zeitplan, nach dem Anlegen einer Verbindung zwischen zwei Kalendern und beim Entfernen einer Verbindung oder einer Freigabe, und sie nimmt die Termine zurück, die eine entfernte Verbindung geschrieben hat. Zwei Teile fehlen noch: Es gibt noch keinen Weg, ein Kalenderkonto zu verbinden, also werden auch noch keine Zugangsdaten für Kalender gespeichert, und es wird folglich kein Termin in einen Kalender kopiert. Jeder Abschnitt unten sagt, was davon heute gilt."
     },
     "operator": {
       "heading": "Verantwortliche Stelle",

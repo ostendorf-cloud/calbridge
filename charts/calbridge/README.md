@@ -88,6 +88,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON connections, edges, event_mapping TO <co
 GRANT EXECUTE ON FUNCTION users_find_by_email(text) TO <config.databaseUser>;
 GRANT EXECUTE ON FUNCTION identities_find_by_provider_subject(text, text) TO <config.databaseUser>;
 GRANT EXECUTE ON FUNCTION grant_counterparties() TO <config.databaseUser>;
+GRANT EXECUTE ON FUNCTION edge_owners() TO <config.databaseUser>;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO <config.databaseUser>;
 ```
@@ -100,9 +101,10 @@ Three things about that list are deliberate rather than incidental:
   `UPDATE` because none of them has an update query; for `calendars` that withheld privilege is
   a guarantee an integration test asserts directly, so granting it here without revisiting that
   test would weaken a check rather than widen a permission.
-- The three `EXECUTE` grants are the only way `config.databaseUser` reads a row it does not
+- The four `EXECUTE` grants are the only way `config.databaseUser` reads a row it does not
   own: a local account by email (also what resolves the address a grant names), a sign-in
-  identity by `(provider, subject)`, and the addresses on the other side of a grant. Each
+  identity by `(provider, subject)`, the addresses on the other side of a grant, and the ids
+  of the users who own an edge, which the scheduled reconcile starts from. Each
   function is revoked from `PUBLIC` in `db/migrations`, so these grants are what actually decide
   who may call them.
 - `ALTER DEFAULT PRIVILEGES` covers a table a later migration adds, and only one added after it

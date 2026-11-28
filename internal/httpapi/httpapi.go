@@ -322,6 +322,12 @@ type Deps struct {
 	// a login anyway is the shell this package no longer is.
 	Store Store
 
+	// Mirror runs the sync engine for the graph routes: it creates the
+	// provider calendar an edge writes into, tears an edge down and
+	// queues a reconcile. Required: without it a created edge would never
+	// run and a deleted one would leave its events behind.
+	Mirror Mirror
+
 	// AuthProviders are the sign-in providers this deployment
 	// configured, already built by main from config.Config.AuthProviders.
 	// Empty is a deployment offering local accounts only, which is a
@@ -375,6 +381,9 @@ func NewHandler(d Deps) (Handlers, error) {
 	}
 	if d.Store == nil {
 		fail(errors.New("httpapi: store is required"))
+	}
+	if d.Mirror == nil {
+		fail(errors.New("httpapi: mirror is required"))
 	}
 
 	sessions, err := session.New(session.Config{
@@ -468,6 +477,7 @@ func NewHandler(d Deps) (Handlers, error) {
 		sessions:           sessions,
 		csrfKey:            csrfKey,
 		store:              d.Store,
+		mirror:             d.Mirror,
 		local:              auth.NewLocal(d.Store, d.Now, authOptions...),
 		logger:             d.Logger,
 		registrationClosed: d.RegistrationClosed,
@@ -649,6 +659,7 @@ type app struct {
 	sessions *session.Manager
 	csrfKey  []byte
 	store    Store
+	mirror   Mirror
 	local    *auth.Local
 	logger   *slog.Logger
 

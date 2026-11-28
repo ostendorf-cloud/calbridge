@@ -39,6 +39,15 @@ SET detail_level = $2,
 WHERE id = $1 AND user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
 RETURNING id, user_id, source_calendar_id, target_calendar_id, detail_level, created_at, updated_at;
 
+-- ListEdgeOwners is the one edges query that runs against the pool and
+-- not inside a WithUser transaction, for the same reason GetUserByEmail
+-- does: the scheduled reconcile has no user to scope to until it knows
+-- one. edge_owners is a SECURITY DEFINER function that returns user ids
+-- and nothing else; see db/migrations.
+
+-- name: ListEdgeOwners :one
+SELECT edge_owners()::uuid[] AS user_ids;
+
 -- name: DeleteEdge :execrows
 DELETE FROM edges
 WHERE id = $1 AND user_id = NULLIF(current_setting('app.user_id', true), '')::uuid;

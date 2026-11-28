@@ -88,6 +88,7 @@ func testDeps(t *testing.T) httpapi.Deps {
 		GrantRateLimitBurst: generousRateLimit,
 		GrantRateLimitPer:   time.Minute,
 		Store:               storagetest.NewStore(),
+		Mirror:              &fakeMirror{},
 		Now:                 func() time.Time { return testNow },
 	}
 }
@@ -222,6 +223,21 @@ func TestNewHandler(t *testing.T) {
 		}
 	})
 
+	t.Run("missing mirror is an error", func(t *testing.T) {
+		t.Parallel()
+
+		deps := testDeps(t)
+		deps.Mirror = nil
+
+		_, err := httpapi.NewHandler(deps)
+		if err == nil {
+			t.Fatal("NewHandler() error = nil, want an error for a missing mirror")
+		}
+		if !errorContainsAll(err, "mirror is required") {
+			t.Errorf("NewHandler() error = %v, want it to say the mirror is required", err)
+		}
+	})
+
 	t.Run("every problem is reported together", func(t *testing.T) {
 		t.Parallel()
 
@@ -230,7 +246,7 @@ func TestNewHandler(t *testing.T) {
 			t.Fatal("NewHandler() error = nil, want an error for every missing dependency")
 		}
 		if !errorContainsAll(err, "logger is required", "health registry is required",
-			"metrics registry is required", "dist filesystem is required", "store is required") {
+			"metrics registry is required", "dist filesystem is required", "store is required", "mirror is required") {
 			t.Errorf("NewHandler() error = %v, want it to name every missing dependency", err)
 		}
 	})

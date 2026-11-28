@@ -122,7 +122,7 @@
     },
     "notInOperation": {
       "heading": "What is not in operation yet",
-      "body": "calbridge is built in steps, and this text describes the software as it runs today rather than as it is designed. Three parts of that design are not wired into the running service yet: there is no way to connect a calendar account, so no calendar credentials are stored; no event is therefore copied into any calendar; and the part that tears a connection down and takes back the events it wrote exists and is tested, but nothing in the running service calls it. Each section below says which of that applies today."
+      "body": "calbridge is built in steps, and this text describes the software as it runs today rather than as it is designed. The sync engine is part of the running service: it runs on a schedule, after a connection between two calendars is created, and when a connection or a share is removed, and it takes back the events a removed connection wrote. Two parts are still missing: there is no way to connect a calendar account yet, so no calendar credentials are stored, and no event is therefore copied into any calendar. Each section below says which of that applies today."
     },
     "operator": {
       "heading": "Controller",

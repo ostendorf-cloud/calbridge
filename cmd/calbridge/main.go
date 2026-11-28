@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -24,8 +25,12 @@ import (
 	"github.com/ostendorf-cloud/calbridge/internal/auth"
 	"github.com/ostendorf-cloud/calbridge/internal/config"
 	"github.com/ostendorf-cloud/calbridge/internal/httpapi"
+	"github.com/ostendorf-cloud/calbridge/internal/mirror"
+	"github.com/ostendorf-cloud/calbridge/internal/provider"
+	"github.com/ostendorf-cloud/calbridge/internal/provider/caldav"
 	"github.com/ostendorf-cloud/calbridge/internal/storage"
 	"github.com/ostendorf-cloud/calbridge/internal/storage/postgres"
+	"github.com/ostendorf-cloud/calbridge/internal/sync"
 )
 
 func main() {
@@ -80,6 +85,11 @@ func run() error {
 		return err
 	}
 
+	mirrorService, err := newMirror(store, cfg, logger)
+	if err != nil {
+		return err
+	}
+
 	handlers, err := httpapi.NewHandler(httpapi.Deps{
 		Logger:              logger,
 		HealthRegistry:      healthRegistry,
@@ -94,11 +104,31 @@ func run() error {
 		GrantRateLimitPer:   cfg.GrantRateLimitPer,
 		TrustedProxyCIDRs:   cfg.TrustedProxyCIDRs,
 		Store:               store,
+		Mirror:              mirrorService,
 		AuthProviders:       providers,
 	})
 	if err != nil {
 		return fmt.Errorf("calbridge: build http handler: %w", err)
 	}
+
+	// The mirror runs beside the server and stops with it. The server
+	// returns when ctx ends, and the mirror is waited for so no pass is
+	// cut off in the middle of a provider call by the process exiting.
+	mirrorCtx, stopMirror := context.WithCancel(ctx)
+	mirrorDone := make(chan struct{})
+
+	go func() {
+		defer close(mirrorDone)
+
+		if err := mirrorService.Run(mirrorCtx); err != nil {
+			logger.Error("the mirror service stopped", "error", err)
+		}
+	}()
+
+	defer func() {
+		stopMirror()
+		<-mirrorDone
+	}()
 
 	return httpserver.RunAdmin(ctx, httpserver.Config{
 		Addr:    cfg.ListenAddr,
@@ -120,6 +150,48 @@ func run() error {
 	})
 }
 
+// newMirror builds the provider registry, the sync engine and the service
+// that runs it. A connector is one Register call, so a later provider is a
+// line here and a package, not an edit to the engine.
+func newMirror(store *postgres.Store, cfg config.Config, logger *slog.Logger) (*mirror.Service, error) {
+	registry := provider.NewRegistry()
+
+	if err := registry.Register(caldav.New()); err != nil {
+		return nil, fmt.Errorf("calbridge: register the caldav connector: %w", err)
+	}
+
+	binder, err := mirror.NewBinder(store, registry)
+	if err != nil {
+		return nil, fmt.Errorf("calbridge: build the binder: %w", err)
+	}
+
+	engine, err := sync.New(sync.Options{
+		Scope:     store,
+		Edges:     store.Edges(),
+		Calendars: store.Calendars(),
+		Grants:    store.CalendarGrants(),
+		Mappings:  store.EventMappings(),
+		Binder:    binder,
+		Logger:    logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("calbridge: build the sync engine: %w", err)
+	}
+
+	service, err := mirror.New(mirror.Options{
+		Store:    store,
+		Engine:   engine,
+		Binder:   binder,
+		Interval: cfg.ReconcileInterval,
+		Logger:   logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("calbridge: build the mirror service: %w", err)
+	}
+
+	return service, nil
+}
+
 // signInProviders builds one auth.Provider per configured sign-in
 // provider. Each redirect URL is assembled here, from the public base
 // URL and the route internal/httpapi actually mounts the callback at, so
@@ -132,7 +204,7 @@ func signInProviders(cfg config.Config) ([]*auth.Provider, error) {
 	providers := make([]*auth.Provider, 0, len(cfg.AuthProviders))
 
 	for _, configured := range cfg.AuthProviders {
-		provider, err := auth.NewProvider(storage.IdentityProvider(configured.ID), auth.ProviderConfig{
+		built, err := auth.NewProvider(storage.IdentityProvider(configured.ID), auth.ProviderConfig{
 			Issuer:       configured.Issuer,
 			ClientID:     configured.ClientID,
 			ClientSecret: configured.ClientSecret,
@@ -142,7 +214,7 @@ func signInProviders(cfg config.Config) ([]*auth.Provider, error) {
 			return nil, fmt.Errorf("calbridge: %w", err)
 		}
 
-		providers = append(providers, provider)
+		providers = append(providers, built)
 	}
 
 	return providers, nil

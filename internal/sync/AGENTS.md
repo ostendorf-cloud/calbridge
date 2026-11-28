@@ -27,6 +27,7 @@ It is the only package meant to know what a detail level means.
 - An object holding overrides and no master is removed by the master's id, on a reconcile as on
   a teardown.
 
-## Not wired yet
+## Where it runs
 
-See `docs/deliberate-gaps.md` for `EnforceGrants`, `DeleteEdge` and `Teardown`.
+- `internal/mirror` runs the engine inside the service. See `internal/mirror/AGENTS.md`.
+- `docs/deliberate-gaps.md` lists what is still missing.
