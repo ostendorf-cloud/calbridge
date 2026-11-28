@@ -1,3 +1,6 @@
+// Copyright 2026 Simon Ostendorf
+// SPDX-License-Identifier: Elastic-2.0
+
 import { createRouter, createWebHistory, type Router } from 'vue-router'
 
 // HomeView lives at "/": its own mount check (GET /api/v1/me) is the

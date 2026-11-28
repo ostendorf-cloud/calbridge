@@ -1,3 +1,6 @@
+// Copyright 2026 Simon Ostendorf
+// SPDX-License-Identifier: Elastic-2.0
+
 import { createI18n } from 'vue-i18n'
 
 import de from './locales/de.json'

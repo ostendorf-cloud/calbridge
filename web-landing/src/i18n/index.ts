@@ -1,3 +1,6 @@
+// Copyright 2026 Simon Ostendorf
+// SPDX-License-Identifier: Elastic-2.0
+
 import { createGovueI18n } from '@ostendorf-cloud/govue'
 import { createI18n } from 'vue-i18n'
 

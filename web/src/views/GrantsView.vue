@@ -1,3 +1,8 @@
+<!--
+Copyright 2026 Simon Ostendorf
+SPDX-License-Identifier: Elastic-2.0
+-->
+
 <script setup lang="ts">
 // GrantsView is where a person grants another one access to a calendar they
 // own, and sees both what they granted and what was granted to them.
