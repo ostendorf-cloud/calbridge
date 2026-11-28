@@ -84,6 +84,23 @@ func (q *Queries) GetEdgeByID(ctx context.Context, id uuid.UUID) (Edge, error) {
 	return i, err
 }
 
+const listEdgeOwners = `-- name: ListEdgeOwners :one
+
+SELECT edge_owners()::uuid[] AS user_ids
+`
+
+// ListEdgeOwners is the one edges query that runs against the pool and
+// not inside a WithUser transaction, for the same reason GetUserByEmail
+// does: the scheduled reconcile has no user to scope to until it knows
+// one. edge_owners is a SECURITY DEFINER function that returns user ids
+// and nothing else; see db/migrations.
+func (q *Queries) ListEdgeOwners(ctx context.Context) ([]uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, listEdgeOwners)
+	var user_ids []uuid.UUID
+	err := row.Scan(&user_ids)
+	return user_ids, err
+}
+
 const listEdges = `-- name: ListEdges :many
 SELECT id, user_id, source_calendar_id, target_calendar_id, detail_level, created_at, updated_at
 FROM edges

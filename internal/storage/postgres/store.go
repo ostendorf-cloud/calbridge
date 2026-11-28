@@ -10,9 +10,11 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ostendorf-cloud/calbridge/internal/storage"
+	"github.com/ostendorf-cloud/calbridge/internal/storage/postgres/sqlcgen"
 )
 
 // Store wires a connection pool, an encryptor and the user-scoping
@@ -153,4 +155,18 @@ func (s *Store) Sharing() storage.SharingRepository {
 // storage.EventMappingRepository.
 func (s *Store) EventMappings() storage.EventMappingRepository {
 	return &eventMappingRepository{encryptor: s.encryptor}
+}
+
+// ListEdgeOwners returns the id of every user who owns at least one edge.
+// It runs outside any user scope, through edge_owners, a SECURITY DEFINER
+// function that returns ids and nothing else; see db/migrations. It is
+// what lets a scheduled pass learn whose edges to run before it can scope
+// to any of them.
+func (s *Store) ListEdgeOwners(ctx context.Context) ([]uuid.UUID, error) {
+	ids, err := sqlcgen.New(s.pool).ListEdgeOwners(ctx)
+	if err != nil {
+		return nil, mapReadError(err)
+	}
+
+	return ids, nil
 }
