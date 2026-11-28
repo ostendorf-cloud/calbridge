@@ -248,7 +248,7 @@ func (s *Service) handle(ctx context.Context, queued job) {
 	}
 
 	if err := s.runEdge(ctx, edge); err != nil {
-		s.log.Warn("pass over a new edge failed", "edge", edge.ID, "error", err)
+		s.log.Warn("pass over a new edge failed", "edge", edge.ID, "reason", reason(err))
 	}
 }
 
@@ -264,7 +264,7 @@ func (s *Service) enforceGrant(ctx context.Context, grant storage.CalendarGrant)
 
 	report, err := s.engine.EnforceGrants(ctx, grant)
 	if err != nil {
-		s.log.Warn("enforce a revoked grant", "grant", grant.ID, "error", err)
+		s.log.Warn("enforce a revoked grant", "grant", grant.ID, "reason", reason(err))
 	} else {
 		s.log.Info("enforced a revoked grant", "grant", grant.ID, "operations", len(report.Operations))
 	}
@@ -303,7 +303,7 @@ func (s *Service) passUser(ctx context.Context, userID uuid.UUID) {
 		}
 
 		if err := s.runEdge(ctx, edge); err != nil {
-			s.log.Warn("pass over an edge failed", "edge", edge.ID, "user", userID, "error", err)
+			s.log.Warn("pass over an edge failed", "edge", edge.ID, "user", userID, "reason", reason(err))
 		}
 	}
 

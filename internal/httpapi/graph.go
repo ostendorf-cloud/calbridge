@@ -642,7 +642,7 @@ func (a *app) provisionTarget(
 		case errors.Is(err, storage.ErrNotFound):
 			return provisionedTarget{}, api.NotFound("no such account")
 		default:
-			return provisionedTarget{}, fmt.Errorf("httpapi: create target calendar: %w", err)
+			return provisionedTarget{}, providerFailure("create target calendar", err)
 		}
 	}
 
@@ -659,9 +659,29 @@ func (a *app) discardTarget(ctx context.Context, userID uuid.UUID, made provisio
 	defer cancel()
 
 	if err := a.mirror.DiscardCalendar(ctx, userID, made.connectionID, made.externalID); err != nil {
+		// The error wraps what a provider and its server wrote, so the log
+		// line carries a classified reason and never the error itself.
 		a.logger.Error("remove a calendar created for an edge that was refused",
-			"connection", made.connectionID, "external_id", made.externalID, "error", err)
+			"connection", made.connectionID, "reason", failureReason(err))
 	}
+}
+
+// failureReason classifies the error of a mirror call as one fixed word.
+func failureReason(err error) string {
+	if errors.Is(err, storage.ErrNotFound) {
+		return "not_found"
+	}
+
+	return provider.Reason(err)
+}
+
+// providerFailure is the error a handler returns for a mirror call that
+// failed in a way the caller has no answer for. The framework logs what a
+// handler returns, and the error of a mirror call wraps what a provider and
+// its server wrote, so the returned error names the step and the classified
+// reason and drops the rest.
+func providerFailure(step string, err error) error {
+	return fmt.Errorf("httpapi: %s: %s", step, failureReason(err))
 }
 
 // resolveTarget answers which calendar the new edge writes into: the one
@@ -832,7 +852,7 @@ func (a *app) handleDeleteEdge(w http.ResponseWriter, r *http.Request) error {
 		case errors.Is(err, storage.ErrNotFound):
 			return errEdgeNotFound()
 		default:
-			return fmt.Errorf("httpapi: delete edge: %w", err)
+			return providerFailure("delete edge", err)
 		}
 	}
 

@@ -30,6 +30,7 @@ type fakeEngine struct {
 	coverage    sync.Coverage
 	reconcile   error
 	deleteErr   error
+	enforceErr  error
 	reconciled  []sync.Binding
 	deleted     []sync.Binding
 	enforced    []storage.CalendarGrant
@@ -92,9 +93,14 @@ func (f *fakeEngine) DeleteEdge(ctx context.Context, b sync.Binding) (sync.Repor
 func (f *fakeEngine) EnforceGrants(ctx context.Context, grant storage.CalendarGrant) (sync.Report, error) {
 	f.mu.Lock()
 	f.enforced = append(f.enforced, grant)
+	enforceErr := f.enforceErr
 	f.mu.Unlock()
 
 	f.enforcedCh <- struct{}{}
+
+	if enforceErr != nil {
+		return sync.Report{}, enforceErr
+	}
 
 	var affected []storage.Edge
 

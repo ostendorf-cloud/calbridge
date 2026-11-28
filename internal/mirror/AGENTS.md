@@ -36,3 +36,5 @@ copies. This package decides when that happens and what the engine reaches a pro
 - After a delete or a teardown, the service deletes the managed calendar rows no edge names.
   The engine removes the calendar at the provider and does not own the table.
 - A refused credential is held in memory per edge. A restart forgets it until the next pass.
+- A log line never carries a provider error. It carries `reason(err)`, one fixed word picked with
+  `errors.Is`, plus the edge, grant and user ids. A test fails if provider text reaches the log.

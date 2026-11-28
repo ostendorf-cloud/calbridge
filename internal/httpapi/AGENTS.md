@@ -33,6 +33,8 @@ The file's own doc comment writes them out.
 - A failed second scope discards the provider calendar again.
 - Deleting an edge runs the teardown before the row goes. Revoking a grant queues the teardown of
   the edges it covered.
+- A handler never logs or returns a raw mirror error. The framework logs what a handler returns, so
+  the error names the step and `provider.Reason` and drops the provider's text.
 - A refused credential answers `502 credential_refused` and shows as `credential_refused` on the
   edge in `GET /api/v1/graph`.
 
