@@ -16,7 +16,12 @@ import (
 // string, so a test can exercise a missing required field.
 func validEnv(overrides map[string]string) func(string) string {
 	env := map[string]string{
-		"APP_URL": "https://app.calbridge.example",
+		"APP_URL":              "https://app.calbridge.example",
+		"OPERATOR_NAME":        "Erika Mustermann",
+		"OPERATOR_STREET":      "Musterstrasse 12",
+		"OPERATOR_POSTAL_CODE": "10115",
+		"OPERATOR_CITY":        "Berlin",
+		"OPERATOR_EMAIL":       "kontakt@calbridge.example",
 	}
 
 	for k, v := range overrides {

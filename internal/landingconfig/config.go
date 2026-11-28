@@ -47,6 +47,12 @@ type Config struct {
 	// nowhere is a deployment mistake to fail loudly on at startup
 	// rather than serve.
 	AppURL string
+
+	// Operator is who the imprint and the privacy policy name. Required:
+	// a landing page whose legal pages carry a placeholder, or nothing,
+	// must not be served, because the consent screens of the sign-in
+	// providers link to them. See Operator.
+	Operator Operator
 }
 
 // Load reads every setting through getenv, collecting every problem
@@ -102,6 +108,10 @@ func Load(getenv func(string) string) (Config, error) {
 			cfg.AppURL = appURL.String()
 		}
 	}
+
+	operator, err := loadOperator(l)
+	fail(err)
+	cfg.Operator = operator
 
 	if err := errors.Join(append(problems, l.Err())...); err != nil {
 		return Config{}, fmt.Errorf("landingconfig: load: %w", err)
