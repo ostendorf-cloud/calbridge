@@ -1,3 +1,8 @@
+<!--
+Copyright 2026 Simon Ostendorf
+SPDX-License-Identifier: Elastic-2.0
+-->
+
 <script setup lang="ts">
 // CanvasView renders the sync topology: calendars as Vue Flow nodes grouped
 // by account, with calendars shared with the user in their own group, and

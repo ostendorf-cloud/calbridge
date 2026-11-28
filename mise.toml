@@ -26,6 +26,10 @@ actionlint = "1"
 markdownlint-cli2 = "0.24"
 yamllint = "1"
 gitleaks = "8"
+# addlicense has no short name in the mise registry. It is the one entry here that needs the
+# explicit aqua backend prefix to resolve. Pinned to the patch, the same version the shared
+# reusable-license workflow runs, so a local run and CI check the same thing.
+"aqua:google/addlicense" = "1.2.0"
 # dbmate and sqlc coordinate only through files on disk (db/migrations, sqlc.yaml), never
 # through each other's version, so a minor pin is enough; neither is coupled to the other's
 # patch the way golangci-lint is coupled to go above. 2.38 and 1.31 are each the latest minor

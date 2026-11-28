@@ -1,3 +1,6 @@
+// Copyright 2026 Simon Ostendorf
+// SPDX-License-Identifier: Elastic-2.0
+
 // CanvasView.test.ts and GrantsView.test.ts both mock the whole '../api'
 // module, token ref included, which proves nothing about whether the token
 // a real session gets from GET /api/v1/me ever reaches a real write. This

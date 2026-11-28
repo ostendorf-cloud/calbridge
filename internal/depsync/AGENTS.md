@@ -9,6 +9,13 @@
   analytics, no third parties" claim.
 - The filter and the scan, each tested on their own, need nothing built. They stay in
   `landingimports_test.go` and `bundleassets_test.go` and run in the ordinary suite.
+- `licenseheader_test.go` fails when a source file or `.license-header.txt` names another SPDX
+  identifier than `LICENSE` does, or names none. `addlicense` checks presence only.
+- Its fixtures are small repositories under `testdata/license`. One case per way the check
+  fails: a wrong header in a Go file, in a Vue file, a missing identifier, a swapped `LICENSE`,
+  a stale header template and a `LICENSE` it cannot identify.
+- A new license in `LICENSE` needs its title and identifier in `knownLicenses`. An unknown
+  `LICENSE` fails the check instead of passing it.
 - A further check fails when the chart's memory limit and the Argon2id cap in `internal/auth`
   stop agreeing.
 

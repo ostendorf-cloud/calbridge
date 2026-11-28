@@ -1,3 +1,8 @@
+<!--
+Copyright 2026 Simon Ostendorf
+SPDX-License-Identifier: Elastic-2.0
+-->
+
 <script setup lang="ts">
 // LoginView is calbridge's real sign-in: local accounts with password and
 // TOTP, and sign-in through whatever providers internal/auth has configured

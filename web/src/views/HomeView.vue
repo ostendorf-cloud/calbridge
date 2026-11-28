@@ -1,3 +1,8 @@
+<!--
+Copyright 2026 Simon Ostendorf
+SPDX-License-Identifier: Elastic-2.0
+-->
+
 <script setup lang="ts">
 // HomeView is the authenticated shell's proof that the session and the
 // CSRF token contract both work end to end: it reads GET /api/v1/me,

@@ -395,5 +395,20 @@ jobs:
       - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78  # v5.3.0
       - run: task --trusted-hosts github.com lint:secrets
 
+  # The shared reusable workflow pins addlicense itself and takes the file set as complete
+  # "find" invocations, one per line. task lint:license keeps the same invocation for local
+  # development, kept in step by hand. The sqlc output is generated and excluded there too.
+  license:
+    uses: ostendorf-cloud/workflows/.github/workflows/reusable-license.yaml@v0
+    with:
+      copyright-holder: Simon Ostendorf
+      year: "2026"
+      license-file: .license-header.txt
+      # Mirrors mise.toml's own pin, so the same addlicense runs locally and in CI.
+      addlicense-version: "1.2.0"
+      find-commands: |
+        find . \( -name .claude -o -name node_modules -o -name sqlcgen -o -name testdata \) -prune -o -name "*.go" -print
+        find web/src web-landing/src -type f \( -name "*.ts" -o -name "*.vue" \) -not -path "*/node_modules/*" -not -path "*/dist/*"
+
   renovate-config:
     uses: ostendorf-cloud/workflows/.github/workflows/reusable-renovate-config.yaml@v0
