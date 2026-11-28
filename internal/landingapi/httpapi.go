@@ -26,8 +26,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/ostendorf-cloud/govue/health"
+	"github.com/ostendorf-cloud/govue/language"
 	"github.com/ostendorf-cloud/govue/metrics"
 	"github.com/ostendorf-cloud/govue/middleware"
+
+	"github.com/ostendorf-cloud/calbridge/internal/landingconfig"
 )
 
 // Deps is everything NewHandler needs, constructed by
@@ -53,7 +56,24 @@ type Deps struct {
 	// toward the application reads it back out of the served page; see
 	// static.go's newStaticHandler.
 	AppURL string
+
+	// Operator is who the imprint and the privacy policy name, already
+	// validated by landingconfig.Load. It reaches the pages the way
+	// AppURL does, through the served index.html.
+	Operator landingconfig.Operator
 }
+
+// languageCodes are the languages the site serves, the same two
+// web-landing's router prefixes its legal pages with.
+var languageCodes = []string{"de", "en"}
+
+// legalPages are the legal pages the site has. A terms page exists
+// because the consent screens of the sign-in providers link to one.
+var legalPages = []string{"imprint", "privacy", "terms"}
+
+// fallbackLanguage is the language a visitor with no stored choice and
+// no matching Accept-Language header is redirected to.
+const fallbackLanguage = "en"
 
 // Handlers is what NewHandler builds: Public, served on the listener the
 // landing Deployment's Ingress or HTTPRoute routes to, and Admin, served
@@ -93,7 +113,7 @@ func NewHandler(d Deps) (Handlers, error) {
 	var staticHandler http.Handler
 	if d.DistFS != nil {
 		var err error
-		staticHandler, err = newStaticHandler(d.DistFS, d.AppURL)
+		staticHandler, err = newStaticHandler(d.DistFS, d.AppURL, d.Operator)
 		fail(err)
 	}
 
@@ -108,6 +128,17 @@ func NewHandler(d Deps) (Handlers, error) {
 
 	mux := http.NewServeMux()
 	mux.Handle("/", staticHandler)
+
+	// The short legal paths (/imprint, /privacy, /terms and the German
+	// names) redirect to the page in the visitor's language. govue's
+	// language package owns that set and the language choice order:
+	// cookie, then Accept-Language, then fallbackLanguage.
+	if err := language.HandleLegal(mux, language.LegalConfig{
+		Config: language.Config{Languages: languageCodes, Default: fallbackLanguage},
+		Terms:  true,
+	}, nil); err != nil {
+		return Handlers{}, fmt.Errorf("landingapi: legal redirects: %w", err)
+	}
 
 	// The outer chain, outermost first, matching internal/httpapi's own
 	// Public chain minus the per-route CSRF protector: there is no

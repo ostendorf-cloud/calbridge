@@ -4,6 +4,8 @@
 package landingapi_test
 
 import (
+	"encoding/json"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"testing/fstest"
 
 	"github.com/ostendorf-cloud/calbridge/internal/landingapi"
+	"github.com/ostendorf-cloud/calbridge/internal/landingconfig"
 )
 
 // committedIndexHTMLPath is web-landing's own index.html as committed,
@@ -151,9 +154,113 @@ func TestAnAppURLWithMarkupInItIsEscaped(t *testing.T) {
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 			handlers.Public.ServeHTTP(rec, req)
 
-			if rec.Body.String() != tc.want {
-				t.Errorf("body = %q, want %q", rec.Body.String(), tc.want)
+			// The operator meta tag follows the app URL tag in the test
+			// shell, so the app URL's own tag is the prefix.
+			if !strings.HasPrefix(rec.Body.String(), tc.want) {
+				t.Errorf("body = %q, want it to start with %q", rec.Body.String(), tc.want)
 			}
 		})
+	}
+}
+
+func TestNewHandlerFailsOnAnIndexWithNoOperatorPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	deps.DistFS = fstest.MapFS{
+		"index.html": {Data: []byte(`<!doctype html><meta name="calbridge-app-url" content="__CALBRIDGE_APP_URL__">`)},
+	}
+
+	_, err := landingapi.NewHandler(deps)
+	if err == nil {
+		t.Fatal("NewHandler accepted an index.html with no operator placeholder")
+	}
+	if !strings.Contains(err.Error(), "__CALBRIDGE_OPERATOR__") {
+		t.Errorf("error %q does not name the missing operator placeholder", err)
+	}
+}
+
+func TestTheCommittedIndexCarriesTheOperatorPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	committed, err := os.ReadFile(committedIndexHTMLPath)
+	if err != nil {
+		t.Fatalf("read the committed index.html: %v", err)
+	}
+
+	if !strings.Contains(string(committed), "__CALBRIDGE_OPERATOR__") {
+		t.Errorf(
+			"%s carries no __CALBRIDGE_OPERATOR__ placeholder; newStaticHandler refuses such a build at startup",
+			committedIndexHTMLPath,
+		)
+	}
+}
+
+// TestTheOperatorIsServedAsEscapedJSON reads the meta tag back the way
+// web-landing's operator.ts does: the attribute value, unescaped, is the
+// operator as JSON. The values carry the characters that would break out
+// of the attribute if the substitution were a paste.
+func TestTheOperatorIsServedAsEscapedJSON(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	deps.Operator = landingconfig.Operator{
+		Name:       `Erika "Muster" <Mustermann> & Sohn`,
+		Street:     "Musterstrasse 12",
+		PostalCode: "10115",
+		City:       "Berlin",
+		Email:      "kontakt@calbridge.example",
+		Phone:      "+49 30 1234567",
+	}
+
+	handlers, err := landingapi.NewHandler(deps)
+	if err != nil {
+		t.Fatalf("NewHandler = %v, want no error", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+	handlers.Public.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	const open = `<meta name="calbridge-operator" content="`
+
+	start := strings.Index(body, open)
+	if start < 0 {
+		t.Fatalf("body = %q, want the operator meta tag", body)
+	}
+	rest := body[start+len(open):]
+
+	end := strings.Index(rest, `">`)
+	if end < 0 {
+		t.Fatalf("body = %q, want the operator attribute to close", body)
+	}
+
+	var got landingconfig.Operator
+	if err := json.Unmarshal([]byte(html.UnescapeString(rest[:end])), &got); err != nil {
+		t.Fatalf("operator attribute is not JSON: %v", err)
+	}
+	if got != deps.Operator {
+		t.Errorf("operator = %+v, want %+v", got, deps.Operator)
+	}
+	if strings.ContainsAny(rest[:end], `"<>`) {
+		t.Errorf("attribute %q holds an unescaped quote or angle bracket", rest[:end])
+	}
+}
+
+func TestTheOperatorPlaceholderIsGoneFromEveryPage(t *testing.T) {
+	t.Parallel()
+
+	handlers, err := landingapi.NewHandler(testDeps(t))
+	if err != nil {
+		t.Fatalf("NewHandler = %v, want no error", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/en/imprint", nil)
+	handlers.Public.ServeHTTP(rec, req)
+
+	if strings.Contains(rec.Body.String(), "__CALBRIDGE_OPERATOR__") {
+		t.Error("the operator placeholder is still present in the served shell")
 	}
 }
