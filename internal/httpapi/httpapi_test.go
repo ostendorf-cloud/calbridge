@@ -439,22 +439,49 @@ func TestSPAFallbackServesARealAsset(t *testing.T) {
 	}
 }
 
-// testClient is an http.Client with a cookie jar, pointed at a server
-// wrapping handlers.Public, so a test can exercise the login, me and
-// logout contract the way a browser actually would: cookies carried
-// across requests, never read or replayed by hand.
-func testClient(t *testing.T, handlers httpapi.Handlers) (*http.Client, string) {
+// newClient returns an http.Client whose Transport is its own. Every client
+// in this package's tests comes from here or from newCookieClient, never
+// from a zero value http.Client{}. A zero value client falls back to the
+// process wide http.DefaultTransport, and httptest.Server.Close closes the
+// idle connections of that shared pool, not only its own server's. Parallel
+// tests would then tear down each other's keep-alive connections mid
+// sequence and hang or fail at random.
+func newClient(t *testing.T) *http.Client {
 	t.Helper()
 
-	server := httptest.NewServer(handlers.Public)
-	t.Cleanup(server.Close)
+	client := &http.Client{Transport: &http.Transport{}}
+	t.Cleanup(client.CloseIdleConnections)
+
+	return client
+}
+
+// newCookieClient is newClient with a cookie jar, so a test can carry a
+// session across requests the way a browser does, never reading or
+// replaying a cookie by hand.
+func newCookieClient(t *testing.T) *http.Client {
+	t.Helper()
 
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		t.Fatalf("cookiejar.New() error = %v", err)
 	}
 
-	return &http.Client{Jar: jar}, server.URL
+	client := newClient(t)
+	client.Jar = jar
+
+	return client
+}
+
+// testClient is a newCookieClient pointed at a server wrapping
+// handlers.Public, so a test can exercise the login, me and logout
+// contract the way a browser actually would.
+func testClient(t *testing.T, handlers httpapi.Handlers) (*http.Client, string) {
+	t.Helper()
+
+	server := httptest.NewServer(handlers.Public)
+	t.Cleanup(server.Close)
+
+	return newCookieClient(t), server.URL
 }
 
 // do sends method/url/body through client and closes the response body
@@ -674,9 +701,10 @@ func TestSignupAndLoginAreRateLimited(t *testing.T) {
 
 			server := httptest.NewServer(build(t, deps).Public)
 			t.Cleanup(server.Close)
+			client := newClient(t)
 
 			attempt := func() int {
-				return do(t, &http.Client{}, http.MethodPost, server.URL+test.path, test.body, "").StatusCode
+				return do(t, client, http.MethodPost, server.URL+test.path, test.body, "").StatusCode
 			}
 
 			for i := range 2 {
@@ -723,23 +751,6 @@ func TestLoginRateLimitKeyHonoursTrustedProxyOnly(t *testing.T) {
 		t.Cleanup(func() { _ = resp.Body.Close() })
 
 		return resp.StatusCode
-	}
-
-	// newClient gives the caller a client whose Transport is its own, never
-	// the implicit http.DefaultTransport a zero-value http.Client falls
-	// back to. httptest.Server.Close closes http.DefaultTransport's idle
-	// connections as a courtesy to callers that use it, and both subtests
-	// below run in parallel, each against its own server. Sharing that
-	// default transport would let one subtest's server teardown race the
-	// still-open keep-alive connection another subtest's own sequence of
-	// requests depends on.
-	newClient := func(t *testing.T) *http.Client {
-		t.Helper()
-
-		client := &http.Client{Transport: &http.Transport{}}
-		t.Cleanup(client.CloseIdleConnections)
-
-		return client
 	}
 
 	t.Run("no trusted proxy configured ignores a forged header", func(t *testing.T) {

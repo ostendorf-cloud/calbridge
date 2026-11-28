@@ -157,9 +157,8 @@ func TestProviderLoginRedirectsAskingForIdentityScopesOnly(t *testing.T) {
 
 	// No redirect is followed: the Location header is what this test is
 	// about, and following it would reach the fake issuer's own 404.
-	client := &http.Client{
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
+	client := newClient(t)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 	for _, id := range []string{"google", "apple"} {
 		t.Run(id, func(t *testing.T) {
