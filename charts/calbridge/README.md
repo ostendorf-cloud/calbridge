@@ -222,6 +222,25 @@ lives under as something with an expiry date, re-mint it on a schedule, and roll
 before the old one runs out. Google and Microsoft client secrets have their own expiry policies
 set per application at those providers, which is worth checking when the credential is created.
 
+## Closing registration
+
+Registration is open by default. Until `config.registrationClosed` is `true`, an instance
+reachable from the internet is open to anyone who can reach it:
+
+- Anyone can create a local account through `POST /api/v1/auth/signup`.
+- Anyone with an account at a configured provider can create one by signing in with it.
+
+Both paths create an account on first use, so both sit behind one switch. Set
+`config.registrationClosed` to `true` once the accounts that should exist do.
+
+- A closed instance answers both paths with `403` and the code `permission_denied`.
+- No account is created.
+- An account that already exists keeps signing in, by password or by provider.
+- The login screen stops offering signup.
+
+A closed instance has no invite flow, so a new person can only be added by opening it again
+for as long as it takes them to sign up.
+
 ## Why `config.databaseUrl` is plain here
 
 `config.databaseUrl` is a plain value, not read from `existingSecret`, because
@@ -410,6 +429,7 @@ for the full list `cmd/calbridge` reads today.
 | `config.trustedProxyCIDRs` | `TRUSTED_PROXY_CIDRS`, a comma separated list of CIDRs (or bare addresses). Empty keeps the rate limiters keyed on the TCP peer; see "The rate limits are per client only with trusted proxies configured" above. | `""` |
 | `config.authBaseUrl` | `AUTH_BASE_URL`, the public base URL provider redirect URLs are built from. See "Provider sign-in" above. | `""` |
 | `config.publicSiteUrl` | `PUBLIC_SITE_URL`, the public landing page's own base URL. Rendered into the login screen and the signed-in shell as the link back to the public site. Empty renders no such link. See "The public landing server" above. | `""` |
+| `config.registrationClosed` | `REGISTRATION_CLOSED`. `true` refuses every new account, by password signup and by first provider sign-in. Existing accounts keep signing in. See "Closing registration" above. | `false` |
 | `landing.config.appUrl` | `APP_URL`, the application's own public base URL the landing server links every call to action at. Required; no usable default. See "The public landing server" above. | `""` |
 | `config.auth.google.clientId` / `config.auth.microsoft.clientId` / `config.auth.apple.clientId` | `AUTH_GOOGLE_CLIENT_ID` / `AUTH_MICROSOFT_CLIENT_ID` / `AUTH_APPLE_CLIENT_ID`. Empty means that provider's sign-in is not offered. See "Provider sign-in" above. | `""` |
 | `config.auth.google.issuer` / `config.auth.microsoft.issuer` / `config.auth.apple.issuer` | `AUTH_GOOGLE_ISSUER` / `AUTH_MICROSOFT_ISSUER` / `AUTH_APPLE_ISSUER`. Empty falls back to `internal/auth`'s own documented default issuer. See "Provider sign-in" above. | `""` |
