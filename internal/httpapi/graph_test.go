@@ -187,7 +187,9 @@ type graphBody struct {
 		SourceCalendarID string `json:"source_calendar_id"`
 		TargetCalendarID string `json:"target_calendar_id"`
 		DetailLevel      string `json:"detail_level"`
-		CreatedCalendar  *struct {
+		// CredentialRefused is what the mirror reported for this edge.
+		CredentialRefused bool `json:"credential_refused"`
+		CreatedCalendar   *struct {
 			ID        string  `json:"id"`
 			AccountID *string `json:"account_id"`
 			Name      string  `json:"name"`
