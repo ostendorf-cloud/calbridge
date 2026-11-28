@@ -133,6 +133,12 @@ func NewHandler(d Deps) (Handlers, error) {
 	// names) redirect to the page in the visitor's language. govue's
 	// language package owns that set and the language choice order:
 	// cookie, then Accept-Language, then fallbackLanguage.
+	//
+	// Terms is on, which registers /terms and /agb together. The owner
+	// decided on 2026-11-28 that every site that becomes a product has
+	// terms, so calbridge has them although it sells nothing today. That
+	// replaces issue #66's earlier line that /agb is not used. The terms
+	// text is the terms of use of the service.
 	if err := language.HandleLegal(mux, language.LegalConfig{
 		Config: language.Config{Languages: languageCodes, Default: fallbackLanguage},
 		Terms:  true,

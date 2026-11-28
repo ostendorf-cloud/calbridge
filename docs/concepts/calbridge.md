@@ -126,6 +126,11 @@ Selective calendar mirroring across providers, one detail level per edge.
   `/privacy`, `/terms` and `/imprint`, and the German aliases `/datenschutz`, `/agb` and
   `/impressum`, redirect from the server to the page of the visitor's language. The operator named
   on those pages comes from the deployment's configuration, never from the repository.
+- The terms exist although nothing is sold today. The owner decided on 2026-11-28 that every site
+  that becomes a product has terms, so `/terms` and `/agb` are both served, and this replaces the
+  line of issue #66 that `/agb` is not used. The terms page holds the terms of use of the
+  service. It has no dispute resolution section, and the owner reviews it before release, see
+  `docs/legal-review.md`.
 - A grant is its own record (owner, grantee, calendar, maximum detail level) and is checked on every
   edge write, so revoking it stops the sync without the grantee's cooperation.
 - A separate MCP server, its own binary and deployment, lets an AI agent read the sync topology and

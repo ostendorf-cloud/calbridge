@@ -42,6 +42,8 @@
 - `language.HandleLegal` from govue answers the short paths `/imprint`, `/privacy`, `/terms` and
   the German aliases with a 302 to `/de/...` or `/en/...`. The order is cookie, then
   `Accept-Language`, then English.
+- `Terms` is on, so `/terms` and `/agb` are both served. The owner decided on 2026-11-28 that
+  every site that becomes a product has terms. The text is the terms of use of the service.
 - The pages are `/`, `/pricing` and `/{de,en}/{imprint,privacy,terms}`. They answer 200 with
   the shell.
 - Any other path answers 404 with the same shell, so the client router shows the not found
